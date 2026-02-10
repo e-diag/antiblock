@@ -1,0 +1,41 @@
+app:
+  name: "AntiBlock MTProto Proxy Bot"
+  version: "1.0.0"
+  debug: false
+
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  admin_ids:
+    - "${TELEGRAM_ADMIN_ID_1}"
+    # Добавьте больше админов через переменные окружения
+
+database:
+  host: "${DB_HOST:localhost}"
+  port: "${DB_PORT:5432}"
+  user: "${DB_USER:postgres}"
+  password: "${DB_PASSWORD:postgres}"
+  dbname: "${DB_NAME:antiblock}"
+  sslmode: "${DB_SSLMODE:disable}"
+  timezone: "${DB_TIMEZONE:UTC}"
+
+cryptobot:
+  api_token: "${CRYPTOBOT_API_TOKEN}"
+  api_url: "https://pay.crypt.bot/api"
+
+rate_limit:
+  requests_per_second: 1
+  burst_size: 3
+
+workers:
+  health_check:
+    enabled: true
+    interval_seconds: 300  # 5 минут
+    timeout_seconds: 10
+  
+  subscription_checker:
+    enabled: true
+    interval_seconds: 60  # 1 минута
+
+proxy:
+  default_secret_length: 32
+  free_trial_days: 0  # 0 = нет бесплатного пробного периода

@@ -1,0 +1,12 @@
+.git
+.gitignore
+*.md
+.env
+.env.local
+*.log
+vendor/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
