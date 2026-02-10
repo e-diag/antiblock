@@ -98,7 +98,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Заменяем переменные окружения
+	// Заменяем переменные окружения (только ${VAR}, без синтаксиса :default)
 	content := os.ExpandEnv(string(data))
 
 	var cfg Config
@@ -106,5 +106,40 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// Подставляем значения по умолчанию для БД, если после ExpandEnv поля пустые
+	applyDatabaseDefaults(&cfg.Database)
+
 	return &cfg, nil
+}
+
+// applyDatabaseDefaults заполняет пустые поля Database из env с дефолтами
+func applyDatabaseDefaults(d *DatabaseConfig) {
+	if d.Host == "" {
+		d.Host = getEnv("DB_HOST", "localhost")
+	}
+	if d.Port == "" {
+		d.Port = getEnv("DB_PORT", "5432")
+	}
+	if d.User == "" {
+		d.User = getEnv("DB_USER", "postgres")
+	}
+	if d.Password == "" {
+		d.Password = getEnv("DB_PASSWORD", "postgres")
+	}
+	if d.DBName == "" {
+		d.DBName = getEnv("DB_NAME", "antiblock")
+	}
+	if d.SSLMode == "" {
+		d.SSLMode = getEnv("DB_SSLMODE", "disable")
+	}
+	if d.Timezone == "" {
+		d.Timezone = getEnv("DB_TIMEZONE", "UTC")
+	}
+}
+
+func getEnv(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
 }

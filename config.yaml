@@ -10,13 +10,13 @@ telegram:
     # Добавьте больше админов через переменные окружения
 
 database:
-  host: "${DB_HOST:localhost}"
-  port: "${DB_PORT:5432}"
-  user: "${DB_USER:postgres}"
-  password: "${DB_PASSWORD:postgres}"
-  dbname: "${DB_NAME:antiblock}"
-  sslmode: "${DB_SSLMODE:disable}"
-  timezone: "${DB_TIMEZONE:UTC}"
+  host: "${DB_HOST}"
+  port: "${DB_PORT}"
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+  dbname: "${DB_NAME}"
+  sslmode: "${DB_SSLMODE}"
+  timezone: "${DB_TIMEZONE}"
 
 cryptobot:
   api_token: "${CRYPTOBOT_API_TOKEN}"
