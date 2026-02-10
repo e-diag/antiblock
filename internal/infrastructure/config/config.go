@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -108,6 +109,8 @@ func Load(path string) (*Config, error) {
 
 	// Подставляем значения по умолчанию для БД, если после ExpandEnv поля пустые
 	applyDatabaseDefaults(&cfg.Database)
+	// Убираем кавычки из значений (на случай если env передал "5432" и т.д.)
+	trimDatabaseStrings(&cfg.Database)
 
 	return &cfg, nil
 }
@@ -139,7 +142,27 @@ func applyDatabaseDefaults(d *DatabaseConfig) {
 
 func getEnv(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
-		return v
+		return trimQuotes(v)
 	}
 	return defaultVal
+}
+
+// trimQuotes убирает обрамляющие двойные/одинарные кавычки и пробелы
+func trimQuotes(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"' || s[0] == '\'' && s[len(s)-1] == '\'') {
+		s = s[1 : len(s)-1]
+	}
+	return strings.TrimSpace(s)
+}
+
+// trimDatabaseStrings применяет trimQuotes ко всем полям DatabaseConfig
+func trimDatabaseStrings(d *DatabaseConfig) {
+	d.Host = trimQuotes(d.Host)
+	d.Port = trimQuotes(d.Port)
+	d.User = trimQuotes(d.User)
+	d.Password = trimQuotes(d.Password)
+	d.DBName = trimQuotes(d.DBName)
+	d.SSLMode = trimQuotes(d.SSLMode)
+	d.Timezone = trimQuotes(d.Timezone)
 }
