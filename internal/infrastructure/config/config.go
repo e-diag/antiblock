@@ -59,8 +59,10 @@ func (d *DatabaseConfig) DSN() string {
 }
 
 type CryptoBotConfig struct {
-	APIToken string `yaml:"api_token"`
-	APIURL   string `yaml:"api_url"`
+	APIToken      string `yaml:"api_token"`
+	APIURL        string `yaml:"api_url"`
+	WebhookPort   string `yaml:"webhook_port"`    // порт для приёма webhook CryptoPay (например 8080)
+	WebhookSecret string `yaml:"webhook_secret"`  // секрет для проверки подписи CryptoPay webhook
 }
 
 type RateLimitConfig struct {
@@ -71,6 +73,7 @@ type RateLimitConfig struct {
 type WorkersConfig struct {
 	HealthCheck       WorkerConfig `yaml:"health_check"`
 	SubscriptionChecker WorkerConfig `yaml:"subscription_checker"`
+	DockerMonitor       WorkerConfig `yaml:"docker_monitor"`
 }
 
 type WorkerConfig struct {
@@ -107,10 +110,14 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Подставляем значения по умолчанию для БД, если после ExpandEnv поля пустые
 	applyDatabaseDefaults(&cfg.Database)
-	// Убираем кавычки из значений (на случай если env передал "5432" и т.д.)
 	trimDatabaseStrings(&cfg.Database)
+	if cfg.CryptoBot.WebhookPort == "" {
+		cfg.CryptoBot.WebhookPort = getEnv("CRYPTOBOT_WEBHOOK_PORT", "8080")
+	}
+	if cfg.CryptoBot.WebhookSecret == "" {
+		cfg.CryptoBot.WebhookSecret = getEnv("CRYPTOBOT_WEBHOOK_SECRET", "")
+	}
 
 	return &cfg, nil
 }

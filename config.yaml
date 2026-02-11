@@ -21,6 +21,8 @@ database:
 cryptobot:
   api_token: "${CRYPTOBOT_API_TOKEN}"
   api_url: "https://pay.crypt.bot/api"
+  webhook_port: "${CRYPTOBOT_WEBHOOK_PORT:8080}"
+  webhook_secret: "${CRYPTOBOT_WEBHOOK_SECRET}"
 
 rate_limit:
   requests_per_second: 1

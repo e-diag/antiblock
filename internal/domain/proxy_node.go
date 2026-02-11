@@ -6,31 +6,34 @@ import "time"
 type ProxyType string
 
 const (
-	ProxyTypeFree    ProxyType = "Free"
-	ProxyTypePremium ProxyType = "Premium"
+	ProxyTypeFree    ProxyType = "free"
+	ProxyTypePremium ProxyType = "premium"
 )
 
 // ProxyStatus определяет статус прокси-сервера
 type ProxyStatus string
 
 const (
-	ProxyStatusActive  ProxyStatus = "Active"
-	ProxyStatusBlocked ProxyStatus = "Blocked"
-	ProxyStatusInactive ProxyStatus = "Inactive"
+	ProxyStatusActive   ProxyStatus = "active"
+	ProxyStatusBlocked  ProxyStatus = "blocked"
+	ProxyStatusInactive ProxyStatus = "inactive"
 )
 
 // ProxyNode представляет прокси-узел MTProto
 type ProxyNode struct {
-	ID        uint        `gorm:"primaryKey" json:"id"`
-	IP        string      `gorm:"not null" json:"ip"`
-	Port      int         `gorm:"not null" json:"port"`
-	Secret    string      `gorm:"not null" json:"secret"`
-	Type      ProxyType   `gorm:"type:varchar(20);not null" json:"type"`
-	Status    ProxyStatus `gorm:"type:varchar(20);default:'Active'" json:"status"`
-	Load      int         `gorm:"default:0" json:"load"` // текущее количество пользователей
-	LastCheck *time.Time  `json:"last_check,omitempty"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID            uint        `gorm:"primaryKey" json:"id"`
+	IP            string      `gorm:"not null" json:"ip"`
+	Port          int         `gorm:"not null;uniqueIndex" json:"port"`
+	Secret        string      `gorm:"not null" json:"secret"`
+	Type          ProxyType   `gorm:"type:varchar(20);not null" json:"type"`
+	// OwnerID задает владельца премиум-прокси (один прокси на пользователя)
+	OwnerID       *uint       `gorm:"uniqueIndex:idx_premium_owner,where:type = 'premium'" json:"owner_id,omitempty"`
+	ContainerName string      `gorm:"size:255" json:"container_name"`
+	Status        ProxyStatus `gorm:"type:varchar(20);default:'active'" json:"status"`
+	Load          int         `gorm:"default:0" json:"load"` // текущее количество пользователей (для free-прокси)
+	LastCheck     *time.Time  `json:"last_check,omitempty"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 // IsAvailable проверяет, доступен ли прокси для использования

@@ -4,19 +4,29 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/repository"
+	"gorm.io/gorm"
 )
 
 // ProxyUseCase определяет бизнес-логику для работы с прокси
 type ProxyUseCase interface {
 	GetProxyForUser(user *domain.User) (*domain.ProxyNode, error)
 	AddProxy(ip string, port int, secret string, proxyType domain.ProxyType) error
+	DeleteProxy(id uint) error
+	GetAll() ([]*domain.ProxyNode, error)
+	GetByOwnerID(ownerID uint) (*domain.ProxyNode, error)
 	HealthCheck(proxy *domain.ProxyNode) error
 	CheckAllProxies() error
 	GetStats() (ProxyStats, error)
+	// EnsurePremiumProxyForUser гарантирует, что у пользователя есть персональный премиум-прокси:
+	// - если уже есть, возвращает его и активирует (status = active);
+	// - если нет, создаёт новый с уникальным портом и привязывает к owner_id.
+	// Диапазон портов по умолчанию 20000-50000.
+	EnsurePremiumProxyForUser(user *domain.User, ip, secret, containerName string) (*domain.ProxyNode, error)
 }
 
 type ProxyStats struct {
@@ -28,6 +38,32 @@ type ProxyStats struct {
 
 type proxyUseCase struct {
 	proxyRepo repository.ProxyRepository
+}
+
+var secretRegexp = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+
+func validateSecret(secret string) error {
+	if secret == "" {
+		return errors.New("secret cannot be empty")
+	}
+	if !secretRegexp.MatchString(secret) {
+		return errors.New("invalid secret format")
+	}
+	return nil
+}
+
+// isUniquePortError определяет, является ли ошибка нарушением
+// уникального ограничения по полю port (дубликат порта).
+// Работает как с обёрткой GORM (ErrDuplicatedKey), так и с
+// postgres-ошибками напрямую (код SQLSTATE 23505).
+func isUniquePortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	return false
 }
 
 // NewProxyUseCase создает новый use case для прокси
@@ -76,8 +112,8 @@ func (uc *proxyUseCase) AddProxy(ip string, port int, secret string, proxyType d
 	}
 
 	// Валидация секрета
-	if secret == "" {
-		return errors.New("secret cannot be empty")
+	if err := validateSecret(secret); err != nil {
+		return err
 	}
 
 	proxy := &domain.ProxyNode{
@@ -90,6 +126,22 @@ func (uc *proxyUseCase) AddProxy(ip string, port int, secret string, proxyType d
 	}
 
 	return uc.proxyRepo.Create(proxy)
+}
+
+func (uc *proxyUseCase) DeleteProxy(id uint) error {
+	p, err := uc.proxyRepo.GetByID(id)
+	if err != nil || p == nil {
+		return fmt.Errorf("proxy not found")
+	}
+	return uc.proxyRepo.Delete(id)
+}
+
+func (uc *proxyUseCase) GetAll() ([]*domain.ProxyNode, error) {
+	return uc.proxyRepo.GetAll()
+}
+
+func (uc *proxyUseCase) GetByOwnerID(ownerID uint) (*domain.ProxyNode, error) {
+	return uc.proxyRepo.GetByOwnerID(ownerID)
 }
 
 func (uc *proxyUseCase) HealthCheck(proxy *domain.ProxyNode) error {
@@ -157,4 +209,83 @@ func (uc *proxyUseCase) GetStats() (ProxyStats, error) {
 		FreeProxies:    freeCount,
 		PremiumProxies: premiumCount,
 	}, nil
+}
+
+// EnsurePremiumProxyForUser реализует жизненный цикл персонального премиум-прокси пользователя.
+// Если у пользователя уже есть премиум-прокси, он активируется и (опционально) обновляются IP/secret/containerName.
+// Если нет — создаётся новый прокси с уникальным портом в диапазоне [20000, 50000].
+func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, ip, secret, containerName string) (*domain.ProxyNode, error) {
+	if user == nil {
+		return nil, errors.New("user is nil")
+	}
+
+	// Валидация IP и секрета для нового/обновляемого прокси
+	if ip == "" || net.ParseIP(ip) == nil {
+		return nil, errors.New("invalid IP address")
+	}
+	if err := validateSecret(secret); err != nil {
+		return nil, err
+	}
+
+	// Пытаемся найти существующий персональный премиум-прокси пользователя
+	existing, err := uc.proxyRepo.GetByOwnerID(user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if existing != nil {
+		// Реактивация существующего прокси
+		existing.Type = domain.ProxyTypePremium
+		existing.Status = domain.ProxyStatusActive
+		existing.IP = ip
+		existing.Secret = secret
+		existing.ContainerName = containerName
+
+		if err := uc.proxyRepo.Update(existing); err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+
+	// Новый персональный премиум-прокси:
+	// пытаемся несколько раз найти свободный порт и создать запись,
+	// чтобы избежать гонок при высокой конкуренции.
+	const (
+		minPort    = 20000
+		maxPort    = 50000
+		maxRetries = 5
+	)
+
+	ownerID := user.ID
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		port, err := uc.proxyRepo.FindFirstFreePort(minPort, maxPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find free port: %w", err)
+		}
+
+		proxy := &domain.ProxyNode{
+			IP:            ip,
+			Port:          port,
+			Secret:        secret,
+			Type:          domain.ProxyTypePremium,
+			Status:        domain.ProxyStatusActive,
+			Load:          0,
+			OwnerID:       &ownerID,
+			ContainerName: containerName,
+		}
+
+		if err := uc.proxyRepo.Create(proxy); err != nil {
+			// Если в этот момент другой поток успел занять порт,
+			// получим ошибку уникального индекса и попробуем ещё раз.
+			if isUniquePortError(err) {
+				continue
+			}
+			return nil, err
+		}
+
+		return proxy, nil
+	}
+
+	return nil, fmt.Errorf("failed to allocate unique port after %d retries", maxRetries)
 }

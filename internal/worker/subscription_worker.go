@@ -62,4 +62,9 @@ func (w *SubscriptionWorker) checkSubscriptions() {
 	} else {
 		log.Println("Subscription check completed successfully")
 	}
+
+	// Дополнительно очищаем старые персональные премиум-прокси (старше 60 дней после окончания подписки)
+	if err := w.userUC.CleanupExpiredProxies(60); err != nil {
+		log.Printf("Error during proxy cleanup: %v", err)
+	}
 }
