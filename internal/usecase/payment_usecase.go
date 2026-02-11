@@ -45,11 +45,12 @@ func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository) Payme
 	}
 }
 
+// CreateInvoiceRequest для Crypto Pay API: asset (USDT), amount (строка), description, payload
 type CreateInvoiceRequest struct {
-	Amount      float64 `json:"amount"`
-	Currency    string  `json:"currency"`
-	Description string  `json:"description"`
-	UserID      int64   `json:"paid_btn_name,omitempty"`
+	Asset       string `json:"asset"`                  // USDT, TON, BTC, ...
+	Amount      string `json:"amount"`                 // сумма в криптовалюте, напр. "10.5"
+	Description string `json:"description,omitempty"`
+	Payload     string `json:"payload,omitempty"`      // до 4kb, например user ID для webhook
 }
 
 type CreateInvoiceResponse struct {
@@ -58,9 +59,10 @@ type CreateInvoiceResponse struct {
 }
 
 type Result struct {
-	InvoiceID int64  `json:"invoice_id"`
-	Status    string `json:"status"`
-	PayURL    string `json:"pay_url"`
+	InvoiceID       int64  `json:"invoice_id"`
+	Status          string `json:"status"`
+	PayURL          string `json:"pay_url"`           // deprecated, но может приходить
+	BotInvoiceURL   string `json:"bot_invoice_url"`   // основной URL для оплаты
 }
 
 type InvoiceStatusResponse struct {
@@ -74,10 +76,15 @@ type InvoiceResult struct {
 }
 
 func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error) {
+	asset := "USDT"
+	if currency != "" && currency != "USD" {
+		asset = currency
+	}
 	reqBody := CreateInvoiceRequest{
-		Amount:      amount,
-		Currency:    currency,
+		Asset:       asset,
+		Amount:      fmt.Sprintf("%.2f", amount),
 		Description: description,
+		Payload:     fmt.Sprintf("%d", userID),
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -111,7 +118,7 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 	}
 
 	if !invoiceResp.OK {
-		return "", 0, fmt.Errorf("cryptobot API error")
+		return "", 0, fmt.Errorf("cryptopay API error (check token and request)")
 	}
 
 	inv := &domain.Invoice{
@@ -119,13 +126,17 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 		UserID:    userID,
 		Status:    "pending",
 		Amount:    amount,
-		Currency:  currency,
+		Currency:  asset,
 	}
 	if err := uc.invRepo.Create(inv); err != nil {
 		return "", 0, fmt.Errorf("failed to save invoice: %w", err)
 	}
 
-	return invoiceResp.Result.PayURL, invoiceResp.Result.InvoiceID, nil
+	payURL = invoiceResp.Result.BotInvoiceURL
+	if payURL == "" {
+		payURL = invoiceResp.Result.PayURL
+	}
+	return payURL, invoiceResp.Result.InvoiceID, nil
 }
 
 func (uc *paymentUseCase) GetUserIDByInvoiceID(invoiceID int64) (int64, bool) {

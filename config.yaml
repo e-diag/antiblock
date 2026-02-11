@@ -7,7 +7,8 @@ telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
   admin_ids:
     - "${TELEGRAM_ADMIN_ID_1}"
-    # Добавьте больше админов через переменные окружения
+  # Канал обязательной подписки для бесплатных пользователей (username без @ или ссылка). Пусто = отключено.
+  forced_subscription_channel: ""
 
 database:
   host: "${DB_HOST}"

@@ -11,8 +11,11 @@ type AdRepository interface {
 	GetByID(id uint) (*domain.Ad, error)
 	Update(ad *domain.Ad) error
 	GetActive() ([]*domain.Ad, error)
+	GetActiveOne() (*domain.Ad, error)   // не более одного активного объявления
 	GetAll() ([]*domain.Ad, error)
 	Delete(id uint) error
+	DeactivateAll() error                // деактивировать все (при добавлении нового)
+	IncrementClicks(id uint) error
 }
 
 type adRepository struct {
@@ -50,6 +53,18 @@ func (r *adRepository) GetActive() ([]*domain.Ad, error) {
 	return ads, err
 }
 
+func (r *adRepository) GetActiveOne() (*domain.Ad, error) {
+	var ad domain.Ad
+	err := r.db.Where("active = ?", true).First(&ad).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ad, nil
+}
+
 func (r *adRepository) GetAll() ([]*domain.Ad, error) {
 	var ads []*domain.Ad
 	err := r.db.Find(&ads).Error
@@ -58,4 +73,12 @@ func (r *adRepository) GetAll() ([]*domain.Ad, error) {
 
 func (r *adRepository) Delete(id uint) error {
 	return r.db.Delete(&domain.Ad{}, id).Error
+}
+
+func (r *adRepository) DeactivateAll() error {
+	return r.db.Model(&domain.Ad{}).Where("active = ?", true).Update("active", false).Error
+}
+
+func (r *adRepository) IncrementClicks(id uint) error {
+	return r.db.Model(&domain.Ad{}).Where("id = ?", id).UpdateColumn("clicks", gorm.Expr("clicks + 1")).Error
 }

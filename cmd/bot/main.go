@@ -39,6 +39,7 @@ func main() {
 	proxyRepo := repository.NewProxyRepository(db.DB)
 	adRepo := repository.NewAdRepository(db.DB)
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
+	settingsRepo := repository.NewSettingsRepository(db.DB)
 
 	dockerMgr, err := docker.NewManager()
 	if err != nil {
@@ -50,7 +51,8 @@ func main() {
 	paymentUC := usecase.NewPaymentUseCase(cfg.CryptoBot.APIToken, cfg.CryptoBot.APIURL, invoiceRepo)
 
 	broadcastState := handler.NewBroadcastState()
-	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, dockerMgr, broadcastState, cfg.Telegram.GetAdminIDs())
+	adComposeState := handler.NewAdComposeState()
+	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, adComposeState, cfg.Telegram.GetAdminIDs())
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 
 	opts := []bot.Option{
@@ -86,9 +88,12 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/subs", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSubs))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/grantpremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleGrantPremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePremium))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpricing", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPricing))
 
 	// Callback-кнопки
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_all", bot.MatchTypeExact, adminMiddleware(botHandler.HandleCallback))
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_free", bot.MatchTypeExact, adminMiddleware(botHandler.HandleCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
@@ -115,7 +120,18 @@ func main() {
 		port, _ := strconv.Atoi(cfg.CryptoBot.WebhookPort)
 		if port > 0 {
 			mux := http.NewServeMux()
-			mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret))
+			getPremiumDays := func() int {
+			v, _ := settingsRepo.Get("premium_days")
+			if v == "" {
+				return 30
+			}
+			n, _ := strconv.Atoi(v)
+			if n < 1 {
+				return 30
+			}
+			return n
+		}
+		mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret, getPremiumDays))
 			srv := &http.Server{Addr: ":" + cfg.CryptoBot.WebhookPort, Handler: mux}
 			go func() {
 				log.Printf("CryptoPay webhook listening on :%s", cfg.CryptoBot.WebhookPort)

@@ -28,8 +28,9 @@ type AppConfig struct {
 }
 
 type TelegramConfig struct {
-	BotToken string   `yaml:"bot_token"`
-	AdminIDs []string `yaml:"admin_ids"`
+	BotToken                 string   `yaml:"bot_token"`
+	AdminIDs                 []string `yaml:"admin_ids"`
+	ForcedSubscriptionChannel string `yaml:"forced_subscription_channel"` // @channel или username, пусто = отключено
 }
 
 func (t *TelegramConfig) GetAdminIDs() []int64 {

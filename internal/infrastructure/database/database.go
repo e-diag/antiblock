@@ -39,6 +39,7 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.ProxyNode{},
 		&domain.Ad{},
 		&domain.Invoice{},
+		&domain.AppSetting{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
