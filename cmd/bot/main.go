@@ -59,8 +59,8 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/getproxy", bot.MatchTypeExact, botHandler.HandleGetProxy)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/buy", bot.MatchTypeExact, botHandler.HandleBuyPremium)
 
-	// Админ-команды
-	b.RegisterHandler(bot.HandlerTypeMessageText, "/addproxy", bot.MatchTypeExact, adminMiddleware(botHandler.HandleAddProxy))
+	// Админ-команды (/addproxy с аргументами — нужен Prefix, иначе Exact не сработает)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/addproxy", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleAddProxy))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/stats", bot.MatchTypeExact, adminMiddleware(botHandler.HandleStats))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/broadcast", bot.MatchTypeExact, adminMiddleware(botHandler.HandleBroadcast))
 
