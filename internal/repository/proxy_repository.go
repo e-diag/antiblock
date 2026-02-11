@@ -147,12 +147,22 @@ func (r *proxyRepository) DeactivateUserProxy(ownerID uint) error {
 
 // CleanupExpiredPremiumProxies удаляет персональные премиум-прокси пользователей,
 // у которых подписка истекла более cutoff (по полю users.premium_until).
+// Используем сырой SQL с USING/JOIN, чтобы избежать ошибок вида "missing FROM-clause entry for table users".
 func (r *proxyRepository) CleanupExpiredPremiumProxies(cutoff time.Time) error {
-	return r.db.
-		Where("type = ?", domain.ProxyTypePremium).
-		Where("owner_id IS NOT NULL").
-		Joins("JOIN users ON users.id = proxy_nodes.owner_id").
-		Where("users.premium_until IS NOT NULL").
-		Where("users.premium_until < ?", cutoff).
-		Delete(&domain.ProxyNode{}).Error
+	// В PostgreSQL корректный вариант для delete с join:
+	// DELETE FROM proxy_nodes USING users
+	// WHERE proxy_nodes.owner_id = users.id
+	//   AND proxy_nodes.type = 'premium'
+	//   AND users.premium_until IS NOT NULL
+	//   AND users.premium_until < cutoff;
+	return r.db.Exec(
+		`DELETE FROM proxy_nodes
+         USING users
+         WHERE proxy_nodes.owner_id = users.id
+           AND proxy_nodes.type = ?
+           AND users.premium_until IS NOT NULL
+           AND users.premium_until < ?`,
+		domain.ProxyTypePremium,
+		cutoff,
+	).Error
 }

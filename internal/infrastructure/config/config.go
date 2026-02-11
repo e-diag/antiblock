@@ -51,6 +51,8 @@ type DatabaseConfig struct {
 	DBName   string `yaml:"dbname"`
 	SSLMode  string `yaml:"sslmode"`
 	Timezone string `yaml:"timezone"`
+	// Debug включает подробные SQL-логи GORM (использовать только при отладке)
+	Debug bool `yaml:"debug"`
 }
 
 func (d *DatabaseConfig) DSN() string {

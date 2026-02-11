@@ -18,8 +18,14 @@ type DB struct {
 
 // New создает новое подключение к базе данных
 func New(cfg *config.DatabaseConfig) (*DB, error) {
+	logLevel := logger.Warn
+	// В debug-режиме можно включить подробные SQL-логи
+	if cfg.Debug {
+		logLevel = logger.Info
+	}
+
 	gormConfig := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.Default.LogMode(logLevel),
 	}
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), gormConfig)
