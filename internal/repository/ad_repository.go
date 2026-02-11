@@ -16,6 +16,7 @@ type AdRepository interface {
 	Delete(id uint) error
 	DeactivateAll() error                // деактивировать все (при добавлении нового)
 	IncrementClicks(id uint) error
+	IncrementImpressions(id uint) error
 }
 
 type adRepository struct {
@@ -81,4 +82,8 @@ func (r *adRepository) DeactivateAll() error {
 
 func (r *adRepository) IncrementClicks(id uint) error {
 	return r.db.Model(&domain.Ad{}).Where("id = ?", id).UpdateColumn("clicks", gorm.Expr("clicks + 1")).Error
+}
+
+func (r *adRepository) IncrementImpressions(id uint) error {
+	return r.db.Model(&domain.Ad{}).Where("id = ?", id).UpdateColumn("impressions", gorm.Expr("impressions + 1")).Error
 }

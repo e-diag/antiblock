@@ -115,6 +115,12 @@ func Load(path string) (*Config, error) {
 
 	applyDatabaseDefaults(&cfg.Database)
 	trimDatabaseStrings(&cfg.Database)
+	if cfg.CryptoBot.APIToken == "" {
+		cfg.CryptoBot.APIToken = getEnv("CRYPTOBOT_API_TOKEN", "")
+	}
+	if cfg.CryptoBot.APIURL == "" {
+		cfg.CryptoBot.APIURL = getEnv("CRYPTOBOT_API_URL", "https://pay.crypt.bot/api")
+	}
 	if cfg.CryptoBot.WebhookPort == "" {
 		cfg.CryptoBot.WebhookPort = getEnv("CRYPTOBOT_WEBHOOK_PORT", "8080")
 	}

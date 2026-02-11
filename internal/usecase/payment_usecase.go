@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -114,11 +115,13 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 
 	var invoiceResp CreateInvoiceResponse
 	if err := json.Unmarshal(body, &invoiceResp); err != nil {
+		log.Printf("[payment] CreateInvoice unmarshal error: %v, body: %s", err, string(body))
 		return "", 0, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	if !invoiceResp.OK {
-		return "", 0, fmt.Errorf("cryptopay API error (check token and request)")
+		log.Printf("[payment] CreateInvoice API error: status=%d, body=%s", resp.StatusCode, string(body))
+		return "", 0, fmt.Errorf("cryptopay API error (status %d, check token and request)", resp.StatusCode)
 	}
 
 	inv := &domain.Invoice{

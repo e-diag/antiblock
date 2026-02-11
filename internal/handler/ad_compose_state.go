@@ -15,13 +15,14 @@ const (
 
 // AdComposeData — собранные данные при создании/редактировании объявления
 type AdComposeData struct {
-	Step        AdComposeStep
-	Text        string
-	ChannelLink string
-	ButtonText  string
-	ButtonURL   string
-	ExpiresHours int
-	EditingID   uint // 0 = новый, иначе ID редактируемого объявления
+	Step          AdComposeStep
+	Text          string
+	ChannelLink   string
+	ChannelUsername string
+	ButtonText    string
+	ButtonURL     string
+	ExpiresHours  int
+	EditingID     uint // 0 = новый, иначе ID редактируемого объявления
 }
 
 // AdComposeState хранит состояние диалога добавления/редактирования объявления по adminID

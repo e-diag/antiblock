@@ -89,15 +89,18 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/grantpremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleGrantPremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpricing", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPricing))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_usdt", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceUSDT))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_stars", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceStars))
 
 	// Callback-кнопки
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
-	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_all", bot.MatchTypeExact, adminMiddleware(botHandler.HandleCallback))
-	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_free", bot.MatchTypeExact, adminMiddleware(botHandler.HandleCallback))
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_audience_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "check_sub_forced", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cancel_payment", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "ad_click_", bot.MatchTypePrefix, botHandler.HandleCallback)
 
 	// Платежи: PreCheckoutQuery и Message с SuccessfulPayment
 	b.RegisterHandlerMatchFunc(func(update *models.Update) bool {
@@ -121,17 +124,17 @@ func main() {
 		if port > 0 {
 			mux := http.NewServeMux()
 			getPremiumDays := func() int {
-			v, _ := settingsRepo.Get("premium_days")
-			if v == "" {
-				return 30
+				v, _ := settingsRepo.Get("premium_days")
+				if v == "" {
+					return 30
+				}
+				n, _ := strconv.Atoi(v)
+				if n < 1 {
+					return 30
+				}
+				return n
 			}
-			n, _ := strconv.Atoi(v)
-			if n < 1 {
-				return 30
-			}
-			return n
-		}
-		mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret, getPremiumDays))
+			mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret, getPremiumDays))
 			srv := &http.Server{Addr: ":" + cfg.CryptoBot.WebhookPort, Handler: mux}
 			go func() {
 				log.Printf("CryptoPay webhook listening on :%s", cfg.CryptoBot.WebhookPort)
