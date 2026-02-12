@@ -56,14 +56,9 @@ func (w *SubscriptionWorker) Stop() {
 }
 
 func (w *SubscriptionWorker) checkSubscriptions() {
-	log.Println("Checking expired premium subscriptions...")
 	if err := w.userUC.CheckExpiredPremiums(); err != nil {
 		log.Printf("Error during subscription check: %v", err)
-	} else {
-		log.Println("Subscription check completed successfully")
 	}
-
-	// Дополнительно очищаем старые персональные премиум-прокси (старше 60 дней после окончания подписки)
 	if err := w.userUC.CleanupExpiredProxies(60); err != nil {
 		log.Printf("Error during proxy cleanup: %v", err)
 	}

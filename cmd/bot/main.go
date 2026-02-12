@@ -38,6 +38,7 @@ func main() {
 	userRepo := repository.NewUserRepository(db.DB)
 	proxyRepo := repository.NewProxyRepository(db.DB)
 	adRepo := repository.NewAdRepository(db.DB)
+	adPinRepo := repository.NewAdPinRepository(db.DB)
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 
@@ -53,7 +54,7 @@ func main() {
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
 	adComposeState := handler.NewAdComposeState()
-	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
+	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, adPinRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 
 	opts := []bot.Option{

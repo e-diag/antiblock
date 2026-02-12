@@ -56,10 +56,7 @@ func (w *HealthCheckWorker) Stop() {
 }
 
 func (w *HealthCheckWorker) checkProxies() {
-	log.Println("Running health check for all proxies...")
 	if err := w.proxyUC.CheckAllProxies(); err != nil {
 		log.Printf("Error during health check: %v", err)
-	} else {
-		log.Println("Health check completed successfully")
 	}
 }

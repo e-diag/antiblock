@@ -38,6 +38,7 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.User{},
 		&domain.ProxyNode{},
 		&domain.Ad{},
+		&domain.AdPin{},
 		&domain.Invoice{},
 		&domain.AppSetting{},
 	); err != nil {
@@ -76,6 +77,31 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	if err := seedAppSettings(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// seedAppSettings создаёт записи настроек по умолчанию, если их ещё нет (избегает "record not found" в логах).
+func seedAppSettings(db *gorm.DB) error {
+	defaults := map[string]string{
+		"premium_days": "30",
+		"premium_usdt": "10",
+		"premium_stars": "100",
+	}
+	for key, value := range defaults {
+		var exists int64
+		if err := db.Model(&domain.AppSetting{}).Where("key = ?", key).Count(&exists).Error; err != nil {
+			return err
+		}
+		if exists == 0 {
+			if err := db.Create(&domain.AppSetting{Key: key, Value: value}).Error; err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
