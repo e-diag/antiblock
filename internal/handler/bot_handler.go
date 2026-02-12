@@ -32,11 +32,13 @@ type BotHandler struct {
 	dockerMgr   *docker.Manager
 	forcedSubCh string // из конфига (fallback, если в БД пусто)
 
-	broadcastState *BroadcastState
-	adComposeState *AdComposeState
-	opAwaiting     map[int64]bool // админ вводит новый канал ОП
-	opMu           sync.Mutex
-	adminIDs       []int64
+	broadcastState       *BroadcastState
+	broadcastMediaGroup  *BroadcastMediaGroupBuffer
+	adComposeState      *AdComposeState
+	opAwaiting          map[int64]bool // админ вводит новый канал ОП
+	opMu                sync.Mutex
+	adminIDs            []int64
+	botRef              *bot.Bot // для асинхронной рассылки альбомов (устанавливается из main)
 }
 
 // NewBotHandler создает новый обработчик бота
@@ -49,24 +51,31 @@ func NewBotHandler(
 	settingsRepo repository.SettingsRepository,
 	dockerMgr *docker.Manager,
 	forcedSubCh string,
-	broadcastState *BroadcastState,
-	adComposeState *AdComposeState,
-	adminIDs []int64,
+	broadcastState      *BroadcastState,
+	broadcastMediaGroup *BroadcastMediaGroupBuffer,
+	adComposeState      *AdComposeState,
+	adminIDs            []int64,
 ) *BotHandler {
 	return &BotHandler{
-		userUC:        userUC,
-		proxyUC:       proxyUC,
-		paymentUC:     paymentUC,
-		userRepo:      userRepo,
-		adRepo:        adRepo,
-		settingsRepo:  settingsRepo,
-		dockerMgr:     dockerMgr,
-		forcedSubCh:   forcedSubCh,
-		broadcastState: broadcastState,
-		adComposeState: adComposeState,
-		opAwaiting:    make(map[int64]bool),
-		adminIDs:      adminIDs,
+		userUC:             userUC,
+		proxyUC:            proxyUC,
+		paymentUC:          paymentUC,
+		userRepo:           userRepo,
+		adRepo:             adRepo,
+		settingsRepo:       settingsRepo,
+		dockerMgr:          dockerMgr,
+		forcedSubCh:        forcedSubCh,
+		broadcastState:     broadcastState,
+		broadcastMediaGroup: broadcastMediaGroup,
+		adComposeState:     adComposeState,
+		opAwaiting:         make(map[int64]bool),
+		adminIDs:           adminIDs,
 	}
+}
+
+// SetBot сохраняет ссылку на бота для асинхронной рассылки альбомов (вызывается из main после создания бота)
+func (h *BotHandler) SetBot(b *bot.Bot) {
+	h.botRef = b
 }
 
 func (h *BotHandler) isAdmin(userID int64) bool {
@@ -128,11 +137,10 @@ func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 
-	welcomeMsg := "👋 <b>Добро пожаловать в AntiBlock MTProto Proxy Bot!</b>\n\n"
+	welcomeMsg := "👋 <b>Добро пожаловать в eDiag Proxy Bot!</b>\n\n"
 	welcomeMsg += "🔐 Безопасный доступ к Telegram через MTProto-прокси.\n\n"
-	welcomeMsg += "<b>Тарифы:</b>\n"
-	welcomeMsg += "🆓 <b>Free</b> — общий прокси, реклама, обязательная подписка на канал, меньший приоритет.\n"
-	welcomeMsg += "💎 <b>Premium</b> — персональный MTProto-сервер, без ограничений по скорости и количеству, без рекламы.\n\n"
+	welcomeMsg += "Нажми: <b>«Получить прокси»</b> → <b>«Подключиться»</b> → <b>«Включить»</b> — и Telegram работает без замедлений!\n\n"
+	welcomeMsg += "💎 Купи Premium — получи персональный Proxy, без ограничений по скорости и количеству.\n\n"
 
 	if user.IsPremiumActive() {
 		premiumUntil := "неограниченно"
@@ -144,10 +152,17 @@ func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models
 
 	welcomeMsg += "Выберите действие:"
 
+	days := h.getPremiumDays()
+	usdt := h.getPremiumUSDT()
+	stars := h.getPremiumStars()
+	btnPremium := fmt.Sprintf("💎 Premium — получи персональный proxy на %d дн. (%.2f USDT / %d ⭐)", days, usdt, stars)
+	if len(btnPremium) > 64 {
+		btnPremium = fmt.Sprintf("💎 Premium — proxy на %d дн.", days)
+	}
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: "🔗 Получить прокси", CallbackData: "get_proxy"}},
-			{{Text: "💎 Купить премиум", CallbackData: "buy_premium"}},
+			{{Text: btnPremium, CallbackData: "buy_premium"}},
 		},
 	}
 	h.send(ctx, b, update, welcomeMsg, kb)
@@ -354,9 +369,17 @@ func (h *BotHandler) sendActiveAdIfExists(ctx context.Context, b *bot.Bot, chatI
 			},
 		}
 	}
-	b.SendMessage(ctx, &bot.SendMessageParams{
+	msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID, Text: ad.Text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
 	})
+	if errSend != nil {
+		return
+	}
+	if msg != nil && msg.ID != 0 {
+		if _, errPin := b.PinChatMessage(ctx, &bot.PinChatMessageParams{ChatID: chatID, MessageID: msg.ID}); errPin != nil {
+			// Закрепление не критично, объявление уже отправлено
+		}
+	}
 	_ = h.adRepo.IncrementImpressions(ad.ID)
 }
 
@@ -377,7 +400,7 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 			kb := h.buildForcedSubKeyboard(channels)
 			msg := "⚠️ Чтобы получить прокси, подпишитесь на каналы ниже. После подписки нажмите «Проверить подписку»."
 			if len(channels) == 1 {
-				msg = "⚠️ Чтобы получить прокси, подпишитесь на наш канал. После подписки нажмите «Проверить подписку»."
+				msg = "⚠️ Чтобы получить прокси, подпишитесь на канал. После подписки нажмите «Проверить подписку»."
 			}
 			h.send(ctx, b, update, msg, kb)
 			return
@@ -416,10 +439,11 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 		return
 	}
 
-	msg := fmt.Sprintf("💎 <b>Premium</b> — персональный MTProto-сервер на %d дн.\n\n"+
+	starsCount := h.getPremiumStars()
+	msg := fmt.Sprintf("💎 <b>Premium</b> — получи персональный proxy на %d дн.\n\n"+
 		"• Без рекламы и ограничений\n"+
 		"• Высокий приоритет и стабильность\n\n"+
-		"💰 Стоимость: <b>%.2f USDT</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, amount, h.getPremiumStars())
+		"💰 Стоимость: <b>%.2f USDT</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, amount, starsCount)
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -469,10 +493,10 @@ func (h *BotHandler) HandleAddProxy(ctx context.Context, b *bot.Bot, update *mod
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Free-прокси добавлен:\nIP: %s\nПорт: %d", ip, port))
 }
 
-// HandleManager открывает панель менеджера с inline-кнопками (только админ)
-func (h *BotHandler) HandleManager(ctx context.Context, b *bot.Bot, update *models.Update) {
-	msg := "🛠 <b>Панель менеджера</b>\n\nВыберите действие:"
-	kb := &models.InlineKeyboardMarkup{
+// managerPanelMessage и клавиатура главного меню (для /manager и кнопки «Назад»)
+func (h *BotHandler) managerPanelContent() (msg string, kb *models.InlineKeyboardMarkup) {
+	msg = "🛠 <b>Панель менеджера</b>\n\nВыберите действие:"
+	kb = &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{
 				{Text: "📊 Статистика", CallbackData: "mgr_stats"},
@@ -499,6 +523,12 @@ func (h *BotHandler) HandleManager(ctx context.Context, b *bot.Bot, update *mode
 			},
 		},
 	}
+	return msg, kb
+}
+
+// HandleManager открывает панель менеджера с inline-кнопками (только админ)
+func (h *BotHandler) HandleManager(ctx context.Context, b *bot.Bot, update *models.Update) {
+	msg, kb := h.managerPanelContent()
 	h.send(ctx, b, update, msg, kb)
 }
 
@@ -518,8 +548,17 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML,
 		})
 	}
+	showManagerPanel := func() {
+		msg, kb := h.managerPanelContent()
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
+		})
+	}
 
 	switch data {
+	case "mgr_back":
+		showManagerPanel()
+
 	case "mgr_stats":
 		stats, err := h.proxyUC.GetStats()
 		if err != nil {
@@ -572,6 +611,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 				InlineKeyboard: [][]models.InlineKeyboardButton{
 					{{Text: "👥 Всем", CallbackData: "broadcast_audience_all"}},
 					{{Text: "🆓 Только бесплатным", CallbackData: "broadcast_audience_free"}},
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
 				},
 			},
 		})
@@ -593,6 +633,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 					{{Text: "➕ Добавить объявление", CallbackData: "mgr_ad_add"}},
 					{{Text: "✏️ Редактировать объявление", CallbackData: "mgr_ad_edit"}},
 					{{Text: "📴 Снять объявление", CallbackData: "mgr_ad_deactivate"}},
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
 				},
 			},
 		})
@@ -659,7 +700,15 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		days := h.getPremiumDays()
 		usdt := h.getPremiumUSDT()
 		stars := h.getPremiumStars()
-		send(fmt.Sprintf("⚙️ <b>Настройки подписки</b>\n\n📅 Дней: <b>%d</b>\n💵 USDT: <b>%.2f</b>\n⭐ Stars (XTR): <b>%d</b>\n\nИзменить:\n<code>/setpricing &lt;дней&gt;</code>\n<code>/setprice_usdt &lt;сумма&gt;</code>\n<code>/setprice_stars &lt;звёзды&gt;</code>", days, usdt, stars))
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, ParseMode: models.ParseModeHTML,
+			Text: fmt.Sprintf("⚙️ <b>Настройки подписки</b>\n\n📅 Дней: <b>%d</b>\n💵 USDT: <b>%.2f</b>\n⭐ Stars (XTR): <b>%d</b>\n\nИзменить:\n<code>/setpricing &lt;дней&gt;</code>\n<code>/setprice_usdt &lt;сумма&gt;</code>\n<code>/setprice_stars &lt;звёзды&gt;</code>", days, usdt, stars),
+			ReplyMarkup: &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+				},
+			},
+		})
 
 	case "mgr_grant":
 		send("✅ <b>Выдать премиум</b>\n\nОтправьте:\n<code>/grantpremium &lt;tg_id&gt; &lt;дней&gt;</code>")
@@ -684,6 +733,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 				{Text: fmt.Sprintf("🗑 Удалить канал %d", i+1), CallbackData: fmt.Sprintf("mgr_op_del_%d", i)},
 			})
 		}
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "mgr_back"}})
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML,
 			ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: rows},
@@ -912,7 +962,44 @@ func (h *BotHandler) HandleBroadcast(ctx context.Context, b *bot.Bot, update *mo
 	h.send(ctx, b, update, msg, kb)
 }
 
-// HandleBroadcastMessage выполняет рассылку по списку пользователей (текст, фото, видео, документ) с rate limit
+// flushBroadcastMediaGroup выполняет рассылку одного альбома по списку пользователей.
+// audience передаётся явно (захватывается при добавлении в буфер), чтобы при срабатывании таймера не опираться на уже очищенный broadcastState.
+func (h *BotHandler) flushBroadcastMediaGroup(adminID int64, fromChatID int64, messageIDs []int, audience BroadcastAudience) {
+	if h.botRef == nil || len(messageIDs) == 0 {
+		return
+	}
+	ctx := context.Background()
+	users, err := h.userRepo.GetAll()
+	if err != nil {
+		h.botRef.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: adminID, Text: "❌ Ошибка получения списка пользователей", ParseMode: models.ParseModeHTML,
+		})
+		return
+	}
+	sent, failed := 0, 0
+	for _, u := range users {
+		if audience == BroadcastAudienceFree && u.IsPremiumActive() {
+			continue
+		}
+		_, err := h.botRef.CopyMessages(ctx, &bot.CopyMessagesParams{
+			ChatID:     u.TGID,
+			FromChatID: fromChatID,
+			MessageIDs: messageIDs,
+		})
+		if err != nil {
+			failed++
+		} else {
+			sent++
+		}
+		time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
+	}
+	h.botRef.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: adminID, Text: fmt.Sprintf("✅ Рассылка альбома завершена. Доставлено: %d, ошибок: %d", sent, failed), ParseMode: models.ParseModeHTML,
+	})
+}
+
+// HandleBroadcastMessage выполняет рассылку по списку пользователей (текст, фото, видео, документ) с rate limit.
+// Альбомы (несколько фото/видео с одним media_group_id) буферизуются и отправляются одним CopyMessages на получателя.
 func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
@@ -922,12 +1009,34 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 		return
 	}
 
+	mediaGroupID := update.Message.MediaGroupID
+	if mediaGroupID != "" && h.broadcastMediaGroup != nil {
+		aud := h.broadcastState.Audience(adminID)
+		h.broadcastMediaGroup.Add(adminID, mediaGroupID, update.Message.Chat.ID, update.Message.ID, aud, func(aid int64, fromChat int64, ids []int, a BroadcastAudience) {
+			// Не рассылать, если рассылку отменили до срабатывания таймера
+			if !h.broadcastState.IsAwaiting(aid) {
+				return
+			}
+			h.flushBroadcastMediaGroup(aid, fromChat, ids, a)
+		})
+		return
+	}
+
+	// Досрочный сброс: отправить накопленные альбомы с той аудиторией, которая была при добавлении каждой группы
+	if h.broadcastMediaGroup != nil {
+		pending := h.broadcastMediaGroup.FlushAllForAdmin(adminID)
+		for _, g := range pending {
+			if len(g.MessageIDs) > 0 {
+				h.flushBroadcastMediaGroup(adminID, g.FromChatID, g.MessageIDs, g.Audience)
+			}
+		}
+	}
+
 	// Контент: текст из Message.Text или подпись к медиа
 	text := update.Message.Text
 	if text == "" && update.Message.Caption != "" {
 		text = update.Message.Caption
 	}
-	// Поддержка медиа: фото, видео, документ — при наличии копируем сообщение целиком
 	hasMedia := len(update.Message.Photo) > 0 || update.Message.Video != nil || update.Message.Document != nil
 	if !hasMedia && text == "" {
 		h.sendText(ctx, b, update, "❌ Отправьте текст, фото, видео или документ. Отмена: /cancel")
@@ -961,11 +1070,17 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 				ParseMode:  models.ParseModeHTML,
 			})
 		} else {
-			_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+			params := &bot.SendMessageParams{
 				ChatID:    u.TGID,
 				Text:      text,
 				ParseMode: models.ParseModeHTML,
-			})
+			}
+			if len(update.Message.Entities) > 0 {
+				params.Entities = update.Message.Entities
+			} else if text == update.Message.Caption && len(update.Message.CaptionEntities) > 0 {
+				params.Entities = update.Message.CaptionEntities
+			}
+			_, err = b.SendMessage(ctx, params)
 		}
 		if err != nil {
 			failed++
@@ -1089,6 +1204,10 @@ func (h *BotHandler) HandleGrantPremium(ctx context.Context, b *bot.Bot, update 
 	days, err2 := strconv.Atoi(args[2])
 	if err1 != nil || err2 != nil || days < 1 {
 		h.sendText(ctx, b, update, "❌ Неверные аргументы")
+		return
+	}
+	if err := h.userUC.ActivatePremium(tgID, days); err != nil {
+		h.sendText(ctx, b, update, "❌ "+err.Error())
 		return
 	}
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум выдан пользователю %d на %d дн.", tgID, days))
@@ -1254,6 +1373,7 @@ func (h *BotHandler) HandleAdComposeMessage(ctx context.Context, b *bot.Bot, upd
 		h.adComposeState.Set(adminID, d)
 		send("Введите ссылку на канал (например <code>https://t.me/channel</code> или <code>@channel</code>):")
 	case AdComposeChannel:
+		text = strings.TrimSpace(text)
 		if strings.HasPrefix(text, "@") {
 			d.ChannelUsername = strings.TrimPrefix(text, "@")
 			d.ChannelLink = "https://t.me/" + d.ChannelUsername
@@ -1261,6 +1381,19 @@ func (h *BotHandler) HandleAdComposeMessage(ctx context.Context, b *bot.Bot, upd
 			d.ChannelLink = text
 			if d.ChannelLink != "" && !strings.HasPrefix(d.ChannelLink, "http") {
 				d.ChannelLink = "https://t.me/" + strings.TrimPrefix(strings.TrimPrefix(text, "t.me/"), "/")
+			}
+			// Извлекаем username из ссылки (https://t.me/channel или t.me/channel)
+			if d.ChannelLink != "" {
+				if idx := strings.Index(d.ChannelLink, "t.me/"); idx != -1 {
+					rest := d.ChannelLink[idx+5:]
+					if end := strings.IndexAny(rest, "?/#"); end != -1 {
+						rest = rest[:end]
+					}
+					rest = strings.Trim(rest, "/")
+					if rest != "" {
+						d.ChannelUsername = rest
+					}
+				}
 			}
 		}
 		d.Step = AdComposeButton
@@ -1439,6 +1572,12 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			Text:            "Оплата отменена",
 		})
 		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Оплата отменена"})
+	case "reminder_later":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: cqID,
+			Text:            "Ок, напомним позже",
+		})
+		return
 	default:
 		// Клик по кнопке объявления (ad_click_ID) — считаем клик и открываем ссылку
 		if strings.HasPrefix(data, "ad_click_") {

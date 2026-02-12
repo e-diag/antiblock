@@ -51,8 +51,9 @@ func main() {
 	paymentUC := usecase.NewPaymentUseCase(cfg.CryptoBot.APIToken, cfg.CryptoBot.APIURL, invoiceRepo)
 
 	broadcastState := handler.NewBroadcastState()
+	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
 	adComposeState := handler.NewAdComposeState()
-	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, adComposeState, cfg.Telegram.GetAdminIDs())
+	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 
 	opts := []bot.Option{
@@ -67,6 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create bot: %v", err)
 	}
+	botHandler.SetBot(b)
 
 	// Пользовательские команды
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeExact, botHandler.HandleStart)
@@ -100,6 +102,7 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "check_sub_forced", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cancel_payment", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "reminder_later", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "ad_click_", bot.MatchTypePrefix, botHandler.HandleCallback)
 
 	// Платежи: PreCheckoutQuery и Message с SuccessfulPayment
@@ -112,10 +115,12 @@ func main() {
 
 	healthCheckWorker := worker.NewHealthCheckWorker(proxyUC, cfg.Workers.HealthCheck)
 	subscriptionWorker := worker.NewSubscriptionWorker(userUC, cfg.Workers.SubscriptionChecker)
+	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, cfg.Workers.PremiumReminder)
 	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor)
 
 	go healthCheckWorker.Start()
 	go subscriptionWorker.Start()
+	go premiumReminderWorker.Start()
 	go dockerMonitorWorker.Start()
 
 	// Webhook для CryptoPay (оплата -> выдача премиума)
@@ -154,6 +159,7 @@ func main() {
 		log.Println("Shutting down...")
 		healthCheckWorker.Stop()
 		subscriptionWorker.Stop()
+		premiumReminderWorker.Stop()
 		dockerMonitorWorker.Stop()
 		cancel()
 	}()

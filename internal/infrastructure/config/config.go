@@ -12,13 +12,13 @@ import (
 
 // Config представляет конфигурацию приложения
 type Config struct {
-	App        AppConfig        `yaml:"app"`
-	Telegram   TelegramConfig   `yaml:"telegram"`
-	Database   DatabaseConfig   `yaml:"database"`
-	CryptoBot  CryptoBotConfig  `yaml:"cryptobot"`
-	RateLimit  RateLimitConfig  `yaml:"rate_limit"`
-	Workers    WorkersConfig    `yaml:"workers"`
-	Proxy      ProxyConfig      `yaml:"proxy"`
+	App       AppConfig       `yaml:"app"`
+	Telegram  TelegramConfig  `yaml:"telegram"`
+	Database  DatabaseConfig  `yaml:"database"`
+	CryptoBot CryptoBotConfig `yaml:"cryptobot"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	Workers   WorkersConfig   `yaml:"workers"`
+	Proxy     ProxyConfig     `yaml:"proxy"`
 }
 
 type AppConfig struct {
@@ -28,9 +28,9 @@ type AppConfig struct {
 }
 
 type TelegramConfig struct {
-	BotToken                 string   `yaml:"bot_token"`
-	AdminIDs                 []string `yaml:"admin_ids"`
-	ForcedSubscriptionChannel string `yaml:"forced_subscription_channel"` // @channel или username, пусто = отключено
+	BotToken                  string   `yaml:"bot_token"`
+	AdminIDs                  []string `yaml:"admin_ids"`
+	ForcedSubscriptionChannel string   `yaml:"forced_subscription_channel"` // @channel или username, пусто = отключено
 }
 
 func (t *TelegramConfig) GetAdminIDs() []int64 {
@@ -64,8 +64,8 @@ func (d *DatabaseConfig) DSN() string {
 type CryptoBotConfig struct {
 	APIToken      string `yaml:"api_token"`
 	APIURL        string `yaml:"api_url"`
-	WebhookPort   string `yaml:"webhook_port"`    // порт для приёма webhook CryptoPay (например 8080)
-	WebhookSecret string `yaml:"webhook_secret"`  // секрет для проверки подписи CryptoPay webhook
+	WebhookPort   string `yaml:"webhook_port"`   // порт для приёма webhook CryptoPay (например 8080)
+	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи CryptoPay webhook
 }
 
 type RateLimitConfig struct {
@@ -74,15 +74,16 @@ type RateLimitConfig struct {
 }
 
 type WorkersConfig struct {
-	HealthCheck       WorkerConfig `yaml:"health_check"`
+	HealthCheck         WorkerConfig `yaml:"health_check"`
 	SubscriptionChecker WorkerConfig `yaml:"subscription_checker"`
 	DockerMonitor       WorkerConfig `yaml:"docker_monitor"`
+	PremiumReminder     WorkerConfig `yaml:"premium_reminder"`
 }
 
 type WorkerConfig struct {
-	Enabled       bool `yaml:"enabled"`
-	IntervalSeconds int `yaml:"interval_seconds"`
-	TimeoutSeconds  int `yaml:"timeout_seconds"`
+	Enabled         bool `yaml:"enabled"`
+	IntervalSeconds int  `yaml:"interval_seconds"`
+	TimeoutSeconds  int  `yaml:"timeout_seconds"`
 }
 
 func (w *WorkerConfig) Interval() time.Duration {

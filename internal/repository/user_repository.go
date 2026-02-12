@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/yourusername/antiblock/internal/domain"
 	"gorm.io/gorm"
 )
@@ -12,6 +14,7 @@ type UserRepository interface {
 	Update(user *domain.User) error
 	GetAll() ([]*domain.User, error)
 	GetPremiumUsers() ([]*domain.User, error)
+	GetUsersForPremiumReminder(daysFrom, daysTo int) ([]*domain.User, error) // premium_until через daysFrom–daysTo дней, напоминание ещё не отправлялось
 	Count() (int64, error)
 }
 
@@ -53,6 +56,17 @@ func (r *userRepository) GetAll() ([]*domain.User, error) {
 func (r *userRepository) GetPremiumUsers() ([]*domain.User, error) {
 	var users []*domain.User
 	err := r.db.Where("is_premium = ?", true).Find(&users).Error
+	return users, err
+}
+
+// GetUsersForPremiumReminder возвращает пользователей с активным премиумом, у которых premium_until
+// попадает в интервал [now+daysFrom, now+daysTo] и напоминание ещё не отправлялось (premium_reminder_sent_at IS NULL).
+func (r *userRepository) GetUsersForPremiumReminder(daysFrom, daysTo int) ([]*domain.User, error) {
+	var users []*domain.User
+	from := time.Now().UTC().AddDate(0, 0, daysFrom)
+	to := time.Now().UTC().AddDate(0, 0, daysTo)
+	err := r.db.Where("is_premium = ? AND premium_until IS NOT NULL AND premium_until >= ? AND premium_until <= ? AND premium_reminder_sent_at IS NULL",
+		true, from, to).Find(&users).Error
 	return users, err
 }
 

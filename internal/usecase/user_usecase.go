@@ -17,8 +17,11 @@ type UserUseCase interface {
 	ActivatePremium(tgID int64, durationDays int) error
 	RevokePremium(tgID int64) error
 	CheckExpiredPremiums() error
-	// CleanupExpiredProxies очищает персональные прокси, у которых подписка истекла более graceDays дней назад.
 	CleanupExpiredProxies(graceDays int) error
+	// GetUsersForPremiumReminder возвращает пользователей, которым нужно напоминание за 7 дней до окончания подписки.
+	GetUsersForPremiumReminder() ([]*domain.User, error)
+	// MarkPremiumReminderSent отмечает, что напоминание за 7 дней отправлено пользователю.
+	MarkPremiumReminderSent(tgID int64) error
 }
 
 type userUseCase struct {
@@ -65,10 +68,16 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 	}
 
 	now := time.Now().UTC()
-	premiumUntil := now.AddDate(0, 0, durationDays)
+	var premiumUntil time.Time
+	if user.PremiumUntil != nil && user.PremiumUntil.After(now) {
+		premiumUntil = user.PremiumUntil.AddDate(0, 0, durationDays)
+	} else {
+		premiumUntil = now.AddDate(0, 0, durationDays)
+	}
 	user.IsPremium = true
 	user.PremiumUntil = &premiumUntil
 	user.LastActiveAt = &now
+	user.PremiumReminderSentAt = nil // сброс, чтобы пользователь снова мог получить напоминание за 7 дней до следующего окончания
 
 	if err := uc.userRepo.Update(user); err != nil {
 		return err
@@ -158,6 +167,25 @@ func (uc *userUseCase) CleanupExpiredProxies(graceDays int) error {
 	}
 
 	return uc.proxyRepo.CleanupExpiredPremiumProxies(cutoff)
+}
+
+// GetUsersForPremiumReminder возвращает пользователей, у которых подписка истекает через 6–7 дней и напоминание ещё не отправлялось.
+func (uc *userUseCase) GetUsersForPremiumReminder() ([]*domain.User, error) {
+	return uc.userRepo.GetUsersForPremiumReminder(6, 7)
+}
+
+// MarkPremiumReminderSent отмечает отправку напоминания за 7 дней до окончания подписки.
+func (uc *userUseCase) MarkPremiumReminderSent(tgID int64) error {
+	user, err := uc.userRepo.GetByTGID(tgID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	now := time.Now().UTC()
+	user.PremiumReminderSentAt = &now
+	return uc.userRepo.Update(user)
 }
 
 // ensurePremiumContainer гарантирует, что для пользователя с активным премиумом

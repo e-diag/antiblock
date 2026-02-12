@@ -9,11 +9,12 @@ type User struct {
 	IsPremium    bool       `gorm:"default:false" json:"is_premium"`
 	PremiumUntil *time.Time `json:"premium_until,omitempty"`
 	// LastActiveAt хранит время последнего продления подписки
-	LastActiveAt *time.Time `json:"last_active_at,omitempty"`
-	ReferralID        *uint      `json:"referral_id,omitempty"`
-	ForcedSubCounted  bool       `gorm:"default:false" json:"forced_sub_counted"` // учтён ли пользователь в счётчике подписок по ОП
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	LastActiveAt          *time.Time `json:"last_active_at,omitempty"`
+	ReferralID            *uint      `json:"referral_id,omitempty"`
+	ForcedSubCounted      bool       `gorm:"default:false" json:"forced_sub_counted"`
+	PremiumReminderSentAt *time.Time `json:"premium_reminder_sent_at,omitempty"` // когда отправлено напоминание за 7 дней до окончания
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 // IsPremiumActive проверяет, активна ли премиум подписка

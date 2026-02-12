@@ -39,6 +39,11 @@ workers:
     enabled: true
     interval_seconds: 60  # 1 минута
 
+  premium_reminder:
+    enabled: true
+    interval_seconds: 86400  # 1 раз в сутки
+    timeout_seconds: 300
+
 proxy:
   default_secret_length: 32
   free_trial_days: 0  # 0 = нет бесплатного пробного периода
