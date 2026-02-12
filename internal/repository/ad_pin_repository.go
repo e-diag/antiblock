@@ -10,6 +10,7 @@ type AdPinRepository interface {
 	Create(pin *domain.AdPin) error
 	ListByAdID(adID uint) ([]*domain.AdPin, error)
 	DeleteByAdID(adID uint) error
+	ExistsByAdIDAndUserID(adID uint, userID int64) (bool, error)
 }
 
 type adPinRepository struct {
@@ -32,4 +33,10 @@ func (r *adPinRepository) ListByAdID(adID uint) ([]*domain.AdPin, error) {
 
 func (r *adPinRepository) DeleteByAdID(adID uint) error {
 	return r.db.Where("ad_id = ?", adID).Delete(&domain.AdPin{}).Error
+}
+
+func (r *adPinRepository) ExistsByAdIDAndUserID(adID uint, userID int64) (bool, error) {
+	var n int64
+	err := r.db.Model(&domain.AdPin{}).Where("ad_id = ? AND user_id = ?", adID, userID).Count(&n).Error
+	return n > 0, err
 }

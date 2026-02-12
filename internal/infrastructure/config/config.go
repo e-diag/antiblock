@@ -87,6 +87,7 @@ type WorkersConfig struct {
 	SubscriptionChecker WorkerConfig `yaml:"subscription_checker"`
 	DockerMonitor       WorkerConfig `yaml:"docker_monitor"`
 	PremiumReminder     WorkerConfig `yaml:"premium_reminder"`
+	AdRePin             WorkerConfig `yaml:"ad_repin"`
 }
 
 type WorkerConfig struct {

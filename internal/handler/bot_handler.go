@@ -153,12 +153,14 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	if len(btnPremium) > 64 {
 		btnPremium = fmt.Sprintf("💎 Premium — proxy на %d дн.", days)
 	}
-	kb = &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔗 Получить proxy", CallbackData: "get_proxy"}},
-			{{Text: btnPremium, CallbackData: "buy_premium"}},
-		},
+	rows := [][]models.InlineKeyboardButton{
+		{{Text: "🔗 Получить proxy", CallbackData: "get_proxy"}},
+		{{Text: btnPremium, CallbackData: "buy_premium"}},
 	}
+	if user.IsPremiumActive() {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
+	}
+	kb = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return welcomeMsg, kb
 }
 
@@ -280,34 +282,6 @@ func (h *BotHandler) buildForcedSubKeyboard(channels []string) *models.InlineKey
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-// sendPremiumProxyToUserIfReady отправляет премиум-пользователю ссылку на его персональный прокси (если он есть).
-func (h *BotHandler) sendPremiumProxyToUserIfReady(ctx context.Context, b *bot.Bot, tgID int64) {
-	user, err := h.userRepo.GetByTGID(tgID)
-	if err != nil || user == nil || !user.IsPremiumActive() {
-		return
-	}
-	proxy, err := h.proxyUC.GetByOwnerID(user.ID)
-	if err != nil || proxy == nil || proxy.Status != domain.ProxyStatusActive {
-		return
-	}
-	h.sendProxyToUser(ctx, b, tgID, user)
-}
-
-// notifyAdminPremiumProxyFailed отправляет админу сообщение о неудаче создания прокси с кнопкой «Повторить».
-func (h *BotHandler) notifyAdminPremiumProxyFailed(ctx context.Context, b *bot.Bot, adminChatID int64, userTGID int64, days int) {
-	kb := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔄 Повторить создание прокси", CallbackData: fmt.Sprintf("retry_premium_proxy_%d", userTGID)}},
-		},
-	}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:    adminChatID,
-		ParseMode: models.ParseModeHTML,
-		Text:      fmt.Sprintf("⚠️ Прокси для пользователя <code>%d</code> не создан. Создайте вручную и привяжите через панель или нажмите «Повторить».", userTGID),
-		ReplyMarkup: kb,
-	})
-}
-
 // sendProxyToUser получает прокси для пользователя и отправляет ему сообщение с данными прокси
 func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User) {
 	proxy, err := h.proxyUC.GetProxyForUser(user)
@@ -402,7 +376,7 @@ func (h *BotHandler) buildAdKeyboard(ad *domain.Ad) *models.InlineKeyboardMarkup
 	}
 }
 
-// sendActiveAdIfExists отправляет активное объявление пользователю (для бесплатных), если оно есть и не истекло. Закрепляет и сохраняет в ad_pins.
+// sendActiveAdIfExists отправляет активное объявление пользователю (для бесплатных) один раз — если для этого объявления ещё нет записи в ad_pins. Закрепляет и сохраняет в ad_pins.
 func (h *BotHandler) sendActiveAdIfExists(ctx context.Context, b *bot.Bot, chatID int64) {
 	ad, err := h.adRepo.GetActiveOne()
 	if err != nil || ad == nil {
@@ -410,6 +384,12 @@ func (h *BotHandler) sendActiveAdIfExists(ctx context.Context, b *bot.Bot, chatI
 	}
 	if ad.ExpiresAt != nil && ad.ExpiresAt.Before(time.Now()) {
 		return
+	}
+	if h.adPinRepo != nil {
+		exists, _ := h.adPinRepo.ExistsByAdIDAndUserID(ad.ID, chatID)
+		if exists {
+			return
+		}
 	}
 	kb := h.buildAdKeyboard(ad)
 	msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -459,18 +439,9 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
 
-	user, err := h.userUC.GetOrCreateUser(userID)
+	_, err := h.userUC.GetOrCreateUser(userID)
 	if err != nil {
 		h.sendText(ctx, b, update, "❌ Произошла ошибка. Попробуйте позже.")
-		return
-	}
-
-	if user.IsPremiumActive() {
-		premiumUntil := "неограниченно"
-		if user.PremiumUntil != nil {
-			premiumUntil = user.PremiumUntil.Format("02.01.2006 15:04")
-		}
-		h.sendText(ctx, b, update, fmt.Sprintf("✅ У вас уже активна премиум подписка до %s", premiumUntil))
 		return
 	}
 
@@ -1274,12 +1245,10 @@ func (h *BotHandler) HandleGrantPremium(ctx context.Context, b *bot.Bot, update 
 	err := h.userUC.ActivatePremium(tgID, days)
 	if err != nil {
 		if errors.Is(err, usecase.ErrPremiumProxyCreationFailed) {
-			h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум выдан пользователю %d на %d дн. Прокси не создан после 3 попыток. Создайте вручную или нажмите «Повторить».", tgID, days))
-			h.notifyAdminPremiumProxyFailed(ctx, b, update.Message.Chat.ID, tgID, days)
-			// Пользователю — ожидание
+			h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум выдан пользователю %d на %d дн. Прокси не создан после 3 попыток — пользователь может нажать «Получить Premium proxy» в боте.", tgID, days))
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID: tgID, ParseMode: models.ParseModeHTML,
-				Text: "⏳ Премиум активирован. Ожидайте создание персонального прокси — мы уведомим вас, когда он будет готов.",
+				Text: "✅ Премиум активирован. Нажмите «Получить Premium proxy» в меню для создания персонального прокси.",
 			})
 			return
 		}
@@ -1287,50 +1256,6 @@ func (h *BotHandler) HandleGrantPremium(ctx context.Context, b *bot.Bot, update 
 		return
 	}
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум выдан пользователю %d на %d дн.", tgID, days))
-	h.sendPremiumProxyToUserIfReady(ctx, b, tgID)
-}
-
-// HandleRetryPremiumProxyCallback обрабатывает нажатие «Повторить» — повторная попытка создать прокси для премиум-пользователя.
-func (h *BotHandler) HandleRetryPremiumProxyCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	if update.CallbackQuery == nil {
-		return
-	}
-	data := update.CallbackQuery.Data
-	const prefix = "retry_premium_proxy_"
-	if !strings.HasPrefix(data, prefix) {
-		return
-	}
-	tgIDStr := strings.TrimPrefix(data, prefix)
-	tgID, err := strconv.ParseInt(tgIDStr, 10, 64)
-	if err != nil {
-		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID, Text: "Неверный ID"})
-		return
-	}
-	b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID, Text: "Повторяю..."})
-
-	_, err = h.userUC.RetryPremiumProxyCreation(tgID)
-	var adminChatID int64
-	if update.CallbackQuery.Message.Message != nil {
-		adminChatID = update.CallbackQuery.Message.Message.Chat.ID
-	} else {
-		adminChatID = update.CallbackQuery.From.ID
-	}
-	if err != nil {
-		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: adminChatID, ParseMode: models.ParseModeHTML,
-			Text: fmt.Sprintf("❌ Повторная попытка не удалась для пользователя <code>%d</code>: %v", tgID, err),
-		})
-		h.notifyAdminPremiumProxyFailed(ctx, b, adminChatID, tgID, 0)
-		return
-	}
-	user, _ := h.userRepo.GetByTGID(tgID)
-	if user != nil {
-		h.sendProxyToUser(ctx, b, tgID, user)
-	}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: adminChatID, ParseMode: models.ParseModeHTML,
-		Text: fmt.Sprintf("✅ Прокси создан для пользователя <code>%d</code>. Ссылка отправлена ему в личку.", tgID),
-	})
 }
 
 // HandleRevokePremium отозвать премиум (админ)
@@ -1693,6 +1618,19 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 	case "get_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleGetProxy(ctx, b, update)
+	case "get_premium_proxy":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		user, err := h.userUC.GetOrCreateUser(chatID)
+		if err != nil || user == nil || !user.IsPremiumActive() {
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Доступно только для премиум-пользователей.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		_, err = h.userUC.RetryPremiumProxyCreation(chatID)
+		if err != nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Не удалось создать Premium proxy. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		h.sendProxyToUser(ctx, b, chatID, user)
 	case "check_sub_forced":
 		userID := update.CallbackQuery.From.ID
 		user, err := h.userUC.GetOrCreateUser(userID)
@@ -1765,13 +1703,9 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 // HandleBuyStars отправляет счёт на оплату Telegram Stars (XTR)
 func (h *BotHandler) HandleBuyStars(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
-	user, err := h.userUC.GetOrCreateUser(userID)
-	if err != nil || user.IsPremiumActive() {
-		if user != nil && user.IsPremiumActive() {
-			h.sendText(ctx, b, update, "✅ У вас уже есть премиум.")
-		} else {
-			h.sendText(ctx, b, update, "❌ Ошибка. Попробуйте позже.")
-		}
+	_, err := h.userUC.GetOrCreateUser(userID)
+	if err != nil {
+		h.sendText(ctx, b, update, "❌ Ошибка. Попробуйте позже.")
 		return
 	}
 	days := h.getPremiumDays()
@@ -1833,11 +1767,8 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 		if errors.Is(err, usecase.ErrPremiumProxyCreationFailed) {
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID: update.Message.Chat.ID, ParseMode: models.ParseModeHTML,
-				Text: "⏳ Премиум активирован. Ожидайте создание персонального прокси — мы уведомим вас, когда он будет готов.",
+				Text: fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Нажмите «Получить Premium proxy» в меню для создания персонального прокси.", days),
 			})
-			for _, adminID := range h.adminIDs {
-				h.notifyAdminPremiumProxyFailed(ctx, b, adminID, userID, days)
-			}
 			return
 		}
 		return
@@ -1846,5 +1777,4 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 		ChatID: update.Message.Chat.ID,
 		Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован.", days),
 	})
-	h.sendPremiumProxyToUserIfReady(ctx, b, userID)
 }

@@ -43,7 +43,6 @@ func main() {
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 
 	proxyUC := usecase.NewProxyUseCase(proxyRepo)
-
 	var dockerMgr *docker.Manager
 	pd := cfg.PremiumDocker
 	if pd.Host != "" && pd.CertPath != "" {
@@ -111,10 +110,10 @@ func main() {
 	// Callback-кнопки
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_audience_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
-	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "retry_premium_proxy_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRetryPremiumProxyCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_premium_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "check_sub_forced", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cancel_payment", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "reminder_later", bot.MatchTypeExact, botHandler.HandleCallback)
@@ -132,11 +131,13 @@ func main() {
 	subscriptionWorker := worker.NewSubscriptionWorker(userUC, cfg.Workers.SubscriptionChecker)
 	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, cfg.Workers.PremiumReminder)
 	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor)
+	adRePinWorker := worker.NewAdRePinWorker(b, adRepo, adPinRepo, cfg.Workers.AdRePin)
 
 	go healthCheckWorker.Start()
 	go subscriptionWorker.Start()
 	go premiumReminderWorker.Start()
 	go dockerMonitorWorker.Start()
+	go adRePinWorker.Start()
 
 	// Webhook для CryptoPay (оплата -> выдача премиума)
 	if cfg.CryptoBot.WebhookPort != "" {
@@ -172,6 +173,7 @@ func main() {
 	go func() {
 		<-sigChan
 		log.Println("Shutting down...")
+		adRePinWorker.Stop()
 		healthCheckWorker.Stop()
 		subscriptionWorker.Stop()
 		premiumReminderWorker.Stop()
