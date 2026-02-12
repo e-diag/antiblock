@@ -47,3 +47,13 @@ workers:
 proxy:
   default_secret_length: 32
   free_trial_days: 0  # 0 = нет бесплатного пробного периода
+
+# Премиум Docker: создание персональных mtg-контейнеров на удалённом сервере по TLS.
+# cert_path — путь на машине, где запущен бот, к папке с ca.pem, cert.pem, key.pem.
+#   Linux/Docker: /antiblock/docker-certs/
+#   Windows: C:/antiblock/docker-certs или C:\antiblock\docker-certs
+premium_docker:
+  host: "185.104.113.242"
+  port: 2376
+  cert_path: "C:/antiblock/docker-certs"  # замените на реальный путь к папке с сертификатами
+  server_ip: "185.104.113.242"

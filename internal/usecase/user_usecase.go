@@ -11,31 +11,40 @@ import (
 	"github.com/yourusername/antiblock/internal/repository"
 )
 
+// ErrPremiumProxyCreationFailed возвращается из ActivatePremium, если персональный прокси
+// не удалось создать после всех попыток (премиум в БД уже выдан).
+var ErrPremiumProxyCreationFailed = errors.New("premium proxy creation failed after retries")
+
 // UserUseCase определяет бизнес-логику для работы с пользователями
 type UserUseCase interface {
 	GetOrCreateUser(tgID int64) (*domain.User, error)
 	ActivatePremium(tgID int64, durationDays int) error
+	// RetryPremiumProxyCreation повторно пытается создать прокси и контейнер для премиум-пользователя (для кнопки «Повторить»).
+	RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode, error)
 	RevokePremium(tgID int64) error
 	CheckExpiredPremiums() error
 	CleanupExpiredProxies(graceDays int) error
-	// GetUsersForPremiumReminder возвращает пользователей, которым нужно напоминание за 7 дней до окончания подписки.
 	GetUsersForPremiumReminder() ([]*domain.User, error)
-	// MarkPremiumReminderSent отмечает, что напоминание за 7 дней отправлено пользователю.
 	MarkPremiumReminderSent(tgID int64) error
 }
 
 type userUseCase struct {
-	userRepo  repository.UserRepository
-	proxyRepo repository.ProxyRepository
-	dockerMgr *docker.Manager
+	userRepo        repository.UserRepository
+	proxyRepo       repository.ProxyRepository
+	proxyUC         ProxyUseCase
+	dockerMgr       *docker.Manager
+	premiumServerIP string // IP премиум-сервера для записи в proxy_nodes; пусто — персональные прокси не создаём
 }
 
-// NewUserUseCase создает новый use case для пользователей
-func NewUserUseCase(userRepo repository.UserRepository, proxyRepo repository.ProxyRepository, dockerMgr *docker.Manager) UserUseCase {
+// NewUserUseCase создает новый use case для пользователей.
+// premiumServerIP — IP сервера для персональных премиум-прокси (если пусто, создание прокси/контейнеров не выполняется).
+func NewUserUseCase(userRepo repository.UserRepository, proxyRepo repository.ProxyRepository, proxyUC ProxyUseCase, dockerMgr *docker.Manager, premiumServerIP string) UserUseCase {
 	return &userUseCase{
-		userRepo:  userRepo,
-		proxyRepo: proxyRepo,
-		dockerMgr: dockerMgr,
+		userRepo:        userRepo,
+		proxyRepo:       proxyRepo,
+		proxyUC:         proxyUC,
+		dockerMgr:       dockerMgr,
+		premiumServerIP: premiumServerIP,
 	}
 }
 
@@ -83,9 +92,25 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		return err
 	}
 
-	// При каждом продлении/выдаче премиума проверяем и при необходимости создаём Docker‑контейнер.
-	if uc.dockerMgr != nil && uc.proxyRepo != nil {
-		_ = uc.ensurePremiumContainer(tgID, user)
+	// Создаём персональный премиум-прокси и контейнер (до 3 попыток). При неудаче премиум уже выдан — возвращаем ErrPremiumProxyCreationFailed.
+	if uc.premiumServerIP != "" && uc.proxyUC != nil {
+		const maxAttempts = 3
+		var lastErr error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			_, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if uc.dockerMgr != nil {
+				if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+					lastErr = err
+					continue
+				}
+			}
+			return nil
+		}
+		return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, lastErr)
 	}
 
 	return nil
@@ -100,11 +125,45 @@ func (uc *userUseCase) RevokePremium(tgID int64) error {
 		return errors.New("user not found")
 	}
 
+	// При отзыве премиума менеджером — деактивируем персональный прокси и удаляем контейнер на сервере (как при истечении подписки).
+	if uc.proxyRepo != nil {
+		_ = uc.proxyRepo.DeactivateUserProxy(user.ID)
+	}
+	if uc.dockerMgr != nil {
+		name := fmt.Sprintf(docker.UserContainerName, tgID)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = uc.dockerMgr.RemoveUserContainer(ctx, name)
+		cancel()
+	}
+
 	user.IsPremium = false
-	// premium_until сохраняем как дату окончания, она нужна для очистки
-	// через 60+ дней, поэтому не обнуляем поле.
+	// premium_until сохраняем как дату окончания, она нужна для очистки через 60+ дней.
 
 	return uc.userRepo.Update(user)
+}
+
+// RetryPremiumProxyCreation повторно создаёт прокси и контейнер для премиум-пользователя (вызов с кнопки «Повторить»).
+func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode, error) {
+	user, err := uc.userRepo.GetByTGID(tgID)
+	if err != nil || user == nil {
+		return nil, errors.New("user not found")
+	}
+	if !user.IsPremiumActive() {
+		return nil, errors.New("user is not premium")
+	}
+	if uc.premiumServerIP == "" || uc.proxyUC == nil {
+		return nil, errors.New("premium proxy not configured")
+	}
+	proxy, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
+	if err != nil {
+		return nil, err
+	}
+	if uc.dockerMgr != nil {
+		if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+			return nil, err
+		}
+	}
+	return proxy, nil
 }
 
 func (uc *userUseCase) CheckExpiredPremiums() error {

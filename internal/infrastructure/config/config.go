@@ -12,13 +12,22 @@ import (
 
 // Config представляет конфигурацию приложения
 type Config struct {
-	App       AppConfig       `yaml:"app"`
-	Telegram  TelegramConfig  `yaml:"telegram"`
-	Database  DatabaseConfig  `yaml:"database"`
-	CryptoBot CryptoBotConfig `yaml:"cryptobot"`
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	Workers   WorkersConfig   `yaml:"workers"`
-	Proxy     ProxyConfig     `yaml:"proxy"`
+	App           AppConfig           `yaml:"app"`
+	Telegram      TelegramConfig      `yaml:"telegram"`
+	Database      DatabaseConfig      `yaml:"database"`
+	CryptoBot     CryptoBotConfig     `yaml:"cryptobot"`
+	RateLimit     RateLimitConfig     `yaml:"rate_limit"`
+	Workers       WorkersConfig       `yaml:"workers"`
+	Proxy         ProxyConfig         `yaml:"proxy"`
+	PremiumDocker PremiumDockerConfig `yaml:"premium_docker"`
+}
+
+// PremiumDockerConfig — подключение к премиум-серверу по TLS для создания персональных mtg-контейнеров.
+type PremiumDockerConfig struct {
+	Host     string `yaml:"host"`      // хост премиум-сервера (Docker daemon)
+	Port     int    `yaml:"port"`      // порт TLS, обычно 2376
+	CertPath string `yaml:"cert_path"` // путь к сертификатам, например /antiblock/docker-certs/
+	ServerIP string `yaml:"server_ip"` // IP сервера для записи в proxy_nodes (выдача пользователю)
 }
 
 type AppConfig struct {

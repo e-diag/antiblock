@@ -42,13 +42,26 @@ func main() {
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 
-	dockerMgr, err := docker.NewManager()
-	if err != nil {
-		log.Printf("Failed to init Docker manager: %v (premium containers will be disabled)", err)
-	}
-
-	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, dockerMgr)
 	proxyUC := usecase.NewProxyUseCase(proxyRepo)
+
+	var dockerMgr *docker.Manager
+	pd := cfg.PremiumDocker
+	if pd.Host != "" && pd.CertPath != "" {
+		port := pd.Port
+		if port <= 0 {
+			port = 2376
+		}
+		var errDocker error
+		dockerMgr, errDocker = docker.NewManagerTLS(pd.Host, port, pd.CertPath)
+		if errDocker != nil {
+			log.Printf("Failed to init Docker TLS manager (premium): %v (premium containers will be disabled)", errDocker)
+		}
+	} else {
+		dockerMgr, _ = docker.NewManager()
+	}
+	premiumServerIP := pd.ServerIP
+
+	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, dockerMgr, premiumServerIP)
 	paymentUC := usecase.NewPaymentUseCase(cfg.CryptoBot.APIToken, cfg.CryptoBot.APIURL, invoiceRepo)
 
 	broadcastState := handler.NewBroadcastState()
@@ -98,6 +111,7 @@ func main() {
 	// Callback-кнопки
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_audience_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "retry_premium_proxy_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRetryPremiumProxyCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)

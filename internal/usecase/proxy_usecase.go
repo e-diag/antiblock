@@ -1,6 +1,8 @@
 package usecase
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -22,11 +24,9 @@ type ProxyUseCase interface {
 	HealthCheck(proxy *domain.ProxyNode) error
 	CheckAllProxies() error
 	GetStats() (ProxyStats, error)
-	// EnsurePremiumProxyForUser гарантирует, что у пользователя есть персональный премиум-прокси:
-	// - если уже есть, возвращает его и активирует (status = active);
-	// - если нет, создаёт новый с уникальным портом и привязывает к owner_id.
-	// Диапазон портов по умолчанию 20000-50000.
-	EnsurePremiumProxyForUser(user *domain.User, ip, secret, containerName string) (*domain.ProxyNode, error)
+	// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
+	// выбирает свободный порт 20000-30000, создаёт/обновляет запись в proxy_nodes с serverIP.
+	EnsurePremiumProxyForUser(user *domain.User, serverIP string) (*domain.ProxyNode, error)
 }
 
 type ProxyStats struct {
@@ -72,6 +72,19 @@ func NewProxyUseCase(proxyRepo repository.ProxyRepository) ProxyUseCase {
 }
 
 func (uc *proxyUseCase) GetProxyForUser(user *domain.User) (*domain.ProxyNode, error) {
+	if user.IsPremiumActive() {
+		// Сначала выдаём персональный премиум-прокси пользователя (если есть)
+		own, err := uc.proxyRepo.GetByOwnerID(user.ID)
+		if err != nil {
+			return nil, err
+		}
+		if own != nil && own.Status == domain.ProxyStatusActive {
+			own.Load++
+			_ = uc.proxyRepo.Update(own)
+			return own, nil
+		}
+	}
+
 	var proxyType domain.ProxyType
 	if user.IsPremiumActive() {
 		proxyType = domain.ProxyTypePremium
@@ -88,10 +101,7 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User) (*domain.ProxyNode, e
 		return nil, fmt.Errorf("no available %s proxies", proxyType)
 	}
 
-	// Выбираем наименее загруженный прокси
 	selectedProxy := proxies[0]
-	
-	// Увеличиваем нагрузку
 	selectedProxy.Load++
 	if err := uc.proxyRepo.Update(selectedProxy); err != nil {
 		return nil, err
@@ -211,48 +221,48 @@ func (uc *proxyUseCase) GetStats() (ProxyStats, error) {
 	}, nil
 }
 
-// EnsurePremiumProxyForUser реализует жизненный цикл персонального премиум-прокси пользователя.
-// Если у пользователя уже есть премиум-прокси, он активируется и (опционально) обновляются IP/secret/containerName.
-// Если нет — создаётся новый прокси с уникальным портом в диапазоне [20000, 50000].
-func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, ip, secret, containerName string) (*domain.ProxyNode, error) {
+// generatePremiumSecret возвращает секрет для mtg: префикс "dd" + 32 символа HEX (итого 34).
+func generatePremiumSecret() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return "dd" + hex.EncodeToString(b), nil
+}
+
+// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
+// выбирает свободный порт в [20000, 30000], создаёт или обновляет запись в proxy_nodes с serverIP.
+func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP string) (*domain.ProxyNode, error) {
 	if user == nil {
 		return nil, errors.New("user is nil")
 	}
-
-	// Валидация IP и секрета для нового/обновляемого прокси
-	if ip == "" || net.ParseIP(ip) == nil {
-		return nil, errors.New("invalid IP address")
-	}
-	if err := validateSecret(secret); err != nil {
-		return nil, err
+	if serverIP == "" || net.ParseIP(serverIP) == nil {
+		return nil, errors.New("invalid server IP address")
 	}
 
-	// Пытаемся найти существующий персональный премиум-прокси пользователя
 	existing, err := uc.proxyRepo.GetByOwnerID(user.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	if existing != nil {
-		// Реактивация существующего прокси
 		existing.Type = domain.ProxyTypePremium
 		existing.Status = domain.ProxyStatusActive
-		existing.IP = ip
-		existing.Secret = secret
-		existing.ContainerName = containerName
-
+		existing.IP = serverIP
 		if err := uc.proxyRepo.Update(existing); err != nil {
 			return nil, err
 		}
 		return existing, nil
 	}
 
-	// Новый персональный премиум-прокси:
-	// пытаемся несколько раз найти свободный порт и создать запись,
-	// чтобы избежать гонок при высокой конкуренции.
+	secret, err := generatePremiumSecret()
+	if err != nil {
+		return nil, fmt.Errorf("generate secret: %w", err)
+	}
+
 	const (
 		minPort    = 20000
-		maxPort    = 50000
+		maxPort    = 30000
 		maxRetries = 5
 	)
 
@@ -265,19 +275,16 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, ip, secret,
 		}
 
 		proxy := &domain.ProxyNode{
-			IP:            ip,
-			Port:          port,
-			Secret:        secret,
-			Type:          domain.ProxyTypePremium,
-			Status:        domain.ProxyStatusActive,
-			Load:          0,
-			OwnerID:       &ownerID,
-			ContainerName: containerName,
+			IP:      serverIP,
+			Port:    port,
+			Secret:  secret,
+			Type:    domain.ProxyTypePremium,
+			Status:  domain.ProxyStatusActive,
+			Load:    0,
+			OwnerID: &ownerID,
 		}
 
 		if err := uc.proxyRepo.Create(proxy); err != nil {
-			// Если в этот момент другой поток успел занять порт,
-			// получим ошибку уникального индекса и попробуем ещё раз.
 			if isUniquePortError(err) {
 				continue
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -14,8 +15,7 @@ import (
 
 const (
 	imageName         = "p3terx/mtg"
-	UserContainerName = "mtg-user-%d"     // формат имени контейнера по tg_id
-	memoryLimitBytes  = 100 * 1024 * 1024 // 100MB на контейнер mtg
+	UserContainerName = "mtg-user-%d" // формат имени контейнера по tg_id
 )
 
 // Manager инкапсулирует работу с Docker для mtg-контейнеров.
@@ -23,7 +23,7 @@ type Manager struct {
 	cli *client.Client
 }
 
-// NewManager создает новый Docker‑менеджер, используя переменные окружения Docker.
+// NewManager создает новый Docker‑менеджер, используя переменные окружения Docker (локальный демон).
 func NewManager() (*Manager, error) {
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
@@ -35,8 +35,34 @@ func NewManager() (*Manager, error) {
 	return &Manager{cli: cli}, nil
 }
 
-// CreateUserContainer запускает контейнер p3terx/mtg для конкретного пользователя.
-// Используются порт и секрет из ProxyNode, сеть host и лимит памяти 100MB.
+// NewManagerTLS создает Docker‑менеджер для подключения к удалённому демону по TLS (порт 2376).
+// certPath — каталог с сертификатами: ca.pem, cert.pem, key.pem (например /antiblock/docker-certs/).
+func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
+	if host == "" || certPath == "" {
+		return nil, fmt.Errorf("host and certPath are required for TLS")
+	}
+	if port <= 0 {
+		port = 2376
+	}
+	hostURL := fmt.Sprintf("tcp://%s:%d", host, port)
+	ca := filepath.Join(certPath, "ca.pem")
+	cert := filepath.Join(certPath, "cert.pem")
+	key := filepath.Join(certPath, "key.pem")
+
+	cli, err := client.NewClientWithOpts(
+		client.WithHost(hostURL),
+		client.WithTLSClientConfig(ca, cert, key),
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{cli: cli}, nil
+}
+
+// CreateUserContainer запускает контейнер p3terx/mtg для пользователя по инструкции:
+// образ p3terx/mtg, NetworkMode host, Cmd: run <secret> -b 0.0.0.0:<port>, RestartPolicy unless-stopped.
+// Секрет и порт берутся из proxy (секрет уже с префиксом dd, 34 символа).
 func (m *Manager) CreateUserContainer(
 	ctx context.Context,
 	userTGID int64,
@@ -47,6 +73,7 @@ func (m *Manager) CreateUserContainer(
 	}
 
 	name := fmt.Sprintf(UserContainerName, userTGID)
+	portStr := fmt.Sprintf("%d", proxy.Port)
 
 	// На всякий случай удаляем старый контейнер с тем же именем
 	_ = m.RemoveUserContainer(ctx, name)
@@ -58,22 +85,16 @@ func (m *Manager) CreateUserContainer(
 		rc.Close()
 	}
 
+	// Команда по инструкции: run <secret> -b 0.0.0.0:<port>
 	cfg := &container.Config{
 		Image: imageName,
-		Env: []string{
-			fmt.Sprintf("PORT=%d", proxy.Port),
-			fmt.Sprintf("SECRET=%s", proxy.Secret),
-		},
-		Cmd: []string{"run"},
+		Cmd:   []string{"run", proxy.Secret, "-b", "0.0.0.0:" + portStr},
 	}
 
 	hostCfg := &container.HostConfig{
 		NetworkMode: "host",
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
-		},
-		Resources: container.Resources{
-			Memory: memoryLimitBytes,
 		},
 	}
 
@@ -83,8 +104,6 @@ func (m *Manager) CreateUserContainer(
 	}
 
 	if err := m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		// На случай ошибки запуска удаляем только что созданный контейнер,
-		// чтобы не оставлять "мёртвые" контейнеры в системе.
 		_ = m.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{
 			Force:         true,
 			RemoveVolumes: true,
