@@ -63,9 +63,9 @@ func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
 	return &Manager{cli: cli}, nil
 }
 
-// CreateUserContainer запускает контейнер p3terx/mtg для пользователя по инструкции:
-// образ p3terx/mtg, NetworkMode host, Cmd: run <secret> -b 0.0.0.0:<port>, RestartPolicy unless-stopped.
-// Секрет и порт берутся из proxy (секрет уже с префиксом dd, 34 символа).
+// CreateUserContainer запускает контейнер p3terx/mtg для пользователя:
+// NetworkMode: host (производительность, BBR), Cmd: run <secret> -b 0.0.0.0:<port> -stats-addr 127.0.0.1:0.
+// Перед созданием существующий контейнер с тем же именем удаляется (Force: true).
 func (m *Manager) CreateUserContainer(
 	ctx context.Context,
 	userTGID int64,
@@ -77,10 +77,18 @@ func (m *Manager) CreateUserContainer(
 
 	name := fmt.Sprintf(UserContainerName, userTGID)
 	portStr := fmt.Sprintf("%d", proxy.Port)
-	log.Printf("[Docker] creating container name=%s port=%d image=%s bind=0.0.0.0:%s", name, proxy.Port, imageName, portStr)
+	log.Printf("[Docker] creating container name=%s port=%d image=%s bind=0.0.0.0:%s (host network)", name, proxy.Port, imageName, portStr)
 
-	// На всякий случай удаляем старый контейнер с тем же именем
-	if err := m.RemoveUserContainer(ctx, name); err == nil {
+	// Удаляем контейнер с таким именем, если уже существует (Force: true).
+	if err := m.cli.ContainerRemove(ctx, name, container.RemoveOptions{
+		Force:         true,
+		RemoveVolumes: true,
+	}); err != nil {
+		if !client.IsErrNotFound(err) {
+			log.Printf("[Docker] remove existing container %s failed: %v", name, err)
+			return fmt.Errorf("remove existing container %s: %w", name, err)
+		}
+	} else {
 		log.Printf("[Docker] removed existing container %s", name)
 	}
 
@@ -94,10 +102,10 @@ func (m *Manager) CreateUserContainer(
 		log.Printf("[Docker] image pull %s: %v (continuing with existing image)", imageName, err)
 	}
 
-	// Команда по инструкции: run <secret> -b 0.0.0.0:<port>
+	// run <secret> -b 0.0.0.0:<port> -stats-addr 127.0.0.1:0 — stats на случайном порту, без конфликта 3129.
 	cfg := &container.Config{
 		Image: imageName,
-		Cmd:   []string{"run", proxy.Secret, "-b", "0.0.0.0:" + portStr},
+		Cmd:   []string{"run", proxy.Secret, "-b", "0.0.0.0:" + portStr, "-stats-addr", "127.0.0.1:0"},
 	}
 
 	hostCfg := &container.HostConfig{
