@@ -64,7 +64,7 @@ func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
 }
 
 // CreateUserContainer запускает контейнер p3terx/mtg для пользователя:
-// NetworkMode: host (производительность, BBR), Cmd: run <secret> -b 0.0.0.0:<port> -stats-addr 127.0.0.1:0.
+// NetworkMode: host (производительность, BBR), Cmd: run <secret> -b 0.0.0.0:<port> -t 127.0.0.1:0.
 // Перед созданием существующий контейнер с тем же именем удаляется (Force: true).
 func (m *Manager) CreateUserContainer(
 	ctx context.Context,
@@ -102,10 +102,10 @@ func (m *Manager) CreateUserContainer(
 		log.Printf("[Docker] image pull %s: %v (continuing with existing image)", imageName, err)
 	}
 
-	// run <secret> -b 0.0.0.0:<port> -stats-addr 127.0.0.1:0 — stats на случайном порту, без конфликта 3129.
+	// run <secret> -b 0.0.0.0:<port> -t 127.0.0.1:0 — stats на случайном порту, без конфликта 3129.
 	cfg := &container.Config{
 		Image: imageName,
-		Cmd:   []string{"run", proxy.Secret, "-b", "0.0.0.0:" + portStr, "-stats-addr", "127.0.0.1:0"},
+		Cmd:   []string{"run", proxy.Secret, "-b", "0.0.0.0:" + portStr, "-t", "127.0.0.1:0"},
 	}
 
 	hostCfg := &container.HostConfig{
