@@ -48,13 +48,15 @@ func main() {
 	pd := cfg.PremiumDocker
 	if pd.Host != "" && pd.CertPath != "" {
 		// Проверяем наличие файлов сертификатов (папка должна быть смонтирована через volume, DOCKER_CERTS_PATH на хосте).
+		log.Printf("Premium Docker: checking cert path %q (host=%q)", pd.CertPath, pd.Host)
 		required := []string{"ca.pem", "cert.pem", "key.pem"}
 		var missing []string
 		for _, name := range required {
 			p := filepath.Join(pd.CertPath, name)
-			if _, err := os.Stat(p); err != nil {
+			_, err := os.Stat(p)
+			if err != nil {
 				missing = append(missing, name)
-				log.Printf("Docker cert check: %s -> %v", p, err)
+				log.Printf("Premium Docker cert: %s -> %v", p, err)
 			}
 		}
 		if len(missing) > 0 {
@@ -71,6 +73,7 @@ func main() {
 			}
 		}
 	} else {
+		log.Printf("Premium Docker: skipped (host=%q cert_path=%q), using local Docker", pd.Host, pd.CertPath)
 		dockerMgr, _ = docker.NewManager()
 	}
 	premiumServerIP := pd.ServerIP
