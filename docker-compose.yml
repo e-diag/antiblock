@@ -29,7 +29,7 @@ services:
         condition: service_healthy
     volumes:
       # Сертификаты для подключения к премиум Docker по TLS (порт 2376). Только чтение.
-      - ${DOCKER_CERTS_PATH:-./docker-certs}:/antiblock/docker-certc:ro
+      - ${DOCKER_CERTS_PATH:-./docker-certs}:./docker-certc/:ro
     environment:
       # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
