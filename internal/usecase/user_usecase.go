@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
@@ -107,20 +108,26 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		if uc.dockerMgr == nil {
 			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("Docker не подключён к премиум-серверу (проверьте TLS и cert_path)"))
 		}
+		log.Printf("[Premium] ActivatePremium tg_id=%d duration_days=%d server=%s", tgID, durationDays, uc.premiumServerIP)
 		const maxAttempts = 3
 		var lastErr error
 		for attempt := 0; attempt < maxAttempts; attempt++ {
+			log.Printf("[Premium] attempt %d/%d: EnsurePremiumProxyForUser + container", attempt+1, maxAttempts)
 			_, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
 			if err != nil {
 				lastErr = err
+				log.Printf("[Premium] EnsurePremiumProxyForUser attempt %d: %v", attempt+1, err)
 				continue
 			}
 			if err := uc.ensurePremiumContainer(tgID, user); err != nil {
 				lastErr = err
+				log.Printf("[Premium] ensurePremiumContainer attempt %d: %v", attempt+1, err)
 				continue
 			}
+			log.Printf("[Premium] ActivatePremium success tg_id=%d", tgID)
 			return nil
 		}
+		log.Printf("[Premium] ActivatePremium failed after %d attempts tg_id=%d: %v", maxAttempts, tgID, lastErr)
 		return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, lastErr)
 	}
 
@@ -137,8 +144,10 @@ func (uc *userUseCase) RevokePremium(tgID int64) error {
 	}
 
 	// При отзыве премиума менеджером — деактивируем персональный прокси и удаляем контейнер на сервере (как при истечении подписки).
+	log.Printf("[Premium] RevokePremium tg_id=%d user_id=%d", tgID, user.ID)
 	if uc.proxyRepo != nil {
 		_ = uc.proxyRepo.DeactivateUserProxy(user.ID)
+		log.Printf("[Premium] RevokePremium deactivated proxy for user_id=%d", user.ID)
 	}
 	if uc.dockerMgr != nil {
 		name := fmt.Sprintf(docker.UserContainerName, tgID)
@@ -155,6 +164,7 @@ func (uc *userUseCase) RevokePremium(tgID int64) error {
 
 // RetryPremiumProxyCreation повторно создаёт прокси и контейнер для премиум-пользователя (вызов с кнопки «Повторить»).
 func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode, error) {
+	log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d", tgID)
 	user, err := uc.userRepo.GetByTGID(tgID)
 	if err != nil || user == nil {
 		return nil, errors.New("user not found")
@@ -170,11 +180,14 @@ func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode,
 	}
 	proxy, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
 	if err != nil {
+		log.Printf("[Premium] RetryPremiumProxyCreation EnsurePremiumProxyForUser tg_id=%d: %v", tgID, err)
 		return nil, err
 	}
 	if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+		log.Printf("[Premium] RetryPremiumProxyCreation ensurePremiumContainer tg_id=%d: %v", tgID, err)
 		return nil, err
 	}
+	log.Printf("[Premium] RetryPremiumProxyCreation success tg_id=%d port=%d", tgID, proxy.Port)
 	return proxy, nil
 }
 
@@ -187,6 +200,7 @@ func (uc *userUseCase) CheckExpiredPremiums() error {
 	now := time.Now().UTC()
 	for _, user := range users {
 		if user.PremiumUntil != nil && user.PremiumUntil.Before(now) {
+			log.Printf("[Premium] CheckExpiredPremiums: expiring tg_id=%d user_id=%d", user.TGID, user.ID)
 			// Деактивируем персональный премиум-прокси пользователя (если есть)
 			if uc.proxyRepo != nil {
 				_ = uc.proxyRepo.DeactivateUserProxy(user.ID)
@@ -230,6 +244,7 @@ func (uc *userUseCase) CleanupExpiredProxies(graceDays int) error {
 			for _, u := range users {
 				if u.PremiumUntil != nil && u.PremiumUntil.Before(cutoff) {
 					name := fmt.Sprintf(docker.UserContainerName, u.TGID)
+					log.Printf("[Premium] CleanupExpiredProxies: removing container %s (tg_id=%d expired)", name, u.TGID)
 					_ = uc.dockerMgr.RemoveUserContainer(ctx, name)
 				}
 			}
@@ -271,6 +286,7 @@ func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) err
 
 	proxy, err := uc.proxyRepo.GetByOwnerID(user.ID)
 	if err != nil || proxy == nil {
+		log.Printf("[Premium] ensurePremiumContainer tg_id=%d: no proxy for user_id=%d: %v", tgID, user.ID, err)
 		return err
 	}
 
@@ -280,11 +296,14 @@ func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) err
 
 	running, err := uc.dockerMgr.IsContainerRunning(ctx, name)
 	if err != nil {
+		log.Printf("[Premium] ensurePremiumContainer tg_id=%d IsContainerRunning %s: %v", tgID, name, err)
 		return err
 	}
 	if running {
+		log.Printf("[Premium] ensurePremiumContainer tg_id=%d: container %s already running port=%d", tgID, name, proxy.Port)
 		return nil
 	}
 
+	log.Printf("[Premium] ensurePremiumContainer tg_id=%d: creating container %s port=%d on remote server", tgID, name, proxy.Port)
 	return uc.dockerMgr.CreateUserContainer(ctx, tgID, proxy)
 }

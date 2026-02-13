@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 
 	"github.com/docker/docker/api/types/container"
@@ -49,6 +50,7 @@ func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
 	cert := filepath.Join(certPath, "cert.pem")
 	key := filepath.Join(certPath, "key.pem")
 
+	log.Printf("[Docker TLS] connecting to %s (ca=%s cert=%s key=%s)", hostURL, ca, cert, key)
 	cli, err := client.NewClientWithOpts(
 		client.WithHost(hostURL),
 		client.WithTLSClientConfig(ca, cert, key),
@@ -57,6 +59,7 @@ func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("[Docker TLS] connected to %s", hostURL)
 	return &Manager{cli: cli}, nil
 }
 
@@ -74,15 +77,21 @@ func (m *Manager) CreateUserContainer(
 
 	name := fmt.Sprintf(UserContainerName, userTGID)
 	portStr := fmt.Sprintf("%d", proxy.Port)
+	log.Printf("[Docker] creating container name=%s port=%d image=%s bind=0.0.0.0:%s", name, proxy.Port, imageName, portStr)
 
 	// На всякий случай удаляем старый контейнер с тем же именем
-	_ = m.RemoveUserContainer(ctx, name)
+	if err := m.RemoveUserContainer(ctx, name); err == nil {
+		log.Printf("[Docker] removed existing container %s", name)
+	}
 
 	// Подтянуть образ (если его нет)
 	rc, err := m.cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err == nil {
 		_, _ = io.Copy(io.Discard, rc)
 		rc.Close()
+		log.Printf("[Docker] image %s pulled or already present", imageName)
+	} else {
+		log.Printf("[Docker] image pull %s: %v (continuing with existing image)", imageName, err)
 	}
 
 	// Команда по инструкции: run <secret> -b 0.0.0.0:<port>
@@ -100,29 +109,41 @@ func (m *Manager) CreateUserContainer(
 
 	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
+		log.Printf("[Docker] container create failed name=%s: %v", name, err)
 		return fmt.Errorf("create container: %w", err)
 	}
+	log.Printf("[Docker] container created id=%s name=%s", resp.ID[:12], name)
 
 	if err := m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		log.Printf("[Docker] container start failed id=%s: %v", resp.ID[:12], err)
 		_ = m.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{
 			Force:         true,
 			RemoveVolumes: true,
 		})
 		return fmt.Errorf("start container: %w", err)
 	}
-
+	log.Printf("[Docker] container started name=%s port=%d (proxy at 0.0.0.0:%s)", name, proxy.Port, portStr)
 	return nil
 }
 
-// RemoveUserContainer полностью удаляет контейнер по имени.
+// RemoveUserContainer полностью удаляет контейнер по имени. Если контейнера нет — возвращает nil.
 func (m *Manager) RemoveUserContainer(ctx context.Context, name string) error {
 	if name == "" {
 		return nil
 	}
-	return m.cli.ContainerRemove(ctx, name, container.RemoveOptions{
+	err := m.cli.ContainerRemove(ctx, name, container.RemoveOptions{
 		Force:         true,
 		RemoveVolumes: true,
 	})
+	if client.IsErrNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		log.Printf("[Docker] remove container %s: %v", name, err)
+		return err
+	}
+	log.Printf("[Docker] container removed name=%s", name)
+	return nil
 }
 
 // IsContainerRunning проверяет, запущен ли контейнер.

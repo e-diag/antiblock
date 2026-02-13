@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"time"
@@ -240,12 +241,16 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		return nil, errors.New("invalid server IP address")
 	}
 
+	log.Printf("[Premium proxy] EnsurePremiumProxyForUser user_id=%d tg_id=%d server_ip=%s", user.ID, user.TGID, serverIP)
+
 	existing, err := uc.proxyRepo.GetByOwnerID(user.ID)
 	if err != nil {
+		log.Printf("[Premium proxy] GetByOwnerID user_id=%d: %v", user.ID, err)
 		return nil, err
 	}
 
 	if existing != nil {
+		log.Printf("[Premium proxy] reusing existing proxy id=%d port=%d ip=%s", existing.ID, existing.Port, existing.IP)
 		existing.Type = domain.ProxyTypePremium
 		existing.Status = domain.ProxyStatusActive
 		existing.IP = serverIP
@@ -259,6 +264,7 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 	if err != nil {
 		return nil, fmt.Errorf("generate secret: %w", err)
 	}
+	log.Printf("[Premium proxy] generated secret (dd+32hex) for user_id=%d", user.ID)
 
 	const (
 		minPort    = 20000
@@ -271,8 +277,10 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		port, err := uc.proxyRepo.FindFirstFreePort(minPort, maxPort)
 		if err != nil {
+			log.Printf("[Premium proxy] FindFirstFreePort attempt=%d: %v", attempt+1, err)
 			return nil, fmt.Errorf("failed to find free port: %w", err)
 		}
+		log.Printf("[Premium proxy] attempt %d/%d: free port=%d", attempt+1, maxRetries, port)
 
 		proxy := &domain.ProxyNode{
 			IP:      serverIP,
@@ -286,13 +294,17 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 
 		if err := uc.proxyRepo.Create(proxy); err != nil {
 			if isUniquePortError(err) {
+				log.Printf("[Premium proxy] port %d taken, retrying", port)
 				continue
 			}
+			log.Printf("[Premium proxy] Create proxy failed: %v", err)
 			return nil, err
 		}
 
+		log.Printf("[Premium proxy] created proxy id=%d port=%d ip=%s user_id=%d", proxy.ID, proxy.Port, proxy.IP, user.ID)
 		return proxy, nil
 	}
 
+	log.Printf("[Premium proxy] failed to allocate port after %d retries for user_id=%d", maxRetries, user.ID)
 	return nil, fmt.Errorf("failed to allocate unique port after %d retries", maxRetries)
 }
