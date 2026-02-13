@@ -70,6 +70,8 @@ func main() {
 			dockerMgr, errDocker = docker.NewManagerTLS(pd.Host, port, pd.CertPath)
 			if errDocker != nil {
 				log.Printf("Failed to init Docker TLS manager (premium): %v (premium containers will be disabled)", errDocker)
+			} else {
+				log.Printf("Premium Docker TLS initialized (host=%s port=%d)", pd.Host, port)
 			}
 		}
 	} else {
