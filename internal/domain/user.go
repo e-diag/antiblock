@@ -6,6 +6,7 @@ import "time"
 type User struct {
 	ID           uint       `gorm:"primaryKey" json:"id"`
 	TGID         int64      `gorm:"uniqueIndex;not null" json:"tg_id"`
+	Username     string     `gorm:"size:255" json:"username,omitempty"` // Telegram @username, может быть пустым
 	IsPremium    bool       `gorm:"default:false" json:"is_premium"`
 	PremiumUntil *time.Time `json:"premium_until,omitempty"`
 	// LastActiveAt хранит время последнего продления подписки

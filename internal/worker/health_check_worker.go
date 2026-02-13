@@ -55,8 +55,17 @@ func (w *HealthCheckWorker) Stop() {
 	close(w.stop)
 }
 
+const healthCheckRetryDelay = 5 * time.Second
+
 func (w *HealthCheckWorker) checkProxies() {
-	if err := w.proxyUC.CheckAllProxies(); err != nil {
-		log.Printf("Error during health check: %v", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := w.proxyUC.CheckAllProxies(); err != nil {
+			if attempt == 0 {
+				time.Sleep(healthCheckRetryDelay)
+				continue
+			}
+			log.Printf("Error during health check: %v", err)
+		}
+		break
 	}
 }

@@ -7,11 +7,13 @@ import (
 
 	"github.com/go-telegram/bot"
 
+	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/repository"
 )
 
 const adRePinDelayMs = 50
+const adRepinRetryDelay = 5 * time.Second
 
 // AdRePinWorker раз в час повторно закрепляет активное объявление у всех пользователей из ad_pins
 // (если пользователь открепил — сообщение снова будет закреплено до истечения срока объявления).
@@ -66,16 +68,30 @@ func (w *AdRePinWorker) Stop() {
 }
 
 func (w *AdRePinWorker) repin() {
-	ad, err := w.adRepo.GetActiveOne()
-	if err != nil || ad == nil {
-		return
-	}
-	if ad.ExpiresAt != nil && ad.ExpiresAt.Before(time.Now()) {
-		return
-	}
-	pins, err := w.adPinRepo.ListByAdID(ad.ID)
-	if err != nil || len(pins) == 0 {
-		return
+	var ad *domain.Ad
+	var pins []*domain.AdPin
+	for attempt := 0; attempt < 2; attempt++ {
+		var err error
+		ad, err = w.adRepo.GetActiveOne()
+		if err != nil || ad == nil {
+			if attempt == 0 {
+				time.Sleep(adRepinRetryDelay)
+				continue
+			}
+			return
+		}
+		if ad.ExpiresAt != nil && ad.ExpiresAt.Before(time.Now()) {
+			return
+		}
+		pins, err = w.adPinRepo.ListByAdID(ad.ID)
+		if err != nil || len(pins) == 0 {
+			if attempt == 0 {
+				time.Sleep(adRepinRetryDelay)
+				continue
+			}
+			return
+		}
+		break
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

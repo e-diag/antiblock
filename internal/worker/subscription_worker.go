@@ -55,11 +55,27 @@ func (w *SubscriptionWorker) Stop() {
 	close(w.stop)
 }
 
+const workerRetryDelay = 5 * time.Second
+
 func (w *SubscriptionWorker) checkSubscriptions() {
-	if err := w.userUC.CheckExpiredPremiums(); err != nil {
-		log.Printf("Error during subscription check: %v", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := w.userUC.CheckExpiredPremiums(); err != nil {
+			if attempt == 0 {
+				time.Sleep(workerRetryDelay)
+				continue
+			}
+			log.Printf("Error during subscription check: %v", err)
+		}
+		break
 	}
-	if err := w.userUC.CleanupExpiredProxies(60); err != nil {
-		log.Printf("Error during proxy cleanup: %v", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := w.userUC.CleanupExpiredProxies(60); err != nil {
+			if attempt == 0 {
+				time.Sleep(workerRetryDelay)
+				continue
+			}
+			log.Printf("Error during proxy cleanup: %v", err)
+		}
+		break
 	}
 }

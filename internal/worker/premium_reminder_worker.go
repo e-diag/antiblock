@@ -11,6 +11,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/repository"
 	"github.com/yourusername/antiblock/internal/usecase"
@@ -119,11 +120,22 @@ func (w *PremiumReminderWorker) getPremiumStars() int {
 	return n
 }
 
+const reminderRetryDelay = 5 * time.Second
+
 func (w *PremiumReminderWorker) sendReminders() {
-	users, err := w.userUC.GetUsersForPremiumReminder()
-	if err != nil {
-		log.Printf("Premium reminder: GetUsersForPremiumReminder error: %v", err)
-		return
+	var users []*domain.User
+	for attempt := 0; attempt < 2; attempt++ {
+		var err error
+		users, err = w.userUC.GetUsersForPremiumReminder()
+		if err != nil {
+			if attempt == 0 {
+				time.Sleep(reminderRetryDelay)
+				continue
+			}
+			log.Printf("Premium reminder: GetUsersForPremiumReminder error: %v", err)
+			return
+		}
+		break
 	}
 	if len(users) == 0 {
 		return

@@ -17,7 +17,7 @@ import (
 
 // ProxyUseCase определяет бизнес-логику для работы с прокси
 type ProxyUseCase interface {
-	GetProxyForUser(user *domain.User) (*domain.ProxyNode, error)
+	GetProxyForUser(user *domain.User, preferFree bool) (*domain.ProxyNode, error)
 	AddProxy(ip string, port int, secret string, proxyType domain.ProxyType) error
 	DeleteProxy(id uint) error
 	GetAll() ([]*domain.ProxyNode, error)
@@ -72,8 +72,8 @@ func NewProxyUseCase(proxyRepo repository.ProxyRepository) ProxyUseCase {
 	return &proxyUseCase{proxyRepo: proxyRepo}
 }
 
-func (uc *proxyUseCase) GetProxyForUser(user *domain.User) (*domain.ProxyNode, error) {
-	if user.IsPremiumActive() {
+func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*domain.ProxyNode, error) {
+	if !preferFree && user.IsPremiumActive() {
 		// Сначала выдаём персональный премиум-прокси пользователя (если есть)
 		own, err := uc.proxyRepo.GetByOwnerID(user.ID)
 		if err != nil {
@@ -87,10 +87,10 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User) (*domain.ProxyNode, e
 	}
 
 	var proxyType domain.ProxyType
-	if user.IsPremiumActive() {
-		proxyType = domain.ProxyTypePremium
-	} else {
+	if preferFree || !user.IsPremiumActive() {
 		proxyType = domain.ProxyTypeFree
+	} else {
+		proxyType = domain.ProxyTypePremium
 	}
 
 	proxies, err := uc.proxyRepo.GetAvailableByType(proxyType)
@@ -157,17 +157,19 @@ func (uc *proxyUseCase) GetByOwnerID(ownerID uint) (*domain.ProxyNode, error) {
 
 func (uc *proxyUseCase) HealthCheck(proxy *domain.ProxyNode) error {
 	timeout := 5 * time.Second
+	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxy.IP, proxy.Port), timeout)
 	if err != nil {
-		// Прокси недоступен
 		proxy.Status = domain.ProxyStatusInactive
 		now := time.Now()
 		proxy.LastCheck = &now
+		proxy.LastRTTMs = nil
 		return uc.proxyRepo.Update(proxy)
 	}
 	defer conn.Close()
 
-	// Прокси доступен
+	rttMs := int(time.Since(start).Milliseconds())
+	proxy.LastRTTMs = &rttMs
 	if proxy.Status != domain.ProxyStatusActive {
 		proxy.Status = domain.ProxyStatusActive
 	}
@@ -241,8 +243,6 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		return nil, errors.New("invalid server IP address")
 	}
 
-	log.Printf("[Premium proxy] EnsurePremiumProxyForUser user_id=%d tg_id=%d server_ip=%s", user.ID, user.TGID, serverIP)
-
 	existing, err := uc.proxyRepo.GetByOwnerID(user.ID)
 	if err != nil {
 		log.Printf("[Premium proxy] GetByOwnerID user_id=%d: %v", user.ID, err)
@@ -250,7 +250,6 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 	}
 
 	if existing != nil {
-		log.Printf("[Premium proxy] reusing existing proxy id=%d port=%d ip=%s", existing.ID, existing.Port, existing.IP)
 		existing.Type = domain.ProxyTypePremium
 		existing.Status = domain.ProxyStatusActive
 		existing.IP = serverIP
@@ -264,7 +263,6 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 	if err != nil {
 		return nil, fmt.Errorf("generate secret: %w", err)
 	}
-	log.Printf("[Premium proxy] generated secret (dd+32hex) for user_id=%d", user.ID)
 
 	const (
 		minPort    = 20000
@@ -280,7 +278,6 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 			log.Printf("[Premium proxy] FindFirstFreePort attempt=%d: %v", attempt+1, err)
 			return nil, fmt.Errorf("failed to find free port: %w", err)
 		}
-		log.Printf("[Premium proxy] attempt %d/%d: free port=%d", attempt+1, maxRetries, port)
 
 		proxy := &domain.ProxyNode{
 			IP:      serverIP,
@@ -294,14 +291,12 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 
 		if err := uc.proxyRepo.Create(proxy); err != nil {
 			if isUniquePortError(err) {
-				log.Printf("[Premium proxy] port %d taken, retrying", port)
 				continue
 			}
 			log.Printf("[Premium proxy] Create proxy failed: %v", err)
 			return nil, err
 		}
 
-		log.Printf("[Premium proxy] created proxy id=%d port=%d ip=%s user_id=%d", proxy.ID, proxy.Port, proxy.IP, user.ID)
 		return proxy, nil
 	}
 

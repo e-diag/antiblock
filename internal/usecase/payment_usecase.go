@@ -18,13 +18,15 @@ type PaymentUseCase interface {
 	CheckInvoiceStatus(invoiceID string) (bool, error)
 	GetUserIDByInvoiceID(invoiceID int64) (int64, bool)
 	MarkInvoicePaid(invoiceID int64) error
+	RecordStarPayment(tgID int64, amountTotal int64, currency string, daysGranted int, telegramPaymentChargeID string) error
 }
 
 type paymentUseCase struct {
-	apiToken string
-	apiURL   string
-	client   *http.Client
-	invRepo  InvoiceRepository
+	apiToken        string
+	apiURL          string
+	client          *http.Client
+	invRepo         InvoiceRepository
+	starPaymentRepo StarPaymentRepository
 }
 
 // InvoiceRepository минимальный интерфейс для сохранения счетов
@@ -34,15 +36,19 @@ type InvoiceRepository interface {
 	Update(inv *domain.Invoice) error
 }
 
+// StarPaymentRepository — сохранение оплат Telegram Stars
+type StarPaymentRepository interface {
+	Create(p *domain.StarPayment) error
+}
+
 // NewPaymentUseCase создает новый use case для платежей
-func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository) PaymentUseCase {
+func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starPaymentRepo StarPaymentRepository) PaymentUseCase {
 	return &paymentUseCase{
-		apiToken: apiToken,
-		apiURL:   apiURL,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		invRepo: invRepo,
+		apiToken:        apiToken,
+		apiURL:          apiURL,
+		client:          &http.Client{Timeout: 30 * time.Second},
+		invRepo:         invRepo,
+		starPaymentRepo: starPaymentRepo,
 	}
 }
 
@@ -191,4 +197,18 @@ func (uc *paymentUseCase) CheckInvoiceStatus(invoiceID string) (bool, error) {
 	}
 
 	return statusResp.Result.Status == "paid", nil
+}
+
+func (uc *paymentUseCase) RecordStarPayment(tgID int64, amountTotal int64, currency string, daysGranted int, telegramPaymentChargeID string) error {
+	if uc.starPaymentRepo == nil {
+		return nil
+	}
+	p := &domain.StarPayment{
+		TGID:                    tgID,
+		AmountTotal:             amountTotal,
+		Currency:                currency,
+		DaysGranted:             daysGranted,
+		TelegramPaymentChargeID: telegramPaymentChargeID,
+	}
+	return uc.starPaymentRepo.Create(p)
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/go-telegram/bot"
@@ -30,6 +31,16 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	if cfg.Telegram.BotToken == "" || strings.HasPrefix(cfg.Telegram.BotToken, "${") {
+		log.Fatalf("Invalid config: TELEGRAM_BOT_TOKEN is required and must be set (e.g. in .env or environment)")
+	}
+	if len(cfg.Telegram.GetAdminIDs()) == 0 {
+		log.Fatalf("Invalid config: at least one Telegram admin ID is required (TELEGRAM_ADMIN_ID_1)")
+	}
+	if cfg.Database.Host == "" {
+		log.Fatalf("Invalid config: database host is required (DB_HOST)")
+	}
+
 	db, err := database.New(&cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -41,22 +52,19 @@ func main() {
 	adRepo := repository.NewAdRepository(db.DB)
 	adPinRepo := repository.NewAdPinRepository(db.DB)
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
+	starPaymentRepo := repository.NewStarPaymentRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 
 	proxyUC := usecase.NewProxyUseCase(proxyRepo)
 	var dockerMgr *docker.Manager
 	pd := cfg.PremiumDocker
 	if pd.Host != "" && pd.CertPath != "" {
-		// Проверяем наличие файлов сертификатов (папка должна быть смонтирована через volume, DOCKER_CERTS_PATH на хосте).
-		log.Printf("Premium Docker: checking cert path %q (host=%q)", pd.CertPath, pd.Host)
 		required := []string{"ca.pem", "cert.pem", "key.pem"}
 		var missing []string
 		for _, name := range required {
 			p := filepath.Join(pd.CertPath, name)
-			_, err := os.Stat(p)
-			if err != nil {
+			if _, err := os.Stat(p); err != nil {
 				missing = append(missing, name)
-				log.Printf("Premium Docker cert: %s -> %v", p, err)
 			}
 		}
 		if len(missing) > 0 {
@@ -70,18 +78,15 @@ func main() {
 			dockerMgr, errDocker = docker.NewManagerTLS(pd.Host, port, pd.CertPath)
 			if errDocker != nil {
 				log.Printf("Failed to init Docker TLS manager (premium): %v (premium containers will be disabled)", errDocker)
-			} else {
-				log.Printf("Premium Docker TLS initialized (host=%s port=%d)", pd.Host, port)
 			}
 		}
 	} else {
-		log.Printf("Premium Docker: skipped (host=%q cert_path=%q), using local Docker", pd.Host, pd.CertPath)
 		dockerMgr, _ = docker.NewManager()
 	}
 	premiumServerIP := pd.ServerIP
 
 	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, dockerMgr, premiumServerIP)
-	paymentUC := usecase.NewPaymentUseCase(cfg.CryptoBot.APIToken, cfg.CryptoBot.APIURL, invoiceRepo)
+	paymentUC := usecase.NewPaymentUseCase(cfg.CryptoBot.APIToken, cfg.CryptoBot.APIURL, invoiceRepo, starPaymentRepo)
 
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()

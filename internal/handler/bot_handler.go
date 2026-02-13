@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,21 @@ import (
 )
 
 const broadcastDelayMs = 50 // ~20 сообщений в секунду (лимит Telegram ~30/сек)
+
+// formatProxyLine возвращает одну строку для списка прокси (админка): ID, ip:port, type, status, опционально Load и RTT.
+func formatProxyLine(p *domain.ProxyNode, withBullet bool) string {
+	line := fmt.Sprintf("ID %d: %s:%d [%s] %s", p.ID, p.IP, p.Port, p.Type, p.Status)
+	if p.Type == domain.ProxyTypeFree {
+		line += fmt.Sprintf(" Load:%d", p.Load)
+	}
+	if p.LastRTTMs != nil {
+		line += fmt.Sprintf(" RTT:%d мс", *p.LastRTTMs)
+	}
+	if withBullet {
+		return "• " + line
+	}
+	return line
+}
 
 // BotHandler обрабатывает команды бота
 type BotHandler struct {
@@ -118,6 +134,23 @@ func chatID(update *models.Update) int64 {
 	return 0
 }
 
+// getUsername возвращает Telegram @username из update (Message.From, CallbackQuery.From и т.д.); пустая строка, если нет.
+func (h *BotHandler) getUsername(update *models.Update) string {
+	if update.Message != nil && update.Message.From != nil && update.Message.From.Username != "" {
+		return update.Message.From.Username
+	}
+	if update.CallbackQuery != nil && update.CallbackQuery.From.Username != "" {
+		return update.CallbackQuery.From.Username
+	}
+	if update.EditedMessage != nil && update.EditedMessage.From != nil && update.EditedMessage.From.Username != "" {
+		return update.EditedMessage.From.Username
+	}
+	if update.PreCheckoutQuery != nil && update.PreCheckoutQuery.From != nil && update.PreCheckoutQuery.From.Username != "" {
+		return update.PreCheckoutQuery.From.Username
+	}
+	return ""
+}
+
 func (h *BotHandler) send(ctx context.Context, b *bot.Bot, update *models.Update, text string, replyMarkup models.ReplyMarkup) {
 	params := &bot.SendMessageParams{
 		ChatID:    chatID(update),
@@ -167,7 +200,7 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 // HandleStart обрабатывает команду /start
 func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
-	user, err := h.userUC.GetOrCreateUser(userID)
+	user, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
 	if err != nil {
 		h.sendText(ctx, b, update, "❌ Произошла ошибка. Попробуйте позже.")
 		return
@@ -282,9 +315,10 @@ func (h *BotHandler) buildForcedSubKeyboard(channels []string) *models.InlineKey
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-// sendProxyToUser получает прокси для пользователя и отправляет ему сообщение с данными прокси
-func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User) {
-	proxy, err := h.proxyUC.GetProxyForUser(user)
+// sendProxyToUser получает прокси для пользователя и отправляет ему сообщение с данными прокси.
+// preferFree: true — выдать free-прокси (для кнопки «Получить прокси»); false — премиум-прокси при наличии (для «Получить Premium proxy»).
+func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User, preferFree bool) {
+	proxy, err := h.proxyUC.GetProxyForUser(user, preferFree)
 	if err != nil {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, Text: "❌ В данный момент нет доступных прокси-серверов. Попробуйте позже.", ParseMode: models.ParseModeHTML,
@@ -412,7 +446,7 @@ func (h *BotHandler) sendActiveAdIfExists(ctx context.Context, b *bot.Bot, chatI
 func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
 
-	user, err := h.userUC.GetOrCreateUser(userID)
+	user, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
 	if err != nil {
 		h.sendText(ctx, b, update, "❌ Произошла ошибка. Попробуйте позже.")
 		return
@@ -432,14 +466,14 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 		}
 	}
 
-	h.sendProxyToUser(ctx, b, userID, user)
+	h.sendProxyToUser(ctx, b, userID, user, true)
 }
 
 // HandleBuyPremium обрабатывает запрос на покупку премиума (оплата только через Telegram Stars; CryptoPay отключён).
 func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
 
-	_, err := h.userUC.GetOrCreateUser(userID)
+	_, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
 	if err != nil {
 		h.sendText(ctx, b, update, "❌ Произошла ошибка. Попробуйте позже.")
 		return
@@ -598,7 +632,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		var sb strings.Builder
 		sb.WriteString("📋 <b>Прокси</b> (удалить: /delproxy id)\n\n")
 		for _, p := range proxies {
-			sb.WriteString(fmt.Sprintf("• ID %d: %s:%d [%s] %s\n", p.ID, p.IP, p.Port, p.Type, p.Status))
+			sb.WriteString(formatProxyLine(p, true) + "\n")
 		}
 		send(sb.String())
 
@@ -1187,7 +1221,7 @@ func (h *BotHandler) HandleProxies(ctx context.Context, b *bot.Bot, update *mode
 	var sb strings.Builder
 	sb.WriteString("📋 Прокси (удаление: /delproxy <id>):\n\n")
 	for _, p := range proxies {
-		sb.WriteString(fmt.Sprintf("ID %d: %s:%d [%s] %s\n", p.ID, p.IP, p.Port, p.Type, p.Status))
+		sb.WriteString(formatProxyLine(p, false) + "\n")
 	}
 	h.sendText(ctx, b, update, sb.String())
 }
@@ -1610,7 +1644,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		h.HandleGetProxy(ctx, b, update)
 	case "get_premium_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
-		user, err := h.userUC.GetOrCreateUser(chatID)
+		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
 		if err != nil || user == nil || !user.IsPremiumActive() {
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Доступно только для премиум-пользователей.", ParseMode: models.ParseModeHTML})
 			return
@@ -1620,10 +1654,10 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Не удалось создать Premium proxy. Попробуйте позже.", ParseMode: models.ParseModeHTML})
 			return
 		}
-		h.sendProxyToUser(ctx, b, chatID, user)
+		h.sendProxyToUser(ctx, b, chatID, user, false)
 	case "check_sub_forced":
 		userID := update.CallbackQuery.From.ID
-		user, err := h.userUC.GetOrCreateUser(userID)
+		user, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
 		if err != nil {
 			b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID, Text: "Ошибка. Попробуйте позже."})
 			return
@@ -1644,7 +1678,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 				_ = h.settingsRepo.Set("forced_subs_count", "1")
 			}
 		}
-		h.sendProxyToUser(ctx, b, chatID, user)
+		h.sendProxyToUser(ctx, b, chatID, user, true)
 	case "buy_stars":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleBuyStars(ctx, b, update)
@@ -1653,7 +1687,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			CallbackQueryID: cqID,
 			Text:            "В меню",
 		})
-		user, err := h.userUC.GetOrCreateUser(chatID)
+		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
 		if err != nil {
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
 			return
@@ -1693,7 +1727,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 // HandleBuyStars отправляет счёт на оплату Telegram Stars (XTR)
 func (h *BotHandler) HandleBuyStars(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
-	_, err := h.userUC.GetOrCreateUser(userID)
+	_, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
 	if err != nil {
 		h.sendText(ctx, b, update, "❌ Ошибка. Попробуйте позже.")
 		return
@@ -1752,6 +1786,8 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 	if err1 != nil || err2 != nil || days < 1 {
 		return
 	}
+	_ = h.paymentUC.RecordStarPayment(userID, int64(sp.TotalAmount), sp.Currency, days, sp.TelegramPaymentChargeID)
+
 	err := h.userUC.ActivatePremium(userID, days)
 	if err != nil {
 		if errors.Is(err, usecase.ErrPremiumProxyCreationFailed) {
@@ -1761,6 +1797,10 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 			})
 			return
 		}
+		log.Printf("HandleSuccessfulPayment ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
+		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
+		})
 		return
 	}
 	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{

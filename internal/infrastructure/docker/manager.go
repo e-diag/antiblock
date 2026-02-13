@@ -50,16 +50,15 @@ func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
 	cert := filepath.Join(certPath, "cert.pem")
 	key := filepath.Join(certPath, "key.pem")
 
-	log.Printf("[Docker TLS] connecting to %s (ca=%s cert=%s key=%s)", hostURL, ca, cert, key)
 	cli, err := client.NewClientWithOpts(
 		client.WithHost(hostURL),
 		client.WithTLSClientConfig(ca, cert, key),
 		client.WithAPIVersionNegotiation(),
 	)
 	if err != nil {
+		log.Printf("[Docker TLS] failed to connect to %s: %v", hostURL, err)
 		return nil, err
 	}
-	log.Printf("[Docker TLS] connected to %s", hostURL)
 	return &Manager{cli: cli}, nil
 }
 
@@ -77,7 +76,6 @@ func (m *Manager) CreateUserContainer(
 
 	name := fmt.Sprintf(UserContainerName, userTGID)
 	portStr := fmt.Sprintf("%d", proxy.Port)
-	log.Printf("[Docker] creating container name=%s port=%d image=%s bind=0.0.0.0:%s (host network)", name, proxy.Port, imageName, portStr)
 
 	// Удаляем контейнер с таким именем, если уже существует (Force: true).
 	if err := m.cli.ContainerRemove(ctx, name, container.RemoveOptions{
@@ -88,8 +86,6 @@ func (m *Manager) CreateUserContainer(
 			log.Printf("[Docker] remove existing container %s failed: %v", name, err)
 			return fmt.Errorf("remove existing container %s: %w", name, err)
 		}
-	} else {
-		log.Printf("[Docker] removed existing container %s", name)
 	}
 
 	// Подтянуть образ (если его нет)
@@ -97,7 +93,6 @@ func (m *Manager) CreateUserContainer(
 	if err == nil {
 		_, _ = io.Copy(io.Discard, rc)
 		rc.Close()
-		log.Printf("[Docker] image %s pulled or already present", imageName)
 	} else {
 		log.Printf("[Docker] image pull %s: %v (continuing with existing image)", imageName, err)
 	}
@@ -110,6 +105,13 @@ func (m *Manager) CreateUserContainer(
 
 	hostCfg := &container.HostConfig{
 		NetworkMode: "host",
+		LogConfig: container.LogConfig{
+			Type: "json-file",
+			Config: map[string]string{
+				"max-size": "1m",
+				"max-file": "1",
+			},
+		},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -120,7 +122,6 @@ func (m *Manager) CreateUserContainer(
 		log.Printf("[Docker] container create failed name=%s: %v", name, err)
 		return fmt.Errorf("create container: %w", err)
 	}
-	log.Printf("[Docker] container created id=%s name=%s", resp.ID[:12], name)
 
 	if err := m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		log.Printf("[Docker] container start failed id=%s: %v", resp.ID[:12], err)
@@ -130,7 +131,6 @@ func (m *Manager) CreateUserContainer(
 		})
 		return fmt.Errorf("start container: %w", err)
 	}
-	log.Printf("[Docker] container started name=%s port=%d (proxy at 0.0.0.0:%s)", name, proxy.Port, portStr)
 	return nil
 }
 
@@ -150,7 +150,6 @@ func (m *Manager) RemoveUserContainer(ctx context.Context, name string) error {
 		log.Printf("[Docker] remove container %s: %v", name, err)
 		return err
 	}
-	log.Printf("[Docker] container removed name=%s", name)
 	return nil
 }
 

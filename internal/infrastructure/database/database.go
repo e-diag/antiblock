@@ -2,6 +2,8 @@ package database
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -11,15 +13,17 @@ import (
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 )
 
+const dbRetryAttempts = 5
+const dbRetryInterval = 2 * time.Second
+
 // DB представляет подключение к базе данных
 type DB struct {
 	*gorm.DB
 }
 
-// New создает новое подключение к базе данных
+// New создает новое подключение к базе данных (с повтором при временной недоступности).
 func New(cfg *config.DatabaseConfig) (*DB, error) {
 	logLevel := logger.Warn
-	// В debug-режиме можно включить подробные SQL-логи
 	if cfg.Debug {
 		logLevel = logger.Info
 	}
@@ -28,9 +32,20 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		Logger: logger.Default.LogMode(logLevel),
 	}
 
-	db, err := gorm.Open(postgres.Open(cfg.DSN()), gormConfig)
+	var db *gorm.DB
+	var err error
+	for attempt := 1; attempt <= dbRetryAttempts; attempt++ {
+		db, err = gorm.Open(postgres.Open(cfg.DSN()), gormConfig)
+		if err == nil {
+			break
+		}
+		if attempt < dbRetryAttempts {
+			log.Printf("Database connect attempt %d/%d failed: %v; retrying in %v", attempt, dbRetryAttempts, err, dbRetryInterval)
+			time.Sleep(dbRetryInterval)
+		}
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", dbRetryAttempts, err)
 	}
 
 	// Автомиграция моделей (без потери данных)
@@ -40,6 +55,7 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.Ad{},
 		&domain.AdPin{},
 		&domain.Invoice{},
+		&domain.StarPayment{},
 		&domain.AppSetting{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
