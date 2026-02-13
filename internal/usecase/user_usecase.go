@@ -92,8 +92,11 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		return err
 	}
 
-	// Создаём персональный премиум-прокси и контейнер (до 3 попыток). При неудаче премиум уже выдан — возвращаем ErrPremiumProxyCreationFailed.
+	// Создаём персональный премиум-прокси и контейнер (до 3 попыток). Контейнер обязателен — без Docker к премиум-серверу успех не возвращаем.
 	if uc.premiumServerIP != "" && uc.proxyUC != nil {
+		if uc.dockerMgr == nil {
+			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("Docker не подключён к премиум-серверу (проверьте TLS и cert_path)"))
+		}
 		const maxAttempts = 3
 		var lastErr error
 		for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -102,11 +105,9 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 				lastErr = err
 				continue
 			}
-			if uc.dockerMgr != nil {
-				if err := uc.ensurePremiumContainer(tgID, user); err != nil {
-					lastErr = err
-					continue
-				}
+			if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+				lastErr = err
+				continue
 			}
 			return nil
 		}
@@ -154,14 +155,15 @@ func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode,
 	if uc.premiumServerIP == "" || uc.proxyUC == nil {
 		return nil, errors.New("premium proxy not configured")
 	}
+	if uc.dockerMgr == nil {
+		return nil, errors.New("Docker не подключён к премиум-серверу, контейнер создать нельзя")
+	}
 	proxy, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
 	if err != nil {
 		return nil, err
 	}
-	if uc.dockerMgr != nil {
-		if err := uc.ensurePremiumContainer(tgID, user); err != nil {
-			return nil, err
-		}
+	if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+		return nil, err
 	}
 	return proxy, nil
 }
@@ -250,8 +252,11 @@ func (uc *userUseCase) MarkPremiumReminderSent(tgID int64) error {
 // ensurePremiumContainer гарантирует, что для пользователя с активным премиумом
 // запущен Docker‑контейнер mtg-user-{tg_id} с параметрами из БД.
 func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) error {
-	if user == nil || uc.proxyRepo == nil || uc.dockerMgr == nil {
+	if user == nil || uc.proxyRepo == nil {
 		return nil
+	}
+	if uc.dockerMgr == nil {
+		return errors.New("Docker manager not available")
 	}
 
 	proxy, err := uc.proxyRepo.GetByOwnerID(user.ID)
