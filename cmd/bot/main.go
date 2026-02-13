@@ -51,12 +51,14 @@ func main() {
 		required := []string{"ca.pem", "cert.pem", "key.pem"}
 		var missing []string
 		for _, name := range required {
-			if _, err := os.Stat(filepath.Join(pd.CertPath, name)); err != nil {
+			p := filepath.Join(pd.CertPath, name)
+			if _, err := os.Stat(p); err != nil {
 				missing = append(missing, name)
+				log.Printf("Docker cert check: %s -> %v", p, err)
 			}
 		}
 		if len(missing) > 0 {
-			log.Printf("Premium Docker disabled: cert path %q missing files: %v (on host: put ca.pem, cert.pem, key.pem in folder and set DOCKER_CERTS_PATH, mount volume to /antiblock/docker-certs)", pd.CertPath, missing)
+			log.Printf("Premium Docker disabled: cert path %q missing files: %v", pd.CertPath, missing)
 		} else {
 			port := pd.Port
 			if port <= 0 {
