@@ -129,25 +129,16 @@ func (w *PremiumReminderWorker) sendReminders() {
 		return
 	}
 	log.Printf("Premium reminder: sending to %d user(s)", len(users))
-	days := w.getPremiumDays()
-	amount := w.getPremiumUSDT()
 	starsCount := w.getPremiumStars()
 	ctx, cancel := context.WithTimeout(context.Background(), w.config.Timeout())
 	defer cancel()
 	for _, u := range users {
-		description := fmt.Sprintf("Premium %d days (reminder, ID: %d)", days, u.TGID)
-		payURL, _, errInv := w.paymentUC.CreateInvoice(amount, "USDT", description, u.TGID)
-		if errInv != nil {
-			log.Printf("Premium reminder: CreateInvoice for %d: %v", u.TGID, errInv)
-			payURL = ""
+		// CryptoPay отключён — только Stars
+		msg := fmt.Sprintf("⏰ Ваша Premium-подписка истекает через 7 дней.\n\nПродлить подписку и сохранить персональный proxy?\n\n💰 Стоимость: %d ⭐ Stars", starsCount)
+		rows := [][]models.InlineKeyboardButton{
+			{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}},
+			{{Text: "Позже", CallbackData: "reminder_later"}},
 		}
-		msg := fmt.Sprintf("⏰ Ваша Premium-подписка истекает через 7 дней.\n\nПродлить подписку и сохранить персональный proxy?\n\n💰 Стоимость: %.2f USDT или %d ⭐ Stars", amount, starsCount)
-		rows := [][]models.InlineKeyboardButton{}
-		if payURL != "" {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: "💳 CryptoPay", URL: payURL}})
-		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}})
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "Позже", CallbackData: "reminder_later"}})
 		kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 		_, errSend := w.bot.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: u.TGID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,

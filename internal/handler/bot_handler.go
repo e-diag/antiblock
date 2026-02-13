@@ -435,7 +435,7 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 	h.sendProxyToUser(ctx, b, userID, user)
 }
 
-// HandleBuyPremium обрабатывает запрос на покупку премиума
+// HandleBuyPremium обрабатывает запрос на покупку премиума (оплата только через Telegram Stars; CryptoPay отключён).
 func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
 
@@ -445,25 +445,15 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 		return
 	}
 
-	amount := h.getPremiumUSDT()
 	days := h.getPremiumDays()
-	description := fmt.Sprintf("Premium %d days (ID: %d)", days, userID)
-
-	payURL, _, err := h.paymentUC.CreateInvoice(amount, "USDT", description, userID)
-	if err != nil {
-		h.sendText(ctx, b, update, "❌ Не удалось создать счёт. Попробуйте позже.")
-		return
-	}
-
 	starsCount := h.getPremiumStars()
 	msg := fmt.Sprintf("💎 <b>Premium</b> — получи персональный proxy на %d дн.\n\n"+
 		"• Без рекламы и ограничений\n"+
 		"• Высокий приоритет и стабильность\n\n"+
-		"💰 Стоимость: <b>%.2f USDT</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, amount, starsCount)
+		"💰 Стоимость: <b>%d ⭐ Stars</b>\n\nОплата через Telegram Stars:", days, starsCount)
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "💳 CryptoPay", URL: payURL}},
 			{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}},
 			{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
 		},

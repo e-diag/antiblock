@@ -28,8 +28,9 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      # Сертификаты для подключения к премиум Docker по TLS (порт 2376). Только чтение.
-      - ${DOCKER_CERTS_PATH:-./docker-certs}:./docker-certc/:ro
+      # Сертификаты для подключения к премиум Docker по TLS (порт 2376). Путь в контейнере — абсолютный.
+      # На хосте: положите ca.pem, cert.pem, key.pem в папку и задайте DOCKER_CERTS_PATH (например /root/antiblock/docker-certs).
+      - ${DOCKER_CERTS_PATH:-./docker-certs}:/antiblock/docker-certs:ro
     environment:
       # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}

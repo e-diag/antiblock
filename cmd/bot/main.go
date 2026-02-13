@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	"github.com/go-telegram/bot"
@@ -14,7 +12,9 @@ import (
 
 	"github.com/yourusername/antiblock/internal/handler"
 	"github.com/yourusername/antiblock/internal/handler/middleware"
-	"github.com/yourusername/antiblock/internal/handler/webhook"
+	// "net/http"
+	// "strconv"
+	// "github.com/yourusername/antiblock/internal/handler/webhook" // CryptoPay отключён
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/infrastructure/database"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
@@ -139,30 +139,26 @@ func main() {
 	go dockerMonitorWorker.Start()
 	go adRePinWorker.Start()
 
-	// Webhook для CryptoPay (оплата -> выдача премиума)
-	if cfg.CryptoBot.WebhookPort != "" {
-		port, _ := strconv.Atoi(cfg.CryptoBot.WebhookPort)
-		if port > 0 {
-			mux := http.NewServeMux()
-			getPremiumDays := func() int {
-				v, _ := settingsRepo.Get("premium_days")
-				if v == "" {
-					return 30
-				}
-				n, _ := strconv.Atoi(v)
-				if n < 1 {
-					return 30
-				}
-				return n
-			}
-			mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret, getPremiumDays))
-			srv := &http.Server{Addr: ":" + cfg.CryptoBot.WebhookPort, Handler: mux}
-			go func() {
-				log.Printf("CryptoPay webhook listening on :%s", cfg.CryptoBot.WebhookPort)
-				_ = srv.ListenAndServe()
-			}()
-		}
-	}
+	// CryptoPay отключён — оплата только через Telegram Stars.
+	// if cfg.CryptoBot.WebhookPort != "" {
+	// 	port, _ := strconv.Atoi(cfg.CryptoBot.WebhookPort)
+	// 	if port > 0 {
+	// 		mux := http.NewServeMux()
+	// 		getPremiumDays := func() int {
+	// 			v, _ := settingsRepo.Get("premium_days")
+	// 			if v == "" { return 30 }
+	// 			n, _ := strconv.Atoi(v)
+	// 			if n < 1 { return 30 }
+	// 			return n
+	// 		}
+	// 		mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret, getPremiumDays))
+	// 		srv := &http.Server{Addr: ":" + cfg.CryptoBot.WebhookPort, Handler: mux}
+	// 		go func() {
+	// 			log.Printf("CryptoPay webhook listening on :%s", cfg.CryptoBot.WebhookPort)
+	// 			_ = srv.ListenAndServe()
+	// 		}()
+	// 	}
+	// }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
