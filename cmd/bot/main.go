@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/go-telegram/bot"
@@ -46,14 +47,26 @@ func main() {
 	var dockerMgr *docker.Manager
 	pd := cfg.PremiumDocker
 	if pd.Host != "" && pd.CertPath != "" {
-		port := pd.Port
-		if port <= 0 {
-			port = 2376
+		// Проверяем наличие файлов сертификатов (папка должна быть смонтирована через volume, DOCKER_CERTS_PATH на хосте).
+		required := []string{"ca.pem", "cert.pem", "key.pem"}
+		var missing []string
+		for _, name := range required {
+			if _, err := os.Stat(filepath.Join(pd.CertPath, name)); err != nil {
+				missing = append(missing, name)
+			}
 		}
-		var errDocker error
-		dockerMgr, errDocker = docker.NewManagerTLS(pd.Host, port, pd.CertPath)
-		if errDocker != nil {
-			log.Printf("Failed to init Docker TLS manager (premium): %v (premium containers will be disabled)", errDocker)
+		if len(missing) > 0 {
+			log.Printf("Premium Docker disabled: cert path %q missing files: %v (on host: put ca.pem, cert.pem, key.pem in folder and set DOCKER_CERTS_PATH, mount volume to /antiblock/docker-certs)", pd.CertPath, missing)
+		} else {
+			port := pd.Port
+			if port <= 0 {
+				port = 2376
+			}
+			var errDocker error
+			dockerMgr, errDocker = docker.NewManagerTLS(pd.Host, port, pd.CertPath)
+			if errDocker != nil {
+				log.Printf("Failed to init Docker TLS manager (premium): %v (premium containers will be disabled)", errDocker)
+			}
 		}
 	} else {
 		dockerMgr, _ = docker.NewManager()
