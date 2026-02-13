@@ -76,6 +76,16 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		return errors.New("user not found")
 	}
 
+	// Проверка до обновления БД: при включённом премиум-прокси (serverIP задан) нужны proxyUC и dockerMgr, иначе не помечаем пользователя премиумом.
+	if uc.premiumServerIP != "" {
+		if uc.proxyUC == nil {
+			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("премиум-прокси настроен, но proxy use case недоступен"))
+		}
+		if uc.dockerMgr == nil {
+			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("Docker не подключён к премиум-серверу (проверьте TLS и cert_path)"))
+		}
+	}
+
 	now := time.Now().UTC()
 	var premiumUntil time.Time
 	if user.PremiumUntil != nil && user.PremiumUntil.After(now) {
@@ -92,7 +102,7 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		return err
 	}
 
-	// Создаём персональный премиум-прокси и контейнер (до 3 попыток). Контейнер обязателен — без Docker к премиум-серверу успех не возвращаем.
+	// Создаём персональный премиум-прокси и контейнер (до 3 попыток). dockerMgr проверен выше до обновления БД; повторная проверка — защита от паники.
 	if uc.premiumServerIP != "" && uc.proxyUC != nil {
 		if uc.dockerMgr == nil {
 			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("Docker не подключён к премиум-серверу (проверьте TLS и cert_path)"))
