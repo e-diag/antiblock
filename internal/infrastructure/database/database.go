@@ -52,6 +52,7 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 	if err := db.AutoMigrate(
 		&domain.User{},
 		&domain.ProxyNode{},
+		&domain.UserProxy{},
 		&domain.Ad{},
 		&domain.AdPin{},
 		&domain.Invoice{},

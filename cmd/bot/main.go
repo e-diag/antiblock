@@ -48,6 +48,7 @@ func main() {
 	defer db.Close()
 
 	userRepo := repository.NewUserRepository(db.DB)
+	userProxyRepo := repository.NewUserProxyRepository(db.DB)
 	proxyRepo := repository.NewProxyRepository(db.DB)
 	adRepo := repository.NewAdRepository(db.DB)
 	adPinRepo := repository.NewAdPinRepository(db.DB)
@@ -91,7 +92,7 @@ func main() {
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
 	adComposeState := handler.NewAdComposeState()
-	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, adRepo, adPinRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
+	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, userProxyRepo, adRepo, adPinRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 
 	opts := []bot.Option{
@@ -138,6 +139,9 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_extra_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "my_proxies", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "my_proxy_", bot.MatchTypePrefix, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_premium_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "check_sub_forced", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cancel_payment", bot.MatchTypeExact, botHandler.HandleCallback)
@@ -153,12 +157,14 @@ func main() {
 	}, botHandler.HandleSuccessfulPayment)
 
 	healthCheckWorker := worker.NewHealthCheckWorker(proxyUC, cfg.Workers.HealthCheck)
+	premiumHealthCheckWorker := worker.NewPremiumHealthCheckWorker(b, proxyUC, cfg.Telegram.GetAdminIDs(), cfg.Workers.PremiumHealthCheck)
 	subscriptionWorker := worker.NewSubscriptionWorker(userUC, cfg.Workers.SubscriptionChecker)
 	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, cfg.Workers.PremiumReminder)
 	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor)
 	adRePinWorker := worker.NewAdRePinWorker(b, adRepo, adPinRepo, cfg.Workers.AdRePin)
 
 	go healthCheckWorker.Start()
+	go premiumHealthCheckWorker.Start()
 	go subscriptionWorker.Start()
 	go premiumReminderWorker.Start()
 	go dockerMonitorWorker.Start()
@@ -196,6 +202,7 @@ func main() {
 		log.Println("Shutting down...")
 		adRePinWorker.Stop()
 		healthCheckWorker.Stop()
+		premiumHealthCheckWorker.Stop()
 		subscriptionWorker.Stop()
 		premiumReminderWorker.Stop()
 		dockerMonitorWorker.Stop()

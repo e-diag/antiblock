@@ -23,9 +23,12 @@ import (
 
 const broadcastDelayMs = 50 // ~20 сообщений в секунду (лимит Telegram ~30/сек)
 
-// formatProxyLine возвращает одну строку для списка прокси (админка): ID, ip:port, type, status, опционально Load и RTT.
+// formatProxyLine возвращает одну строку для списка прокси (админка): ID, ip:port, type, status, опционально Load, RTT и "!" для недоступного премиум.
 func formatProxyLine(p *domain.ProxyNode, withBullet bool) string {
 	line := fmt.Sprintf("ID %d: %s:%d [%s] %s", p.ID, p.IP, p.Port, p.Type, p.Status)
+	if p.Type == domain.ProxyTypePremium && p.UnreachableSince != nil {
+		line += " ! не отвечает"
+	}
 	if p.Type == domain.ProxyTypeFree {
 		line += fmt.Sprintf(" Load:%d", p.Load)
 	}
@@ -40,13 +43,14 @@ func formatProxyLine(p *domain.ProxyNode, withBullet bool) string {
 
 // BotHandler обрабатывает команды бота
 type BotHandler struct {
-	userUC       usecase.UserUseCase
-	proxyUC      usecase.ProxyUseCase
-	paymentUC    usecase.PaymentUseCase
-	userRepo     repository.UserRepository
-	adRepo       repository.AdRepository
-	adPinRepo    repository.AdPinRepository
-	settingsRepo repository.SettingsRepository
+	userUC         usecase.UserUseCase
+	proxyUC        usecase.ProxyUseCase
+	paymentUC      usecase.PaymentUseCase
+	userRepo       repository.UserRepository
+	userProxyRepo  repository.UserProxyRepository
+	adRepo         repository.AdRepository
+	adPinRepo      repository.AdPinRepository
+	settingsRepo   repository.SettingsRepository
 
 	dockerMgr   *docker.Manager
 	forcedSubCh string // из конфига (fallback, если в БД пусто)
@@ -66,6 +70,7 @@ func NewBotHandler(
 	proxyUC usecase.ProxyUseCase,
 	paymentUC usecase.PaymentUseCase,
 	userRepo repository.UserRepository,
+	userProxyRepo repository.UserProxyRepository,
 	adRepo repository.AdRepository,
 	adPinRepo repository.AdPinRepository,
 	settingsRepo repository.SettingsRepository,
@@ -81,6 +86,7 @@ func NewBotHandler(
 		proxyUC:            proxyUC,
 		paymentUC:          paymentUC,
 		userRepo:           userRepo,
+		userProxyRepo:      userProxyRepo,
 		adRepo:             adRepo,
 		adPinRepo:          adPinRepo,
 		settingsRepo:       settingsRepo,
@@ -193,6 +199,10 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	if user.IsPremiumActive() {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
 	}
+	if ok, _ := h.proxyUC.HasAvailableFreeProxy(); ok {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "➕ Получить дополнительный прокси", CallbackData: "get_extra_proxy"}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: "📋 Мои прокси", CallbackData: "my_proxies"}})
 	kb = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return welcomeMsg, kb
 }
@@ -338,6 +348,15 @@ func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int
 		},
 	}
 	b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+	if h.userProxyRepo != nil {
+		_ = h.userProxyRepo.Create(&domain.UserProxy{
+			UserID:    user.ID,
+			IP:        proxy.IP,
+			Port:      proxy.Port,
+			Secret:    proxy.Secret,
+			ProxyType: proxy.Type,
+		})
+	}
 	if !user.IsPremiumActive() {
 		h.sendActiveAdIfExists(ctx, b, chatID)
 	}
@@ -566,6 +585,85 @@ func (h *BotHandler) managerPanelContent() (msg string, kb *models.InlineKeyboar
 	return msg, kb
 }
 
+// refreshKeyboardStats возвращает клавиатуру [Обновить, Назад] для экрана статистики.
+func refreshKeyboardStats() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "🔄 Обновить", CallbackData: "mgr_refresh_stats"}, {Text: "◀️ Назад", CallbackData: "mgr_back"}},
+		},
+	}
+}
+
+// refreshKeyboardProxies возвращает клавиатуру [Обновить, Назад] для экрана прокси.
+func refreshKeyboardProxies() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "🔄 Обновить", CallbackData: "mgr_refresh_proxies"}, {Text: "◀️ Назад", CallbackData: "mgr_back"}},
+		},
+	}
+}
+
+// buildManagerStatsMessage формирует текст блока «Статистика»: пользователи, прокси (Free / Premium только активные), объявление, ОП.
+func (h *BotHandler) buildManagerStatsMessage() (string, error) {
+	stats, err := h.proxyUC.GetStats()
+	if err != nil {
+		return "", err
+	}
+	userCount, _ := h.userRepo.Count()
+	msg := fmt.Sprintf("📊 <b>Статистика</b>\n\n👥 Пользователей: %d\n\n", userCount)
+	msg += fmt.Sprintf("🌐 <b>Прокси</b>\n🆓 Free: %d (активных: см. список)\n💎 Активных премиум: %d", stats.FreeProxies, stats.PremiumProxies)
+	if stats.UnreachablePremiumCount > 0 {
+		msg += fmt.Sprintf(" <b>(!%d не работают)</b>", stats.UnreachablePremiumCount)
+	}
+	msg += "\n"
+	ad, _ := h.adRepo.GetActiveOne()
+	if ad != nil {
+		msg += fmt.Sprintf("\n📣 <b>Объявление</b> (ID %d)\n👁 Показы: %d\n🖱 Клики: %d", ad.ID, ad.Impressions, ad.Clicks)
+	}
+	if h.settingsRepo != nil {
+		if forcedSubs, _ := h.settingsRepo.Get("forced_subs_count"); forcedSubs != "" {
+			msg += fmt.Sprintf("\n\n📢 Подписок по ОП: %s", forcedSubs)
+		}
+	}
+	return msg, nil
+}
+
+// buildManagerProxiesMessage формирует текст списка прокси: секция Free, затем секция Premium (только активные), с пометкой "!" для недоступных.
+func (h *BotHandler) buildManagerProxiesMessage() (string, error) {
+	proxies, err := h.proxyUC.GetAll()
+	if err != nil {
+		return "", err
+	}
+	var freeList, premiumList []*domain.ProxyNode
+	for _, p := range proxies {
+		if p.Type == domain.ProxyTypeFree {
+			freeList = append(freeList, p)
+		} else if p.Type == domain.ProxyTypePremium && p.Status == domain.ProxyStatusActive {
+			premiumList = append(premiumList, p)
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("📋 <b>Прокси</b> (удалить: /delproxy id)\n\n")
+	sb.WriteString("🆓 <b>Free-прокси</b>\n")
+	if len(freeList) == 0 {
+		sb.WriteString("Нет.\n\n")
+	} else {
+		for _, p := range freeList {
+			sb.WriteString(formatProxyLine(p, true) + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("💎 <b>Premium-прокси (только активные)</b>\n")
+	if len(premiumList) == 0 {
+		sb.WriteString("Нет.\n")
+	} else {
+		for _, p := range premiumList {
+			sb.WriteString(formatProxyLine(p, true) + "\n")
+		}
+	}
+	return sb.String(), nil
+}
+
 // HandleManager открывает панель менеджера с inline-кнопками (только админ)
 func (h *BotHandler) HandleManager(ctx context.Context, b *bot.Bot, update *models.Update) {
 	msg, kb := h.managerPanelContent()
@@ -600,41 +698,60 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		showManagerPanel()
 
 	case "mgr_stats":
-		stats, err := h.proxyUC.GetStats()
+		msg, err := h.buildManagerStatsMessage()
 		if err != nil {
 			send("❌ Ошибка статистики")
 			return
 		}
-		userCount, _ := h.userRepo.Count()
-		msg := fmt.Sprintf("📊 <b>Статистика</b>\n\n👥 Пользователей: %d\n🌐 Прокси: %d\n✅ Активных: %d\n🆓 Free: %d\n💎 Premium: %d",
-			userCount, stats.TotalProxies, stats.ActiveProxies, stats.FreeProxies, stats.PremiumProxies)
-		ad, _ := h.adRepo.GetActiveOne()
-		if ad != nil {
-			msg += fmt.Sprintf("\n\n📣 <b>Объявление</b> (ID %d)\n👁 Показы: %d\n🖱 Клики: %d", ad.ID, ad.Impressions, ad.Clicks)
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: refreshKeyboardStats(),
+		})
+
+	case "mgr_refresh_stats":
+		msgObj := update.CallbackQuery.Message.Message
+		if msgObj == nil {
+			return
 		}
-		if h.settingsRepo != nil {
-			if forcedSubs, _ := h.settingsRepo.Get("forced_subs_count"); forcedSubs != "" {
-				msg += fmt.Sprintf("\n\n📢 Подписок по ОП: %s", forcedSubs)
-			}
+		msg, err := h.buildManagerStatsMessage()
+		if err != nil {
+			send("❌ Ошибка статистики")
+			return
 		}
-		send(msg)
+		_, _ = b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      msgObj.Chat.ID,
+			MessageID:  msgObj.ID,
+			Text:       msg,
+			ParseMode:  models.ParseModeHTML,
+			ReplyMarkup: refreshKeyboardStats(),
+		})
 
 	case "mgr_proxies":
-		proxies, err := h.proxyUC.GetAll()
+		msg, err := h.buildManagerProxiesMessage()
 		if err != nil {
 			send("❌ Ошибка списка прокси")
 			return
 		}
-		if len(proxies) == 0 {
-			send("Нет прокси. Добавьте Free-прокси через кнопку «Добавить прокси» и отправьте:\n<code>/addproxy ip port secret Free</code>")
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: refreshKeyboardProxies(),
+		})
+
+	case "mgr_refresh_proxies":
+		msgObj := update.CallbackQuery.Message.Message
+		if msgObj == nil {
 			return
 		}
-		var sb strings.Builder
-		sb.WriteString("📋 <b>Прокси</b> (удалить: /delproxy id)\n\n")
-		for _, p := range proxies {
-			sb.WriteString(formatProxyLine(p, true) + "\n")
+		msg, err := h.buildManagerProxiesMessage()
+		if err != nil {
+			send("❌ Ошибка списка прокси")
+			return
 		}
-		send(sb.String())
+		_, _ = b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      msgObj.Chat.ID,
+			MessageID:  msgObj.ID,
+			Text:       msg,
+			ParseMode:  models.ParseModeHTML,
+			ReplyMarkup: refreshKeyboardProxies(),
+		})
 
 	case "mgr_addproxy":
 		send("➕ <b>Добавить прокси</b>\n\nДобавляются только <b>Free</b>-прокси. Отправьте:\n<code>/addproxy &lt;ip&gt; &lt;port&gt; &lt;secret&gt; Free</code>\n\nПремиум-прокси создаются автоматически при покупке подписки.")
@@ -841,13 +958,12 @@ func (h *BotHandler) HandleStats(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 
-	msg := fmt.Sprintf("📊 Статистика:\n\n"+
-		"👥 Всего пользователей: %d\n\n"+
-		"🌐 Всего прокси: %d\n"+
-		"✅ Активных прокси: %d\n"+
-		"🆓 Бесплатных: %d\n"+
-		"💎 Премиум: %d",
+	msg := fmt.Sprintf("📊 Статистика:\n\n👥 Всего пользователей: %d\n\n🌐 Прокси: всего %d, активных %d\n🆓 Free: %d\n💎 Активных премиум: %d",
 		userCount, stats.TotalProxies, stats.ActiveProxies, stats.FreeProxies, stats.PremiumProxies)
+	if stats.UnreachablePremiumCount > 0 {
+		msg += fmt.Sprintf(" (!%d не работают)", stats.UnreachablePremiumCount)
+	}
+	msg += "\n"
 	ad, _ := h.adRepo.GetActiveOne()
 	if ad != nil {
 		msg += fmt.Sprintf("\n\n📣 Объявление: показы %d, клики %d", ad.Impressions, ad.Clicks)
@@ -1642,6 +1758,54 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 	case "get_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleGetProxy(ctx, b, update)
+	case "get_extra_proxy":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
+		if err != nil || user == nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		// Премиум не проверяем на ОП (как в get_proxy); реклама и ОП только для бесплатных.
+		if !user.IsPremiumActive() {
+			channels := h.getForcedSubChannels()
+			if len(channels) > 0 && !h.isSubscribedToForcedChannel(ctx, b, chatID) {
+				msg := "⚠️ Чтобы получить прокси, подпишитесь на каналы ниже. После подписки нажмите «Проверить подписку»."
+				if len(channels) == 1 {
+					msg = "⚠️ Чтобы получить прокси, подпишитесь на канал ниже. После подписки нажмите «Проверить подписку»."
+				}
+				kb := h.buildForcedSubKeyboard(channels)
+				b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+				return
+			}
+		}
+		h.sendProxyToUser(ctx, b, chatID, user, true)
+	case "my_proxies":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		user, errMy := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
+		if errMy != nil || user == nil || h.userProxyRepo == nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		list, errList := h.userProxyRepo.ListByUserID(user.ID)
+		if errList != nil || len(list) == 0 {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID, Text: "У вас пока нет сохранённых прокси. Получите прокси через «Получить proxy».", ParseMode: models.ParseModeHTML,
+			})
+			return
+		}
+		text := "📋 <b>Ваши прокси</b> (нажмите для подключения):"
+		var rows [][]models.InlineKeyboardButton
+		for i, up := range list {
+			label := fmt.Sprintf("🌐 %s:%d", up.IP, up.Port)
+			if len(label) > 64 {
+				label = fmt.Sprintf("Прокси %d", i+1)
+			}
+			rows = append(rows, []models.InlineKeyboardButton{{Text: label, CallbackData: "my_proxy_" + strconv.FormatUint(uint64(up.ID), 10)}})
+		}
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML,
+			ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: rows},
+		})
 	case "get_premium_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
@@ -1701,6 +1865,27 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		})
 		return
 	default:
+		if strings.HasPrefix(data, "my_proxy_") {
+			idStr := strings.TrimPrefix(data, "my_proxy_")
+			upID, err := strconv.ParseUint(idStr, 10, 32)
+			if err == nil && h.userProxyRepo != nil {
+				user, _ := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
+				if user != nil {
+					up, _ := h.userProxyRepo.GetByID(uint(upID))
+					if up != nil && up.UserID == user.ID {
+						b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+						proxyURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", up.IP, up.Port, up.Secret)
+						msg := fmt.Sprintf("✅ Подключение к прокси:\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите кнопку для настройки:",
+							up.IP, up.Port, up.Secret)
+						kb := &models.InlineKeyboardMarkup{
+							InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться", URL: proxyURL}}},
+						}
+						b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+						return
+					}
+				}
+			}
+		}
 		// Клик по кнопке объявления (ad_click_ID) — считаем клик и открываем ссылку
 		if strings.HasPrefix(data, "ad_click_") {
 			idStr := strings.TrimPrefix(data, "ad_click_")

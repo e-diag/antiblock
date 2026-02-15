@@ -25,16 +25,25 @@ type ProxyUseCase interface {
 	HealthCheck(proxy *domain.ProxyNode) error
 	CheckAllProxies() error
 	GetStats() (ProxyStats, error)
+	// HasAvailableFreeProxy возвращает true, если есть хотя бы один доступный free-прокси.
+	HasAvailableFreeProxy() (bool, error)
+	// GetActivePremiumProxies возвращает активные премиум-прокси (для проверки раз в 15 мин).
+	GetActivePremiumProxies() ([]*domain.ProxyNode, error)
+	// GetUnreachablePremiumProxies возвращает премиум-прокси с unreachable_since (перепроверка раз в 5 мин).
+	GetUnreachablePremiumProxies() ([]*domain.ProxyNode, error)
+	// CheckPremiumProxy проверяет премиум-прокси; при неудаче выставляет UnreachableSince, при успехе сбрасывает. Возвращает reachable.
+	CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bool, err error)
 	// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
 	// выбирает свободный порт 20000-30000, создаёт/обновляет запись в proxy_nodes с serverIP.
 	EnsurePremiumProxyForUser(user *domain.User, serverIP string) (*domain.ProxyNode, error)
 }
 
 type ProxyStats struct {
-	TotalProxies  int64
-	ActiveProxies  int64
-	FreeProxies    int64
-	PremiumProxies int64
+	TotalProxies          int64
+	ActiveProxies         int64
+	FreeProxies           int64
+	PremiumProxies        int64 // только активные премиум
+	UnreachablePremiumCount int64
 }
 
 type proxyUseCase struct {
@@ -196,32 +205,83 @@ func (uc *proxyUseCase) GetStats() (ProxyStats, error) {
 	if err != nil {
 		return ProxyStats{}, err
 	}
-
 	active, err := uc.proxyRepo.CountActive()
 	if err != nil {
 		return ProxyStats{}, err
 	}
-
+	activePremium, err := uc.proxyRepo.CountActivePremium()
+	if err != nil {
+		return ProxyStats{}, err
+	}
+	unreachablePremium, err := uc.proxyRepo.CountUnreachablePremium()
+	if err != nil {
+		return ProxyStats{}, err
+	}
 	allProxies, err := uc.proxyRepo.GetAll()
 	if err != nil {
 		return ProxyStats{}, err
 	}
-
-	var freeCount, premiumCount int64
+	var freeCount int64
 	for _, p := range allProxies {
 		if p.Type == domain.ProxyTypeFree {
 			freeCount++
-		} else {
-			premiumCount++
 		}
 	}
-
 	return ProxyStats{
-		TotalProxies:   total,
-		ActiveProxies:  active,
-		FreeProxies:    freeCount,
-		PremiumProxies: premiumCount,
+		TotalProxies:           total,
+		ActiveProxies:          active,
+		FreeProxies:            freeCount,
+		PremiumProxies:         activePremium,
+		UnreachablePremiumCount: unreachablePremium,
 	}, nil
+}
+
+func (uc *proxyUseCase) HasAvailableFreeProxy() (bool, error) {
+	proxies, err := uc.proxyRepo.GetAvailableByType(domain.ProxyTypeFree)
+	if err != nil {
+		return false, err
+	}
+	return len(proxies) > 0, nil
+}
+
+func (uc *proxyUseCase) GetActivePremiumProxies() ([]*domain.ProxyNode, error) {
+	return uc.proxyRepo.GetActivePremiumProxies()
+}
+
+func (uc *proxyUseCase) GetUnreachablePremiumProxies() ([]*domain.ProxyNode, error) {
+	return uc.proxyRepo.GetUnreachablePremiumProxies()
+}
+
+// CheckPremiumProxy выполняет TCP-проверку премиум-прокси. При неудаче выставляет UnreachableSince (Status не меняет);
+// при успехе сбрасывает UnreachableSince и выставляет Status = active.
+func (uc *proxyUseCase) CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bool, err error) {
+	timeout := 5 * time.Second
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxy.IP, proxy.Port), timeout)
+	if err != nil {
+		now := time.Now()
+		// Устанавливаем UnreachableSince только при первом переходе в недоступное состояние, чтобы сохранить время первой потери связи.
+		if proxy.UnreachableSince == nil {
+			proxy.UnreachableSince = &now
+		}
+		proxy.LastCheck = &now
+		proxy.LastRTTMs = nil
+		_ = uc.proxyRepo.Update(proxy)
+		return false, nil
+	}
+	conn.Close()
+	rttMs := int(time.Since(start).Milliseconds())
+	proxy.LastRTTMs = &rttMs
+	proxy.UnreachableSince = nil
+	if proxy.Status != domain.ProxyStatusActive {
+		proxy.Status = domain.ProxyStatusActive
+	}
+	now := time.Now()
+	proxy.LastCheck = &now
+	if err := uc.proxyRepo.Update(proxy); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // generatePremiumSecret возвращает секрет для mtg: префикс "dd" + 32 символа HEX (итого 34).

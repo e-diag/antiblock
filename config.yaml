@@ -49,6 +49,11 @@ workers:
     enabled: true
     interval_seconds: 3600  # 1 раз в час — повторное закрепление объявления, если пользователь открепил
 
+  premium_health_check:
+    enabled: true
+    interval_seconds: 900   # 15 мин — проверка всех активных премиум-прокси
+    unreachable_recheck_seconds: 300  # 5 мин — перепроверка недоступных до восстановления
+
 proxy:
   default_secret_length: 32
   free_trial_days: 0  # 0 = нет бесплатного пробного периода

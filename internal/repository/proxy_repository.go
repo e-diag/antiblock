@@ -27,6 +27,14 @@ type ProxyRepository interface {
 	// CleanupExpiredPremiumProxies очищает персональные премиум-прокси пользователей,
 	// у которых подписка истекла более cutoffAgo назад (по полю users.premium_until).
 	CleanupExpiredPremiumProxies(cutoff time.Time) error
+	// GetActivePremiumProxies возвращает премиум-прокси со статусом active (для проверки раз в 15 мин).
+	GetActivePremiumProxies() ([]*domain.ProxyNode, error)
+	// GetUnreachablePremiumProxies возвращает премиум-прокси с unreachable_since IS NOT NULL (перепроверка раз в 5 мин).
+	GetUnreachablePremiumProxies() ([]*domain.ProxyNode, error)
+	// CountUnreachablePremium возвращает количество премиум-прокси с unreachable_since IS NOT NULL.
+	CountUnreachablePremium() (int64, error)
+	// CountActivePremium возвращает количество премиум-прокси со статусом active.
+	CountActivePremium() (int64, error)
 }
 
 type proxyRepository struct {
@@ -160,4 +168,35 @@ func (r *proxyRepository) CleanupExpiredPremiumProxies(cutoff time.Time) error {
 		domain.ProxyTypePremium,
 		cutoff,
 	).Error
+}
+
+func (r *proxyRepository) GetActivePremiumProxies() ([]*domain.ProxyNode, error) {
+	var proxies []*domain.ProxyNode
+	err := r.db.Where("type = ? AND status = ?", domain.ProxyTypePremium, domain.ProxyStatusActive).
+		Find(&proxies).Error
+	return proxies, err
+}
+
+func (r *proxyRepository) GetUnreachablePremiumProxies() ([]*domain.ProxyNode, error) {
+	var proxies []*domain.ProxyNode
+	err := r.db.Where("type = ?", domain.ProxyTypePremium).
+		Where("unreachable_since IS NOT NULL").
+		Find(&proxies).Error
+	return proxies, err
+}
+
+func (r *proxyRepository) CountUnreachablePremium() (int64, error) {
+	var count int64
+	err := r.db.Model(&domain.ProxyNode{}).
+		Where("type = ? AND unreachable_since IS NOT NULL", domain.ProxyTypePremium).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *proxyRepository) CountActivePremium() (int64, error) {
+	var count int64
+	err := r.db.Model(&domain.ProxyNode{}).
+		Where("type = ? AND status = ?", domain.ProxyTypePremium, domain.ProxyStatusActive).
+		Count(&count).Error
+	return count, err
 }

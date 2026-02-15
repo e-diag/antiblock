@@ -83,11 +83,19 @@ type RateLimitConfig struct {
 }
 
 type WorkersConfig struct {
-	HealthCheck         WorkerConfig `yaml:"health_check"`
-	SubscriptionChecker WorkerConfig `yaml:"subscription_checker"`
-	DockerMonitor       WorkerConfig `yaml:"docker_monitor"`
-	PremiumReminder     WorkerConfig `yaml:"premium_reminder"`
-	AdRePin             WorkerConfig `yaml:"ad_repin"`
+	HealthCheck         WorkerConfig              `yaml:"health_check"`
+	SubscriptionChecker WorkerConfig              `yaml:"subscription_checker"`
+	DockerMonitor       WorkerConfig              `yaml:"docker_monitor"`
+	PremiumReminder     WorkerConfig              `yaml:"premium_reminder"`
+	AdRePin             WorkerConfig              `yaml:"ad_repin"`
+	PremiumHealthCheck  PremiumHealthCheckConfig  `yaml:"premium_health_check"`
+}
+
+// PremiumHealthCheckConfig — интервалы проверки премиум-прокси: полная проверка и перепроверка недоступных.
+type PremiumHealthCheckConfig struct {
+	Enabled                   bool `yaml:"enabled"`
+	IntervalSeconds           int  `yaml:"interval_seconds"`            // полная проверка активных премиум (например 900 = 15 мин)
+	UnreachableRecheckSeconds int  `yaml:"unreachable_recheck_seconds"` // перепроверка недоступных (например 300 = 5 мин)
 }
 
 type WorkerConfig struct {

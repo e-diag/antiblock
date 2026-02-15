@@ -31,7 +31,8 @@ type ProxyNode struct {
 	ContainerName string      `gorm:"size:255" json:"container_name"`
 	Status        ProxyStatus `gorm:"type:varchar(20);default:'active'" json:"status"`
 	Load          int         `gorm:"default:0" json:"load"` // текущее количество пользователей (для free-прокси)
-	LastRTTMs     *int        `json:"last_rtt_ms,omitempty"` // задержка в мс (по HealthCheck), nil если не измерялась
+	LastRTTMs       *int       `json:"last_rtt_ms,omitempty"` // задержка в мс (по HealthCheck), nil если не измерялась
+	UnreachableSince *time.Time `gorm:"column:unreachable_since" json:"unreachable_since,omitempty"` // для премиум: не отвечает (проверка каждые 5 мин до восстановления)
 	LastCheck     *time.Time  `json:"last_check,omitempty"`
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
