@@ -420,15 +420,10 @@ func (h *BotHandler) getPremiumStars() int {
 	return n
 }
 
-// buildAdKeyboard возвращает клавиатуру с одной URL-кнопкой для объявления (кликабельная ссылка).
+// buildAdKeyboard возвращает клавиатуру с одной кнопкой объявления. Используется CallbackData (ad_click_ID), чтобы бот получал callback и считал клики; ссылка открывается через AnswerCallbackQuery(URL).
 func (h *BotHandler) buildAdKeyboard(ad *domain.Ad) *models.InlineKeyboardMarkup {
-	btnURL := ""
-	if ad.ButtonURL != nil && *ad.ButtonURL != "" {
-		btnURL = *ad.ButtonURL
-	} else if ad.ChannelLink != "" {
-		btnURL = channelToURL(ad.ChannelLink)
-	}
-	if btnURL == "" {
+	hasLink := (ad.ButtonURL != nil && *ad.ButtonURL != "") || ad.ChannelLink != ""
+	if !hasLink {
 		return nil
 	}
 	btnText := "Подписаться"
@@ -437,7 +432,7 @@ func (h *BotHandler) buildAdKeyboard(ad *domain.Ad) *models.InlineKeyboardMarkup
 	}
 	return &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: btnText, URL: btnURL}},
+			{{Text: btnText, CallbackData: fmt.Sprintf("ad_click_%d", ad.ID)}},
 		},
 	}
 }
@@ -1889,12 +1884,20 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			if err == nil {
 				_ = h.adRepo.IncrementClicks(uint(adID))
 				ad, _ := h.adRepo.GetByID(uint(adID))
-				if ad != nil && ad.ChannelLink != "" {
-					b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-						CallbackQueryID: cqID,
-						URL:              ad.ChannelLink,
-					})
-					return
+				if ad != nil {
+					openURL := ""
+					if ad.ButtonURL != nil && *ad.ButtonURL != "" {
+						openURL = *ad.ButtonURL
+					} else if ad.ChannelLink != "" {
+						openURL = channelToURL(ad.ChannelLink)
+					}
+					if openURL != "" {
+						b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+							CallbackQueryID: cqID,
+							URL:             openURL,
+						})
+						return
+					}
 				}
 			}
 		}
