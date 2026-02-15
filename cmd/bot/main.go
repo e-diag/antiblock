@@ -56,7 +56,7 @@ func main() {
 	starPaymentRepo := repository.NewStarPaymentRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 
-	proxyUC := usecase.NewProxyUseCase(proxyRepo)
+	proxyUC := usecase.NewProxyUseCase(proxyRepo, userProxyRepo)
 	var dockerMgr *docker.Manager
 	pd := cfg.PremiumDocker
 	if pd.Host != "" && pd.CertPath != "" {

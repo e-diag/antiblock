@@ -192,15 +192,24 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	if len(btnPremium) > 64 {
 		btnPremium = fmt.Sprintf("💎 Premium — proxy на %d дн.", days)
 	}
+	// Одна кнопка на получение бесплатного прокси: для новых — «Получить прокси», если уже есть хотя бы один free — «Получить дополнительный прокси».
+	btnGetProxy := "🔗 Получить прокси"
+	if h.userProxyRepo != nil {
+		if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
+			for _, up := range list {
+				if up.ProxyType == domain.ProxyTypeFree {
+					btnGetProxy = "➕ Получить дополнительный прокси"
+					break
+				}
+			}
+		}
+	}
 	rows := [][]models.InlineKeyboardButton{
-		{{Text: "🔗 Получить proxy", CallbackData: "get_proxy"}},
+		{{Text: btnGetProxy, CallbackData: "get_proxy"}},
 		{{Text: btnPremium, CallbackData: "buy_premium"}},
 	}
 	if user.IsPremiumActive() {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
-	}
-	if ok, _ := h.proxyUC.HasAvailableFreeProxy(); ok {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "➕ Получить дополнительный прокси", CallbackData: "get_extra_proxy"}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: "📋 Мои прокси", CallbackData: "my_proxies"}})
 	kb = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
@@ -330,8 +339,12 @@ func (h *BotHandler) buildForcedSubKeyboard(channels []string) *models.InlineKey
 func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User, preferFree bool) {
 	proxy, err := h.proxyUC.GetProxyForUser(user, preferFree)
 	if err != nil {
+		msg := "❌ В данный момент нет доступных прокси-серверов. Попробуйте позже."
+		if errors.Is(err, usecase.ErrNoMoreFreeProxiesForUser) {
+			msg = "❌ Доступных прокси больше нет. Вы уже получили все бесплатные прокси."
+		}
 		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: chatID, Text: "❌ В данный момент нет доступных прокси-серверов. Попробуйте позже.", ParseMode: models.ParseModeHTML,
+			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML,
 		})
 		return
 	}
@@ -1759,26 +1772,9 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleGetProxy(ctx, b, update)
 	case "get_extra_proxy":
+		// Та же логика, что и «Получить прокси» (кнопка могла остаться в старых сообщениях).
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
-		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
-		if err != nil || user == nil {
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
-			return
-		}
-		// Премиум не проверяем на ОП (как в get_proxy); реклама и ОП только для бесплатных.
-		if !user.IsPremiumActive() {
-			channels := h.getForcedSubChannels()
-			if len(channels) > 0 && !h.isSubscribedToForcedChannel(ctx, b, chatID) {
-				msg := "⚠️ Чтобы получить прокси, подпишитесь на каналы ниже. После подписки нажмите «Проверить подписку»."
-				if len(channels) == 1 {
-					msg = "⚠️ Чтобы получить прокси, подпишитесь на канал ниже. После подписки нажмите «Проверить подписку»."
-				}
-				kb := h.buildForcedSubKeyboard(channels)
-				b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
-				return
-			}
-		}
-		h.sendProxyToUser(ctx, b, chatID, user, true)
+		h.HandleGetProxy(ctx, b, update)
 	case "my_proxies":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		user, errMy := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))

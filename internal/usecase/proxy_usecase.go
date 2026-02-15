@@ -47,8 +47,12 @@ type ProxyStats struct {
 }
 
 type proxyUseCase struct {
-	proxyRepo repository.ProxyRepository
+	proxyRepo      repository.ProxyRepository
+	userProxyRepo  repository.UserProxyRepository
 }
+
+// ErrNoMoreFreeProxiesForUser возвращается, когда пользователь уже получил все доступные бесплатные прокси.
+var ErrNoMoreFreeProxiesForUser = errors.New("user has received all available free proxies")
 
 var secretRegexp = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 
@@ -76,9 +80,9 @@ func isUniquePortError(err error) bool {
 	return false
 }
 
-// NewProxyUseCase создает новый use case для прокси
-func NewProxyUseCase(proxyRepo repository.ProxyRepository) ProxyUseCase {
-	return &proxyUseCase{proxyRepo: proxyRepo}
+// NewProxyUseCase создает новый use case для прокси. userProxyRepo опционален: если задан, при выдаче free-прокси исключаются уже выданные этому пользователю.
+func NewProxyUseCase(proxyRepo repository.ProxyRepository, userProxyRepo repository.UserProxyRepository) ProxyUseCase {
+	return &proxyUseCase{proxyRepo: proxyRepo, userProxyRepo: userProxyRepo}
 }
 
 func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*domain.ProxyNode, error) {
@@ -105,6 +109,29 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*do
 	proxies, err := uc.proxyRepo.GetAvailableByType(proxyType)
 	if err != nil {
 		return nil, err
+	}
+
+	// Для free-прокси исключаем те, что пользователь уже получал (не выдаём один и тот же бесплатный прокси повторно).
+	if proxyType == domain.ProxyTypeFree && uc.userProxyRepo != nil {
+		issued, errIssued := uc.userProxyRepo.ListByUserID(user.ID)
+		if errIssued == nil {
+			issuedSet := make(map[string]struct{})
+			for _, up := range issued {
+				if up.ProxyType == domain.ProxyTypeFree {
+					issuedSet[fmt.Sprintf("%s:%d", up.IP, up.Port)] = struct{}{}
+				}
+			}
+			var filtered []*domain.ProxyNode
+			for _, p := range proxies {
+				if _, ok := issuedSet[fmt.Sprintf("%s:%d", p.IP, p.Port)]; !ok {
+					filtered = append(filtered, p)
+				}
+			}
+			proxies = filtered
+			if len(proxies) == 0 {
+				return nil, ErrNoMoreFreeProxiesForUser
+			}
+		}
 	}
 
 	if len(proxies) == 0 {
