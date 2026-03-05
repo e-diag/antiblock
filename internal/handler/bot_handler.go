@@ -1643,17 +1643,30 @@ func (h *BotHandler) HandleAdComposeMessage(ctx context.Context, b *bot.Bot, upd
 				h.adComposeState.Clear(adminID)
 				return
 			}
-			// При редактировании снимаем старые закрепления перед рассылкой нового текста
+			// При редактировании правим существующие сообщения, не рассылаем заново
+			edited := 0
 			if h.adPinRepo != nil {
 				pins, _ := h.adPinRepo.ListByAdID(ad.ID)
+				kb := h.buildAdKeyboard(ad)
 				for _, pin := range pins {
-					_, _ = b.UnpinChatMessage(ctx, &bot.UnpinChatMessageParams{ChatID: pin.ChatID, MessageID: pin.MessageID})
+					_, errEdit := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+						ChatID:      pin.ChatID,
+						MessageID:   pin.MessageID,
+						Text:        ad.Text,
+						ParseMode:   models.ParseModeHTML,
+						ReplyMarkup: kb,
+					})
+					if errEdit == nil {
+						edited++
+					}
 					time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
 				}
-				_ = h.adPinRepo.DeleteByAdID(ad.ID)
 			}
+			send(fmt.Sprintf("✅ Объявление обновлено. Отредактировано в %d чатах.", edited))
+			h.adComposeState.Clear(adminID)
+			return
 		}
-		// Рассылка только бесплатным пользователям с закреплением (один раз при сохранении)
+		// Рассылка только для нового объявления — бесплатным пользователям с закреплением
 		var successMsg string
 		users, errUsers := h.userRepo.GetAll()
 		if errUsers == nil && h.adPinRepo != nil {
@@ -1674,17 +1687,9 @@ func (h *BotHandler) HandleAdComposeMessage(ctx context.Context, b *bot.Bot, upd
 				}
 				time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
 			}
-			if d.EditingID == 0 {
-				successMsg = fmt.Sprintf("✅ Объявление добавлено и активировано. Разослано и закреплено у %d бесплатных пользователей.", sent)
-			} else {
-				successMsg = fmt.Sprintf("✅ Объявление обновлено. Разослано и закреплено у %d бесплатных пользователей.", sent)
-			}
+			successMsg = fmt.Sprintf("✅ Объявление добавлено и активировано. Разослано и закреплено у %d бесплатных пользователей.", sent)
 		} else {
-			if d.EditingID == 0 {
-				successMsg = "✅ Объявление добавлено и активировано."
-			} else {
-				successMsg = "✅ Объявление обновлено."
-			}
+			successMsg = "✅ Объявление добавлено и активировано."
 			if errUsers != nil {
 				successMsg += fmt.Sprintf(" Рассылка не выполнена: %v", errUsers)
 			} else if h.adPinRepo == nil {
