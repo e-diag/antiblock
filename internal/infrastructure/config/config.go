@@ -161,7 +161,8 @@ func Load(path string) (*Config, error) {
 		cfg.XRocket.APIToken = getEnv("XROCKET_API_TOKEN", "")
 	}
 	if cfg.XRocket.APIURL == "" {
-		cfg.XRocket.APIURL = getEnv("XROCKET_API_URL", "https://pay.xrocket.tg/api")
+		// Базовый URL xRocket без /api; эндпоинты начинаются с /tg-invoices и т.п.
+		cfg.XRocket.APIURL = getEnv("XROCKET_API_URL", "https://pay.xrocket.tg")
 	}
 	if cfg.XRocket.WebhookPort == "" {
 		cfg.XRocket.WebhookPort = getEnv("XROCKET_WEBHOOK_PORT", "8081")
