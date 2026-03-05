@@ -138,6 +138,7 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_audience_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium_usdt", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_extra_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
