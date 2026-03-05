@@ -74,6 +74,13 @@ func (rl *RateLimiter) Middleware(next bot.HandlerFunc) bot.HandlerFunc {
 			if cid := rl.chatIDForReply(update); cid != 0 {
 				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: cid, Text: "⏳ Слишком много запросов. Подождите секунду и попробуйте снова."})
 			}
+			// Обязательно отвечаем на callback, иначе у пользователя бесконечно крутится загрузка на кнопке.
+			if update.CallbackQuery != nil {
+				_, _ = b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+					CallbackQueryID: update.CallbackQuery.ID,
+					Text:            "Подождите секунду",
+				})
+			}
 			return
 		}
 

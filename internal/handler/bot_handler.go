@@ -287,10 +287,14 @@ func channelToChatID(s string) string {
 // channelToURL возвращает URL для кнопки «Подписаться»
 func channelToURL(s string) string {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
 	if strings.HasPrefix(s, "http") {
 		return s
 	}
 	s = strings.TrimPrefix(s, "@")
+	s = strings.TrimPrefix(s, "t.me/")
 	return "https://t.me/" + s
 }
 
@@ -1933,7 +1937,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 				}
 			}
 		}
-		// Клик по кнопке объявления (ad_click_ID) — считаем клик и открываем ссылку
+		// Клик по кнопке объявления (ad_click_ID) — считаем клик и открываем ссылку. Всегда отвечаем на callback, иначе бесконечная загрузка.
 		if strings.HasPrefix(data, "ad_click_") {
 			idStr := strings.TrimPrefix(data, "ad_click_")
 			adID, err := strconv.ParseUint(idStr, 10, 32)
@@ -1944,8 +1948,9 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 					openURL := ""
 					if ad.ButtonURL != nil && *ad.ButtonURL != "" {
 						openURL = *ad.ButtonURL
-					} else if ad.ChannelLink != "" {
-						openURL = channelToURL(ad.ChannelLink)
+					}
+					if openURL == "" && ad.ChannelLink != "" {
+						openURL = channelToURL(strings.TrimSpace(ad.ChannelLink))
 					}
 					if openURL != "" {
 						b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
@@ -1956,6 +1961,9 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 					}
 				}
 			}
+			// Ссылка не найдена или ошибка — всё равно снимаем загрузку с кнопки
+			b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID, Text: "Ссылка недоступна"})
+			return
 		}
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 			CallbackQueryID: cqID,
