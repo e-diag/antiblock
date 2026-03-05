@@ -46,8 +46,14 @@ services:
       DB_SSLMODE: disable
       DB_TIMEZONE: UTC
       
-      # CryptoBot
-      CRYPTOBOT_API_TOKEN: ${CRYPTOBOT_API_TOKEN}
+      # xRocket Pay (USDT)
+      XROCKET_API_TOKEN: ${XROCKET_API_TOKEN}
+      XROCKET_API_URL: ${XROCKET_API_URL:-https://pay.xrocket.tg}
+      XROCKET_WEBHOOK_PORT: ${XROCKET_WEBHOOK_PORT:-8081}
+      XROCKET_WEBHOOK_SECRET: ${XROCKET_WEBHOOK_SECRET:-}
+
+      # CryptoBot (устарело, можно не заполнять)
+      CRYPTOBOT_API_TOKEN: ${CRYPTOBOT_API_TOKEN:-}
     restart: unless-stopped
     networks:
       - antiblock-network
