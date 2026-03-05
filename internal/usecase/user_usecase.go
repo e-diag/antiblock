@@ -95,6 +95,7 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		}
 	}
 
+	// Подписка на durationDays (например 30). При повторной оплате (Stars или xRocket) — добавляем +durationDays к текущей дате окончания.
 	now := time.Now().UTC()
 	var premiumUntil time.Time
 	if user.PremiumUntil != nil && user.PremiumUntil.After(now) {

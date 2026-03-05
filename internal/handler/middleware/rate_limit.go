@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -36,6 +37,17 @@ func (rl *RateLimiter) userID(update *models.Update) int64 {
 	return 0
 }
 
+// chatIDForReply возвращает ID чата для ответа (в личке совпадает с userID).
+func (rl *RateLimiter) chatIDForReply(update *models.Update) int64 {
+	if update.Message != nil {
+		return update.Message.Chat.ID
+	}
+	if update.CallbackQuery != nil {
+		return update.CallbackQuery.From.ID
+	}
+	return 0
+}
+
 // Middleware возвращает middleware для rate limiting
 func (rl *RateLimiter) Middleware(next bot.HandlerFunc) bot.HandlerFunc {
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -58,6 +70,10 @@ func (rl *RateLimiter) Middleware(next bot.HandlerFunc) bot.HandlerFunc {
 
 		if len(validRequests) >= rl.limit {
 			rl.mu.Unlock()
+			log.Printf("[rate_limit] limit exceeded for user/chat %d", userID)
+			if cid := rl.chatIDForReply(update); cid != 0 {
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: cid, Text: "⏳ Слишком много запросов. Подождите секунду и попробуйте снова."})
+			}
 			return
 		}
 

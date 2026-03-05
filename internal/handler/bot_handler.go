@@ -529,6 +529,7 @@ func (h *BotHandler) HandleAddProxy(ctx context.Context, b *bot.Bot, update *mod
 	if update.Message == nil {
 		return
 	}
+	log.Printf("[addproxy] command from chat %d", update.Message.Chat.ID)
 	args := strings.Fields(update.Message.Text)
 	if len(args) < 5 {
 		h.sendText(ctx, b, update, "❌ Использование: /addproxy <ip> <port> <secret> <type>\nТип: только Free (премиум-прокси создаются автоматически при покупке подписки).")
@@ -555,10 +556,11 @@ func (h *BotHandler) HandleAddProxy(ctx context.Context, b *bot.Bot, update *mod
 	}
 
 	if err := h.proxyUC.AddProxy(ip, port, secret, domain.ProxyTypeFree); err != nil {
+		log.Printf("[addproxy] AddProxy error: %v", err)
 		h.sendText(ctx, b, update, fmt.Sprintf("❌ Ошибка при добавлении прокси: %v", err))
 		return
 	}
-
+	log.Printf("[addproxy] added Free proxy %s:%d", ip, port)
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Free-прокси добавлен:\nIP: %s\nПорт: %d", ip, port))
 }
 

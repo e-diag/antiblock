@@ -14,6 +14,8 @@ import (
 )
 
 // XRocketWebhook обрабатывает webhook от xRocket Pay при успешной оплате счёта.
+// Подписка выдаётся на getPremiumDays() дней (настройка premium_days, по умолчанию 30).
+// При повторной оплате (любым способом — xRocket или Stars) ActivatePremium добавляет +N дней к текущей дате окончания.
 // getPremiumDays возвращает текущее число дней премиума из настроек (по умолчанию 30).
 func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, secret string, getPremiumDays func() int) http.HandlerFunc {
 	if getPremiumDays == nil {
@@ -86,6 +88,7 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 		if premiumDays < 1 {
 			premiumDays = 30
 		}
+		// ActivatePremium продлевает подписку на premiumDays; если уже есть активный премиум — добавляет +premiumDays к дате окончания.
 		if err := userUC.ActivatePremium(userID, premiumDays); err != nil {
 			if err == usecase.ErrPremiumProxyCreationFailed {
 				_ = paymentUC.MarkInvoicePaid(invoiceID)
