@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
@@ -52,7 +53,8 @@ func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starP
 	}
 }
 
-// CreateInvoiceRequest для Crypto Pay API: asset (USDT), amount (строка), description, payload
+// CryptoCreateInvoiceRequest для Crypto Pay API: asset (USDT), amount (строка), description, payload.
+// Оставлено для совместимости; для xRocket используется XRocketCreateInvoiceRequest.
 type CreateInvoiceRequest struct {
 	Asset       string `json:"asset"`                  // USDT, TON, BTC, ...
 	Amount      string `json:"amount"`                 // сумма в криптовалюте, напр. "10.5"
@@ -82,7 +84,32 @@ type InvoiceResult struct {
 	Status    string `json:"status"`
 }
 
+// XRocketCreateInvoiceRequest — тело запроса для xRocket /tg-invoices.
+// Поля подобраны по публичной документации xRocket Pay API.
+type XRocketCreateInvoiceRequest struct {
+	Amount      float64 `json:"amount"`                // сумма к оплате
+	Coin        string  `json:"coin"`                  // монета, например USDT
+	Description string  `json:"description,omitempty"` // описание в интерфейсе xRocket
+	Payload     string  `json:"payload,omitempty"`     // произвольные данные (ID пользователя)
+	NumPayments int     `json:"numPayments,omitempty"` // количество активаций (по умолчанию 1)
+}
+
+// XRocketCreateInvoiceResponse — ожидаемый ответ xRocket для /tg-invoices.
+// Используем только ID и URL для оплаты.
+type XRocketCreateInvoiceResponse struct {
+	Data struct {
+		ID   int64  `json:"id"`
+		URL  string `json:"url"`
+		Link string `json:"tgLink"`
+	} `json:"data"`
+}
+
 func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error) {
+	// Если в apiURL указан xRocket — используем интеграцию xRocket Pay.
+	if strings.Contains(strings.ToLower(uc.apiURL), "xrocket") {
+		return uc.createInvoiceXRocket(amount, currency, description, userID)
+	}
+	// Иначе — старая интеграция CryptoPay (на случай обратной совместимости).
 	asset := "USDT"
 	if currency != "" && currency != "USD" {
 		asset = currency
@@ -146,6 +173,76 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 		payURL = invoiceResp.Result.PayURL
 	}
 	return payURL, invoiceResp.Result.InvoiceID, nil
+}
+
+func (uc *paymentUseCase) createInvoiceXRocket(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error) {
+	coin := "USDT"
+	if currency != "" {
+		coin = currency
+	}
+	bodyReq := XRocketCreateInvoiceRequest{
+		Amount:      amount,
+		Coin:        coin,
+		Description: description,
+		Payload:     fmt.Sprintf("%d", userID),
+		NumPayments: 1,
+	}
+	jsonData, err := json.Marshal(bodyReq)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to marshal xRocket request: %w", err)
+	}
+
+	url := strings.TrimRight(uc.apiURL, "/") + "/tg-invoices"
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create xRocket request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Согласно документации xRocket, ключ передаётся в заголовке Rocket-Pay-Key.
+	req.Header.Set("Rocket-Pay-Key", uc.apiToken)
+
+	resp, err := uc.client.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to send xRocket request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read xRocket response: %w", err)
+	}
+
+	var invoiceResp XRocketCreateInvoiceResponse
+	if err := json.Unmarshal(body, &invoiceResp); err != nil {
+		log.Printf("[payment] xRocket CreateInvoice unmarshal error: %v, body: %s", err, string(body))
+		return "", 0, fmt.Errorf("failed to unmarshal xRocket response: %w", err)
+	}
+	if invoiceResp.Data.ID == 0 {
+		log.Printf("[payment] xRocket CreateInvoice: unexpected response, body=%s", string(body))
+		return "", 0, fmt.Errorf("xrocket API error: empty invoice id")
+	}
+
+	inv := &domain.Invoice{
+		InvoiceID: invoiceResp.Data.ID,
+		UserID:    userID,
+		Status:    "pending",
+		Amount:    amount,
+		Currency:  coin,
+	}
+	if err := uc.invRepo.Create(inv); err != nil {
+		return "", 0, fmt.Errorf("failed to save invoice: %w", err)
+	}
+
+	payURL = invoiceResp.Data.Link
+	if payURL == "" {
+		payURL = invoiceResp.Data.URL
+	}
+	if payURL == "" {
+		log.Printf("[payment] xRocket CreateInvoice: no payment URL in response, body=%s", string(body))
+		return "", 0, fmt.Errorf("xrocket API error: no payment url")
+	}
+
+	return payURL, invoiceResp.Data.ID, nil
 }
 
 func (uc *paymentUseCase) GetUserIDByInvoiceID(invoiceID int64) (int64, bool) {

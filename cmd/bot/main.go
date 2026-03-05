@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -14,9 +16,7 @@ import (
 
 	"github.com/yourusername/antiblock/internal/handler"
 	"github.com/yourusername/antiblock/internal/handler/middleware"
-	// "net/http"
-	// "strconv"
-	// "github.com/yourusername/antiblock/internal/handler/webhook" // CryptoPay отключён
+	"github.com/yourusername/antiblock/internal/handler/webhook"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/infrastructure/database"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
@@ -87,7 +87,8 @@ func main() {
 	premiumServerIP := pd.ServerIP
 
 	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, dockerMgr, premiumServerIP)
-	paymentUC := usecase.NewPaymentUseCase(cfg.CryptoBot.APIToken, cfg.CryptoBot.APIURL, invoiceRepo, starPaymentRepo)
+	// Платежи USDT через xRocket Pay API.
+	paymentUC := usecase.NewPaymentUseCase(cfg.XRocket.APIToken, cfg.XRocket.APIURL, invoiceRepo, starPaymentRepo)
 
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
@@ -170,26 +171,30 @@ func main() {
 	go dockerMonitorWorker.Start()
 	go adRePinWorker.Start()
 
-	// CryptoPay отключён — оплата только через Telegram Stars.
-	// if cfg.CryptoBot.WebhookPort != "" {
-	// 	port, _ := strconv.Atoi(cfg.CryptoBot.WebhookPort)
-	// 	if port > 0 {
-	// 		mux := http.NewServeMux()
-	// 		getPremiumDays := func() int {
-	// 			v, _ := settingsRepo.Get("premium_days")
-	// 			if v == "" { return 30 }
-	// 			n, _ := strconv.Atoi(v)
-	// 			if n < 1 { return 30 }
-	// 			return n
-	// 		}
-	// 		mux.HandleFunc("/webhook/cryptopay", webhook.CryptoPayWebhook(userUC, paymentUC, cfg.CryptoBot.WebhookSecret, getPremiumDays))
-	// 		srv := &http.Server{Addr: ":" + cfg.CryptoBot.WebhookPort, Handler: mux}
-	// 		go func() {
-	// 			log.Printf("CryptoPay webhook listening on :%s", cfg.CryptoBot.WebhookPort)
-	// 			_ = srv.ListenAndServe()
-	// 		}()
-	// 	}
-	// }
+	// Webhook xRocket Pay для подтверждения успешной оплаты USDT.
+	if cfg.XRocket.WebhookPort != "" {
+		port, _ := strconv.Atoi(cfg.XRocket.WebhookPort)
+		if port > 0 {
+			mux := http.NewServeMux()
+			getPremiumDays := func() int {
+				v, _ := settingsRepo.Get("premium_days")
+				if v == "" {
+					return 30
+				}
+				n, _ := strconv.Atoi(v)
+				if n < 1 {
+					return 30
+				}
+				return n
+			}
+			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(userUC, paymentUC, cfg.XRocket.WebhookSecret, getPremiumDays))
+			srv := &http.Server{Addr: ":" + cfg.XRocket.WebhookPort, Handler: mux}
+			go func() {
+				log.Printf("xRocket webhook listening on :%s", cfg.XRocket.WebhookPort)
+				_ = srv.ListenAndServe()
+			}()
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

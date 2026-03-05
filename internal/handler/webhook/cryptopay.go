@@ -14,6 +14,7 @@ import (
 )
 
 // CryptoPayWebhook обрабатывает callback от CryptoPay при оплате счёта.
+// Сохранено для совместимости; для xRocket используется отдельный webhook.
 // getPremiumDays возвращает текущее число дней премиума из настроек (по умолчанию 30).
 func CryptoPayWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, secret string, getPremiumDays func() int) http.HandlerFunc {
 	if getPremiumDays == nil {

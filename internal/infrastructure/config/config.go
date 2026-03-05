@@ -15,7 +15,8 @@ type Config struct {
 	App           AppConfig           `yaml:"app"`
 	Telegram      TelegramConfig      `yaml:"telegram"`
 	Database      DatabaseConfig      `yaml:"database"`
-	CryptoBot     CryptoBotConfig     `yaml:"cryptobot"`
+	CryptoBot     CryptoBotConfig     `yaml:"cryptobot"` // устаревший блок (CryptoPay), можно не заполнять
+	XRocket       XRocketConfig       `yaml:"xrocket"`
 	RateLimit     RateLimitConfig     `yaml:"rate_limit"`
 	Workers       WorkersConfig       `yaml:"workers"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
@@ -75,6 +76,14 @@ type CryptoBotConfig struct {
 	APIURL        string `yaml:"api_url"`
 	WebhookPort   string `yaml:"webhook_port"`   // порт для приёма webhook CryptoPay (например 8080)
 	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи CryptoPay webhook
+}
+
+// XRocketConfig — настройки интеграции с xRocket Pay API (USDT).
+type XRocketConfig struct {
+	APIToken      string `yaml:"api_token"`       // API key из @xrocket_bot / @xrocket_testnet_bot
+	APIURL        string `yaml:"api_url"`        // базовый URL API, по умолчанию https://pay.xrocket.tg/api
+	WebhookPort   string `yaml:"webhook_port"`   // порт HTTP-сервера для приёма webhook xRocket (например 8081)
+	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи webhook (если включено в xRocket)
 }
 
 type RateLimitConfig struct {
@@ -145,6 +154,20 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CryptoBot.WebhookSecret == "" {
 		cfg.CryptoBot.WebhookSecret = getEnv("CRYPTOBOT_WEBHOOK_SECRET", "")
+	}
+
+	// XRocket: заполняем значения по умолчанию и из ENV.
+	if cfg.XRocket.APIToken == "" {
+		cfg.XRocket.APIToken = getEnv("XROCKET_API_TOKEN", "")
+	}
+	if cfg.XRocket.APIURL == "" {
+		cfg.XRocket.APIURL = getEnv("XROCKET_API_URL", "https://pay.xrocket.tg/api")
+	}
+	if cfg.XRocket.WebhookPort == "" {
+		cfg.XRocket.WebhookPort = getEnv("XROCKET_WEBHOOK_PORT", "8081")
+	}
+	if cfg.XRocket.WebhookSecret == "" {
+		cfg.XRocket.WebhookSecret = getEnv("XROCKET_WEBHOOK_SECRET", "")
 	}
 
 	return &cfg, nil

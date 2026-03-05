@@ -496,7 +496,7 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 	h.sendProxyToUser(ctx, b, userID, user, true)
 }
 
-// HandleBuyPremium обрабатывает запрос на покупку премиума (оплата только через Telegram Stars; CryptoPay отключён).
+// HandleBuyPremium обрабатывает запрос на покупку премиума (оплата через Telegram Stars и/или USDT через xRocket).
 func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
 
@@ -507,14 +507,16 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 	}
 
 	days := h.getPremiumDays()
+	usdt := h.getPremiumUSDT()
 	starsCount := h.getPremiumStars()
 	msg := fmt.Sprintf("💎 <b>Premium</b> — получи персональный proxy на %d дн.\n\n"+
 		"• Без рекламы и ограничений\n"+
 		"• Высокий приоритет и стабильность\n\n"+
-		"💰 Стоимость: <b>%d ⭐ Stars</b>\n\nОплата через Telegram Stars:", days, starsCount)
+		"💰 Стоимость: <b>%.2f USDT</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, usdt, starsCount)
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "💵 USDT (xRocket)", CallbackData: "buy_premium_usdt"}},
 			{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}},
 			{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
 		},
@@ -1718,6 +1720,32 @@ func (h *BotHandler) HandleOPChannelInput(ctx context.Context, b *bot.Bot, updat
 			return
 		}
 	}
+
+	// Проверяем, что бот может вызывать GetChatMember для этого канала (т.е. добавлен и имеет нужные права).
+	// Если бот не админ/не добавлен, Telegram вернёт ошибку (CHAT_ADMIN_REQUIRED / BOT_NOT_MEMBER),
+	// и дальше проверка подписки работать не сможет.
+	chatID := channelToChatID(ch)
+	if _, err := b.GetChatMember(ctx, &bot.GetChatMemberParams{
+		ChatID: chatID,
+		UserID: adminID, // достаточно попытаться получить участника-админа; при нехватке прав вернётся ошибка
+	}); err != nil {
+		h.setOPAwaiting(adminID, false)
+		text := fmt.Sprintf("❌ Бот не является администратором канала %s.\n\n" +
+			"Добавьте бота в админы этого канала и затем снова нажмите «➕ Добавить канал».", chatID)
+		kb := &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "🔄 Добавить канал ещё раз", CallbackData: "mgr_op_add"}},
+			},
+		}
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      adminID,
+			Text:        text,
+			ParseMode:   models.ParseModeHTML,
+			ReplyMarkup: kb,
+		})
+		return
+	}
+
 	channels = append(channels, ch)
 	if err := h.setForcedSubChannels(channels); err != nil {
 		h.setOPAwaiting(adminID, false)
@@ -1763,6 +1791,32 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 	case "buy_premium":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleBuyPremium(ctx, b, update)
+	case "buy_premium_usdt":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		userID := update.CallbackQuery.From.ID
+		user, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
+		if err != nil || user == nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		days := h.getPremiumDays()
+		usdt := h.getPremiumUSDT()
+		desc := fmt.Sprintf("Premium %d дней для пользователя %d", days, userID)
+		payURL, invoiceID, err := h.paymentUC.CreateInvoice(usdt, "USDT", desc, userID)
+		if err != nil {
+			log.Printf("[payment] xRocket CreateInvoice error: %v", err)
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: "❌ Не удалось создать счёт USDT. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		log.Printf("[payment] xRocket invoice %d created for user %d", invoiceID, userID)
+		text := fmt.Sprintf("💵 Оплата премиума в USDT через xRocket.\n\n"+
+			"Сумма: <b>%.2f USDT</b>\n\nНажмите кнопку ниже, чтобы перейти к оплате.", usdt)
+		kb := &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "💵 Оплатить в USDT (xRocket)", URL: payURL}},
+			},
+		}
+		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
 	case "get_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleGetProxy(ctx, b, update)
