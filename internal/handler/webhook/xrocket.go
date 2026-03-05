@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/yourusername/antiblock/internal/usecase"
 )
@@ -44,10 +45,10 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 		}
 
 		// Модель webhook описана в xRocket Pay API как WebhookDto / Invoice.
-		// Используем минимальный набор полей: id счёта и статус.
+		// Используем минимальный набор полей: id счёта (строка) и статус.
 		var update struct {
 			Invoice struct {
-				ID     int64  `json:"id"`
+				ID     string `json:"id"`
 				Status string `json:"status"`
 			} `json:"invoice"`
 		}
@@ -56,7 +57,7 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if update.Invoice.ID == 0 {
+		if update.Invoice.ID == "" {
 			log.Printf("[webhook] xRocket missing invoice id, body=%s", string(body))
 			w.WriteHeader(http.StatusOK)
 			return
@@ -66,7 +67,14 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 			return
 		}
 
-		invoiceID := update.Invoice.ID
+		// invoice.id приходит строкой — приводим к int64, как в таблице invoices.
+		invoiceID, err := strconv.ParseInt(update.Invoice.ID, 10, 64)
+		if err != nil {
+			log.Printf("[webhook] xRocket invalid invoice id %q: %v, body=%s", update.Invoice.ID, err, string(body))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		userID, ok := paymentUC.GetUserIDByInvoiceID(invoiceID)
 		if !ok {
 			log.Printf("[webhook] xRocket unknown invoice_id: %d", invoiceID)

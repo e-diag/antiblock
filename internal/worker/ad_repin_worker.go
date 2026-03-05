@@ -80,7 +80,29 @@ func (w *AdRePinWorker) repin() {
 			}
 			return
 		}
+		// Если объявление истекло по времени — снимаем его с закрепа у всех пользователей,
+		// очищаем ad_pins и деактивируем объявление.
 		if ad.ExpiresAt != nil && ad.ExpiresAt.Before(time.Now()) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			if w.adPinRepo != nil {
+				if pinsExpired, errPins := w.adPinRepo.ListByAdID(ad.ID); errPins == nil {
+					for _, pin := range pinsExpired {
+						if _, errUnpin := w.bot.UnpinChatMessage(ctx, &bot.UnpinChatMessageParams{
+							ChatID:    pin.ChatID,
+							MessageID: pin.MessageID,
+						}); errUnpin != nil {
+							log.Printf("ad_repin: failed to unpin expired ad for chat %d msg %d: %v", pin.ChatID, pin.MessageID, errUnpin)
+						}
+						time.Sleep(time.Duration(adRePinDelayMs) * time.Millisecond)
+					}
+					_ = w.adPinRepo.DeleteByAdID(ad.ID)
+				}
+			}
+			if err := w.adRepo.DeactivateAll(); err != nil {
+				log.Printf("ad_repin: failed to deactivate expired ads: %v", err)
+			}
 			return
 		}
 		pins, err = w.adPinRepo.ListByAdID(ad.ID)
