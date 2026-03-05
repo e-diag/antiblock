@@ -10,6 +10,10 @@ type UserProxyRepository interface {
 	Create(up *domain.UserProxy) error
 	ListByUserID(userID uint) ([]*domain.UserProxy, error)
 	GetByID(id uint) (*domain.UserProxy, error)
+	// DeleteByIPPort удаляет все записи выданных прокси с указанными ip и port (при удалении узла из proxy_nodes).
+	DeleteByIPPort(ip string, port int) error
+	// DeleteByIPPortSecret удаляет записи по точному совпадению ip, port, secret (один прокси).
+	DeleteByIPPortSecret(ip string, port int, secret string) error
 }
 
 type userProxyRepository struct {
@@ -40,4 +44,12 @@ func (r *userProxyRepository) GetByID(id uint) (*domain.UserProxy, error) {
 		return nil, err
 	}
 	return &up, nil
+}
+
+func (r *userProxyRepository) DeleteByIPPort(ip string, port int) error {
+	return r.db.Where("ip = ? AND port = ?", ip, port).Delete(&domain.UserProxy{}).Error
+}
+
+func (r *userProxyRepository) DeleteByIPPortSecret(ip string, port int, secret string) error {
+	return r.db.Where("ip = ? AND port = ? AND secret = ?", ip, port, secret).Delete(&domain.UserProxy{}).Error
 }

@@ -12,6 +12,8 @@ type ProxyRepository interface {
 	Create(proxy *domain.ProxyNode) error
 	GetByID(id uint) (*domain.ProxyNode, error)
 	GetByOwnerID(ownerID uint) (*domain.ProxyNode, error)
+	GetByPort(port int) (*domain.ProxyNode, error)
+	GetByIPPortSecret(ip string, port int, secret string) (*domain.ProxyNode, error)
 	Update(proxy *domain.ProxyNode) error
 	Delete(id uint) error
 	GetAvailableByType(proxyType domain.ProxyType) ([]*domain.ProxyNode, error)
@@ -65,6 +67,30 @@ func (r *proxyRepository) GetByID(id uint) (*domain.ProxyNode, error) {
 func (r *proxyRepository) GetByOwnerID(ownerID uint) (*domain.ProxyNode, error) {
 	var proxy domain.ProxyNode
 	err := r.db.Where("owner_id = ?", ownerID).First(&proxy).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &proxy, nil
+}
+
+func (r *proxyRepository) GetByPort(port int) (*domain.ProxyNode, error) {
+	var proxy domain.ProxyNode
+	err := r.db.Where("port = ?", port).First(&proxy).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &proxy, nil
+}
+
+func (r *proxyRepository) GetByIPPortSecret(ip string, port int, secret string) (*domain.ProxyNode, error) {
+	var proxy domain.ProxyNode
+	err := r.db.Where("ip = ? AND port = ? AND secret = ?", ip, port, secret).First(&proxy).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}

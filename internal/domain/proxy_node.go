@@ -19,12 +19,13 @@ const (
 	ProxyStatusInactive ProxyStatus = "inactive"
 )
 
-// ProxyNode представляет прокси-узел MTProto
+// ProxyNode представляет прокси-узел MTProto.
+// У бесплатных прокси порты могут совпадать (один сервер — несколько ключей); уникальна комбинация (ip, port, secret).
 type ProxyNode struct {
-	ID            uint        `gorm:"primaryKey" json:"id"`
-	IP            string      `gorm:"not null" json:"ip"`
-	Port          int         `gorm:"not null;uniqueIndex" json:"port"`
-	Secret        string      `gorm:"not null" json:"secret"`
+	ID     uint   `gorm:"primaryKey" json:"id"`
+	IP     string `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"ip"`
+	Port   int    `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"port"`
+	Secret string `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"secret"`
 	Type          ProxyType   `gorm:"type:varchar(20);not null" json:"type"`
 	// OwnerID задает владельца премиум-прокси (один прокси на пользователя)
 	OwnerID       *uint       `gorm:"uniqueIndex:idx_premium_owner,where:type = 'premium'" json:"owner_id,omitempty"`

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
@@ -66,18 +67,16 @@ func validateSecret(secret string) error {
 	return nil
 }
 
-// isUniquePortError определяет, является ли ошибка нарушением
-// уникального ограничения по полю port (дубликат порта).
-// Работает как с обёрткой GORM (ErrDuplicatedKey), так и с
-// postgres-ошибками напрямую (код SQLSTATE 23505).
-func isUniquePortError(err error) bool {
+// isDuplicateKeyError определяет, является ли ошибка нарушением уникального ограничения (дубликат).
+func isDuplicateKeyError(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return true
 	}
-	return false
+	s := err.Error()
+	return strings.Contains(s, "23505") || strings.Contains(s, "duplicate key")
 }
 
 // NewProxyUseCase создает новый use case для прокси. userProxyRepo опционален: если задан, при выдаче free-прокси исключаются уже выданные этому пользователю.
@@ -172,13 +171,25 @@ func (uc *proxyUseCase) AddProxy(ip string, port int, secret string, proxyType d
 		Load:   0,
 	}
 
-	return uc.proxyRepo.Create(proxy)
+	err := uc.proxyRepo.Create(proxy)
+	if err != nil && isDuplicateKeyError(err) {
+		existing, _ := uc.proxyRepo.GetByIPPortSecret(ip, port, secret)
+		if existing != nil {
+			return fmt.Errorf("такой прокси уже добавлен (ID %d). Список: /proxies", existing.ID)
+		}
+		return fmt.Errorf("такой прокси уже есть в базе")
+	}
+	return err
 }
 
 func (uc *proxyUseCase) DeleteProxy(id uint) error {
 	p, err := uc.proxyRepo.GetByID(id)
 	if err != nil || p == nil {
 		return fmt.Errorf("proxy not found")
+	}
+	// Очищаем записи «Мои прокси» по этому точному прокси (ip, port, secret).
+	if uc.userProxyRepo != nil {
+		_ = uc.userProxyRepo.DeleteByIPPortSecret(p.IP, p.Port, p.Secret)
 	}
 	return uc.proxyRepo.Delete(id)
 }
@@ -377,7 +388,7 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		}
 
 		if err := uc.proxyRepo.Create(proxy); err != nil {
-			if isUniquePortError(err) {
+			if isDuplicateKeyError(err) {
 				continue
 			}
 			log.Printf("[Premium proxy] Create proxy failed: %v", err)

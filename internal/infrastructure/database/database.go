@@ -71,8 +71,12 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 }
 
 // runMigrations выполняет безопасные миграции данных поверх AutoMigrate.
-// Здесь мы, в частности, нормализуем значения type/status для существующих записей proxy_nodes.
 func runMigrations(db *gorm.DB) error {
+	// Удаляем старый уникальный индекс по порту: у free-прокси порты могут повторяться, уникальна комбинация (ip, port, secret).
+	if err := db.Exec("DROP INDEX IF EXISTS idx_proxy_nodes_port").Error; err != nil {
+		return err
+	}
+
 	// Приводим типы прокси к нижнему регистру (Free/Premium -> free/premium)
 	if err := db.Exec(
 		"UPDATE proxy_nodes SET type = LOWER(type) WHERE type IN ('Free', 'Premium')",
