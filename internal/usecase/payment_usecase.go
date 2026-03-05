@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,12 +96,12 @@ type XRocketCreateInvoiceRequest struct {
 }
 
 // XRocketCreateInvoiceResponse — ожидаемый ответ xRocket для /tg-invoices.
-// Используем только ID и URL для оплаты.
+// По фактическому ответу: id приходит как строка, ссылка — в поле link.
 type XRocketCreateInvoiceResponse struct {
 	Data struct {
-		ID   int64  `json:"id"`
-		URL  string `json:"url"`
-		Link string `json:"tgLink"`
+		ID   string `json:"id"`   // строковый ID инвойса
+		URL  string `json:"url"`  // может быть пустым
+		Link string `json:"link"` // tg-ссылка на оплату
 	} `json:"data"`
 }
 
@@ -217,13 +218,21 @@ func (uc *paymentUseCase) createInvoiceXRocket(amount float64, currency string, 
 		log.Printf("[payment] xRocket CreateInvoice unmarshal error: %v, body: %s", err, string(body))
 		return "", 0, fmt.Errorf("failed to unmarshal xRocket response: %w", err)
 	}
-	if invoiceResp.Data.ID == 0 {
+	if invoiceResp.Data.ID == "" {
 		log.Printf("[payment] xRocket CreateInvoice: unexpected response, body=%s", string(body))
 		return "", 0, fmt.Errorf("xrocket API error: empty invoice id")
 	}
 
+	// xRocket возвращает строковый ID; доменная модель хранит int64 invoice_id (исторически для CryptoPay).
+	// Для совместимости парсим строку в int64, а в случае ошибки логируем и возвращаем её.
+	parsedID, err := strconv.ParseInt(invoiceResp.Data.ID, 10, 64)
+	if err != nil {
+		log.Printf("[payment] xRocket CreateInvoice: cannot parse invoice id %q: %v, body=%s", invoiceResp.Data.ID, err, string(body))
+		return "", 0, fmt.Errorf("xrocket API error: invalid invoice id")
+	}
+
 	inv := &domain.Invoice{
-		InvoiceID: invoiceResp.Data.ID,
+		InvoiceID: parsedID,
 		UserID:    userID,
 		Status:    "pending",
 		Amount:    amount,
@@ -242,7 +251,7 @@ func (uc *paymentUseCase) createInvoiceXRocket(amount float64, currency string, 
 		return "", 0, fmt.Errorf("xrocket API error: no payment url")
 	}
 
-	return payURL, invoiceResp.Data.ID, nil
+	return payURL, parsedID, nil
 }
 
 func (uc *paymentUseCase) GetUserIDByInvoiceID(invoiceID int64) (int64, bool) {
