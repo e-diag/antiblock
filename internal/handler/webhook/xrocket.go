@@ -14,10 +14,9 @@ import (
 )
 
 // XRocketWebhook обрабатывает webhook от xRocket Pay при успешной оплате счёта.
-// Подписка выдаётся на getPremiumDays() дней (настройка premium_days, по умолчанию 30).
-// При повторной оплате (любым способом — xRocket или Stars) ActivatePremium добавляет +N дней к текущей дате окончания.
+// apiToken — API-ключ приложения (Rocket-Pay-Key). Подпись верифицируется по SHA256(apiToken) согласно документации xRocket.
 // getPremiumDays возвращает текущее число дней премиума из настроек (по умолчанию 30).
-func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, secret string, getPremiumDays func() int) http.HandlerFunc {
+func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, apiToken string, getPremiumDays func() int) http.HandlerFunc {
 	if getPremiumDays == nil {
 		getPremiumDays = func() int { return 30 }
 	}
@@ -34,16 +33,16 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 		}
 		defer r.Body.Close()
 
-		// Проверка подписи webhook xRocket (Rocket-Pay-Signature: hex(HMAC-SHA256(body, sha256(appToken)))).
-		if secret != "" {
+		// Проверка подписи: xRocket подписывает body как hex(HMAC-SHA256(body, SHA256(apiToken))).
+		if apiToken != "" {
 			sig := r.Header.Get("Rocket-Pay-Signature")
-			if !verifyXRocketSignature(body, sig, secret) {
+			if !verifyXRocketSignature(body, sig, apiToken) {
 				log.Printf("[webhook] xRocket invalid signature")
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
 		} else {
-			log.Printf("[webhook] xRocket WARNING: webhook secret is empty, signature verification disabled")
+			log.Printf("[webhook] xRocket WARNING: API token empty, signature verification disabled")
 		}
 
 		// Модель webhook описана в xRocket Pay API как WebhookDto / Invoice.
@@ -110,13 +109,15 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 }
 
 // verifyXRocketSignature проверяет подпись тела запроса xRocket.
-// xRocket присылает Rocket-Pay-Signature как hex(HMAC-SHA256(body, secret)).
-func verifyXRocketSignature(body []byte, signatureHeader, secret string) bool {
-	if signatureHeader == "" || secret == "" {
+// Документация: Rocket-Pay-Signature = hex(HMAC-SHA256(body, SHA256(apiToken))).
+func verifyXRocketSignature(body []byte, signatureHeader, apiToken string) bool {
+	if signatureHeader == "" || apiToken == "" {
 		return false
 	}
 
-	mac := hmac.New(sha256.New, []byte(secret))
+	// Ключ HMAC = SHA256(apiToken) (сырые байты)
+	hash := sha256.Sum256([]byte(apiToken))
+	mac := hmac.New(sha256.New, hash[:])
 	mac.Write(body)
 	expected := mac.Sum(nil)
 

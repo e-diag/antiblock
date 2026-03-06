@@ -54,6 +54,8 @@ services:
 
       # CryptoBot (устарело, можно не заполнять)
       CRYPTOBOT_API_TOKEN: ${CRYPTOBOT_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:8081:8081"  # Webhook xRocket (доступен только localhost; туннель cloudflared/ngrok проксирует снаружи)
     restart: unless-stopped
     networks:
       - antiblock-network
