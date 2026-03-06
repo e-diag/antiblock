@@ -144,10 +144,11 @@ func (w *PremiumReminderWorker) sendReminders() {
 	starsCount := w.getPremiumStars()
 	ctx, cancel := context.WithTimeout(context.Background(), w.config.Timeout())
 	defer cancel()
+	tonAmount := w.getPremiumUSDT()
 	for _, u := range users {
-		// CryptoPay отключён — только Stars
-		msg := fmt.Sprintf("⏰ Ваша Premium-подписка истекает через 7 дней.\n\nПродлить подписку и сохранить персональный proxy?\n\n💰 Стоимость: %d ⭐ Stars", starsCount)
+		msg := fmt.Sprintf("⏰ Ваша Premium-подписка истекает через 7 дней.\n\nПродлить подписку и сохранить персональный proxy?\n\n💰 Стоимость: %.2f TON или %d ⭐ Stars", tonAmount, starsCount)
 		rows := [][]models.InlineKeyboardButton{
+			{{Text: "💵 TON (xRocket)", CallbackData: "buy_premium_usdt"}},
 			{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}},
 			{{Text: "Позже", CallbackData: "reminder_later"}},
 		}

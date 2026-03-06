@@ -188,7 +188,7 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	days := h.getPremiumDays()
 	usdt := h.getPremiumUSDT()
 	stars := h.getPremiumStars()
-	btnPremium := fmt.Sprintf("💎 Premium — получи персональный proxy на %d дн. (%.2f USDT / %d ⭐)", days, usdt, stars)
+	btnPremium := fmt.Sprintf("💎 Premium — получи персональный proxy на %d дн. (%.2f TON / %d ⭐)", days, usdt, stars)
 	if len(btnPremium) > 64 {
 		btnPremium = fmt.Sprintf("💎 Premium — proxy на %d дн.", days)
 	}
@@ -500,7 +500,7 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 	h.sendProxyToUser(ctx, b, userID, user, true)
 }
 
-// HandleBuyPremium обрабатывает запрос на покупку премиума (оплата через Telegram Stars и/или USDT через xRocket).
+// HandleBuyPremium обрабатывает запрос на покупку премиума (оплата через Telegram Stars и/или TON через xRocket).
 func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
 
@@ -516,11 +516,11 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 	msg := fmt.Sprintf("💎 <b>Premium</b> — получи персональный proxy на %d дн.\n\n"+
 		"• Без рекламы и ограничений\n"+
 		"• Высокий приоритет и стабильность\n\n"+
-		"💰 Стоимость: <b>%.2f USDT</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, usdt, starsCount)
+		"💰 Стоимость: <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, usdt, starsCount)
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "💵 USDT (xRocket)", CallbackData: "buy_premium_usdt"}},
+			{{Text: "💵 TON (xRocket)", CallbackData: "buy_premium_usdt"}},
 			{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}},
 			{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
 		},
@@ -888,7 +888,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		stars := h.getPremiumStars()
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, ParseMode: models.ParseModeHTML,
-			Text: fmt.Sprintf("⚙️ <b>Настройки подписки</b>\n\n📅 Дней: <b>%d</b>\n💵 USDT: <b>%.2f</b>\n⭐ Stars (XTR): <b>%d</b>\n\nИзменить:\n<code>/setpricing &lt;дней&gt;</code>\n<code>/setprice_usdt &lt;сумма&gt;</code>\n<code>/setprice_stars &lt;звёзды&gt;</code>", days, usdt, stars),
+			Text: fmt.Sprintf("⚙️ <b>Настройки подписки</b>\n\n📅 Дней: <b>%d</b>\n💵 TON: <b>%.2f</b>\n⭐ Stars (XTR): <b>%d</b>\n\nИзменить:\n<code>/setpricing &lt;дней&gt;</code>\n<code>/setprice_usdt &lt;сумма&gt;</code>\n<code>/setprice_stars &lt;звёзды&gt;</code>", days, usdt, stars),
 			ReplyMarkup: &models.InlineKeyboardMarkup{
 				InlineKeyboard: [][]models.InlineKeyboardButton{
 					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
@@ -1462,7 +1462,7 @@ func (h *BotHandler) HandleSetPricing(ctx context.Context, b *bot.Bot, update *m
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум: %d дней за платёж.", days))
 }
 
-// HandleSetPriceUSDT обновляет цену в USDT: /setprice_usdt <сумма>
+// HandleSetPriceUSDT обновляет цену в TON: /setprice_usdt <сумма>
 func (h *BotHandler) HandleSetPriceUSDT(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
@@ -1473,19 +1473,19 @@ func (h *BotHandler) HandleSetPriceUSDT(ctx context.Context, b *bot.Bot, update 
 	}
 	args := strings.Fields(update.Message.Text)
 	if len(args) != 2 {
-		h.sendText(ctx, b, update, "❌ Использование: /setprice_usdt <сумма>\nНапример: /setprice_usdt 10")
+		h.sendText(ctx, b, update, "❌ Использование: /setprice_usdt <сумма>\nНапример: /setprice_usdt 10 (TON)")
 		return
 	}
 	f, err := strconv.ParseFloat(strings.ReplaceAll(args[1], ",", "."), 64)
 	if err != nil || f < 0.01 {
-		h.sendText(ctx, b, update, "❌ Введите сумму не менее 0.01 USDT.")
+		h.sendText(ctx, b, update, "❌ Введите сумму не менее 0.01 TON.")
 		return
 	}
 	if err := h.settingsRepo.Set("premium_usdt", fmt.Sprintf("%.2f", f)); err != nil {
 		h.sendText(ctx, b, update, "❌ Не удалось сохранить.")
 		return
 	}
-	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена премиума: %.2f USDT.", f))
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена премиума: %.2f TON.", f))
 }
 
 // HandleSetPriceStars обновляет цену в Stars (XTR): /setprice_stars <звёзды>
@@ -1813,18 +1813,18 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		days := h.getPremiumDays()
 		usdt := h.getPremiumUSDT()
 		desc := fmt.Sprintf("Premium %d дней для пользователя %d", days, userID)
-		payURL, invoiceID, err := h.paymentUC.CreateInvoice(usdt, "USDT", desc, userID)
+		payURL, invoiceID, err := h.paymentUC.CreateInvoice(usdt, "TON", desc, userID)
 		if err != nil {
 			log.Printf("[payment] xRocket CreateInvoice error: %v", err)
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: "❌ Не удалось создать счёт USDT. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: "❌ Не удалось создать счёт TON. Попробуйте позже.", ParseMode: models.ParseModeHTML})
 			return
 		}
 		log.Printf("[payment] xRocket invoice %d created for user %d", invoiceID, userID)
-		text := fmt.Sprintf("💵 Оплата премиума в USDT через xRocket.\n\n"+
-			"Сумма: <b>%.2f USDT</b>\n\nНажмите кнопку ниже, чтобы перейти к оплате.", usdt)
+		text := fmt.Sprintf("💵 Оплата премиума в TON через xRocket.\n\n"+
+			"Сумма: <b>%.2f TON</b>\n\nНажмите кнопку ниже, чтобы перейти к оплате.", usdt)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "💵 Оплатить в USDT (xRocket)", URL: payURL}},
+				{{Text: "💵 Оплатить в TON (xRocket)", URL: payURL}},
 			},
 		}
 		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})

@@ -78,7 +78,7 @@ type CryptoBotConfig struct {
 	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи CryptoPay webhook
 }
 
-// XRocketConfig — настройки интеграции с xRocket Pay API (USDT).
+// XRocketConfig — настройки интеграции с xRocket Pay API (TON).
 type XRocketConfig struct {
 	APIToken      string `yaml:"api_token"`       // API key из @xrocket_bot / @xrocket_testnet_bot
 	APIURL        string `yaml:"api_url"`        // базовый URL API, по умолчанию https://pay.xrocket.tg/api

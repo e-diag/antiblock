@@ -109,7 +109,7 @@ func runMigrations(db *gorm.DB) error {
 func seedAppSettings(db *gorm.DB) error {
 	defaults := map[string]string{
 		"premium_days": "30",
-		"premium_usdt": "10",
+		"premium_usdt": "10", // сумма в TON (ключ оставлен для совместимости)
 		"premium_stars": "100",
 	}
 	for key, value := range defaults {

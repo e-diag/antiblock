@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -45,33 +46,51 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 			log.Printf("[webhook] xRocket WARNING: API token empty, signature verification disabled")
 		}
 
-		// Модель webhook описана в xRocket Pay API как WebhookDto / Invoice.
-		// Используем минимальный набор полей: id счёта (строка) и статус.
-		var update struct {
+		// xRocket присылает type=invoicePay с data.id и data.status. Альтернатива: invoice.id.
+		var payload struct {
+			Type string `json:"type"`
 			Invoice struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 			} `json:"invoice"`
+			Data struct {
+				ID     interface{} `json:"id"`     // может быть string или number
+				Status string      `json:"status"`
+			} `json:"data"`
 		}
-		if err := json.Unmarshal(body, &update); err != nil {
+		if err := json.Unmarshal(body, &payload); err != nil {
 			log.Printf("[webhook] xRocket decode error: %v, body=%s", err, string(body))
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if update.Invoice.ID == "" {
-			log.Printf("[webhook] xRocket missing invoice id, body=%s", string(body))
+		var idStr, statusStr string
+		if payload.Data.ID != nil {
+			switch v := payload.Data.ID.(type) {
+			case string:
+				idStr = v
+			case float64:
+				idStr = strconv.FormatInt(int64(v), 10)
+			default:
+				idStr = fmt.Sprintf("%v", v)
+			}
+			statusStr = payload.Data.Status
+		}
+		if idStr == "" && payload.Invoice.ID != "" {
+			idStr, statusStr = payload.Invoice.ID, payload.Invoice.Status
+		}
+		if idStr == "" {
+			log.Printf("[webhook] xRocket missing invoice id, type=%q, body=%s", payload.Type, string(body))
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if update.Invoice.Status != "paid" {
+		if statusStr != "paid" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// invoice.id приходит строкой — приводим к int64, как в таблице invoices.
-		invoiceID, err := strconv.ParseInt(update.Invoice.ID, 10, 64)
+		invoiceID, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			log.Printf("[webhook] xRocket invalid invoice id %q: %v, body=%s", update.Invoice.ID, err, string(body))
+			log.Printf("[webhook] xRocket invalid invoice id %q: %v, body=%s", idStr, err, string(body))
 			w.WriteHeader(http.StatusOK)
 			return
 		}

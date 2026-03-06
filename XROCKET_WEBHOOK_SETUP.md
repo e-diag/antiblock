@@ -2,13 +2,13 @@
 
 ## 1. DNS
 
-В панели управления доменом создайте A-запись:
+В TimeWeb (или у регистратора домена) настройте A-запись для корневого домена:
 
-| Тип | Имя | Значение | TTL |
-|-----|-----|----------|-----|
-| A   | webhook | 109.120.139.214 | 300 |
+| Тип | Имя (Host) | Значение | TTL |
+|-----|------------|----------|-----|
+| A   | @ (или пусто) | 109.120.139.214 | 300 |
 
-Итог: `webhook.notecalendar.ru` → ваш сервер. Подождите 5–15 минут, пока DNS обновится.
+Итог: `notecalendar.ru` → ваш сервер. Подождите 5–15 минут, пока DNS обновится.
 
 ---
 
@@ -30,7 +30,7 @@ sudo apt install -y nginx certbot python3-certbot-nginx
 ```nginx
 server {
     listen 80;
-    server_name webhook.notecalendar.ru;
+    server_name notecalendar.ru www.notecalendar.ru;
     location /webhook/xrocket {
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
@@ -53,7 +53,7 @@ sudo nginx -t && sudo systemctl reload nginx
 ## 4. SSL (Let's Encrypt)
 
 ```bash
-sudo certbot --nginx -d webhook.notecalendar.ru
+sudo certbot --nginx -d notecalendar.ru -d www.notecalendar.ru
 ```
 
 Следуйте подсказкам (email, согласие). Certbot сам настроит HTTPS в nginx.
@@ -65,7 +65,7 @@ sudo certbot --nginx -d webhook.notecalendar.ru
 В боте @xrocket → Rocket Pay → ваше приложение → Webhooks укажите:
 
 ```
-https://webhook.notecalendar.ru/webhook/xrocket
+https://notecalendar.ru/webhook/xrocket
 ```
 
 Сохраните.
@@ -75,7 +75,7 @@ https://webhook.notecalendar.ru/webhook/xrocket
 ## 6. Проверка
 
 ```bash
-curl -X POST https://webhook.notecalendar.ru/webhook/xrocket -d '{}' -H "Content-Type: application/json"
+curl -X POST https://notecalendar.ru/webhook/xrocket -d '{}' -H "Content-Type: application/json"
 ```
 
 Должен вернуться `400` или `403` (не `404` и не `Connection refused`) — значит, endpoint доступен.

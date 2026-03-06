@@ -87,7 +87,7 @@ func main() {
 	premiumServerIP := pd.ServerIP
 
 	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, dockerMgr, premiumServerIP)
-	// Платежи USDT через xRocket Pay API.
+	// Платежи TON через xRocket Pay API.
 	paymentUC := usecase.NewPaymentUseCase(cfg.XRocket.APIToken, cfg.XRocket.APIURL, invoiceRepo, starPaymentRepo)
 
 	broadcastState := handler.NewBroadcastState()
@@ -172,7 +172,7 @@ func main() {
 	go dockerMonitorWorker.Start()
 	go adRePinWorker.Start()
 
-	// Webhook xRocket Pay для подтверждения успешной оплаты USDT.
+	// Webhook xRocket Pay для подтверждения успешной оплаты TON.
 	if cfg.XRocket.WebhookPort != "" {
 		port, _ := strconv.Atoi(cfg.XRocket.WebhookPort)
 		if port > 0 {

@@ -46,7 +46,7 @@ services:
       DB_SSLMODE: disable
       DB_TIMEZONE: UTC
       
-      # xRocket Pay (USDT)
+      # xRocket Pay (TON)
       XROCKET_API_TOKEN: ${XROCKET_API_TOKEN}
       XROCKET_API_URL: ${XROCKET_API_URL:-https://pay.xrocket.tg}
       XROCKET_WEBHOOK_PORT: ${XROCKET_WEBHOOK_PORT:-8081}

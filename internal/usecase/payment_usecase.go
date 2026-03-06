@@ -54,10 +54,10 @@ func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starP
 	}
 }
 
-// CryptoCreateInvoiceRequest для Crypto Pay API: asset (USDT), amount (строка), description, payload.
+// CryptoCreateInvoiceRequest для Crypto Pay API: asset (TON, USDT, ...), amount (строка), description, payload.
 // Оставлено для совместимости; для xRocket используется XRocketCreateInvoiceRequest.
 type CreateInvoiceRequest struct {
-	Asset       string `json:"asset"`                  // USDT, TON, BTC, ...
+	Asset       string `json:"asset"`                  // TON, USDT, BTC, ...
 	Amount      string `json:"amount"`                 // сумма в криптовалюте, напр. "10.5"
 	Description string `json:"description,omitempty"`
 	Payload     string `json:"payload,omitempty"`      // до 4kb, например user ID для webhook
@@ -89,7 +89,7 @@ type InvoiceResult struct {
 // Поля подобраны по публичной документации xRocket Pay API.
 type XRocketCreateInvoiceRequest struct {
 	Amount      float64 `json:"amount"`                // сумма к оплате
-	Coin        string  `json:"coin"`                  // монета, например USDT
+	Coin        string  `json:"coin"`                  // монета, например TON
 	Description string  `json:"description,omitempty"` // описание в интерфейсе xRocket
 	Payload     string  `json:"payload,omitempty"`     // произвольные данные (ID пользователя)
 	NumPayments int     `json:"numPayments,omitempty"` // количество активаций (по умолчанию 1)
@@ -111,7 +111,7 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 		return uc.createInvoiceXRocket(amount, currency, description, userID)
 	}
 	// Иначе — старая интеграция CryptoPay (на случай обратной совместимости).
-	asset := "USDT"
+	asset := "TON"
 	if currency != "" && currency != "USD" {
 		asset = currency
 	}
@@ -177,7 +177,7 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 }
 
 func (uc *paymentUseCase) createInvoiceXRocket(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error) {
-	coin := "USDT"
+	coin := "TON"
 	if currency != "" {
 		coin = currency
 	}
