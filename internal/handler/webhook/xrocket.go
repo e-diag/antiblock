@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,13 +12,17 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+
 	"github.com/yourusername/antiblock/internal/usecase"
 )
 
 // XRocketWebhook обрабатывает webhook от xRocket Pay при успешной оплате счёта.
 // apiToken — API-ключ приложения (Rocket-Pay-Key). Подпись верифицируется по SHA256(apiToken) согласно документации xRocket.
 // getPremiumDays возвращает текущее число дней премиума из настроек (по умолчанию 30).
-func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, apiToken string, getPremiumDays func() int) http.HandlerFunc {
+// telegramBot — бот для отправки подтверждения пользователю и удаления сообщения с инвойсом (может быть nil).
+func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, apiToken string, getPremiumDays func() int, telegramBot *bot.Bot) http.HandlerFunc {
 	if getPremiumDays == nil {
 		getPremiumDays = func() int { return 30 }
 	}
@@ -110,6 +115,16 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 		if err := userUC.ActivatePremium(userID, premiumDays); err != nil {
 			if err == usecase.ErrPremiumProxyCreationFailed {
 				_ = paymentUC.MarkInvoicePaid(invoiceID)
+				if telegramBot != nil {
+					confirmMsg := "✅ Оплата получена! Премиум активирован. Создание proxy временно недоступно — обратитесь в поддержку."
+					if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
+						ctx := context.Background()
+						_, _ = telegramBot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+					}
+					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+						ChatID: userID, Text: confirmMsg, ParseMode: models.ParseModeHTML,
+					})
+				}
 				log.Printf("[webhook] xRocket premium activated for user %d (invoice %d), but proxy creation failed — notify manager manually", userID, invoiceID)
 				w.WriteHeader(http.StatusOK)
 				return
@@ -120,6 +135,20 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 		}
 		if err := paymentUC.MarkInvoicePaid(invoiceID); err != nil {
 			log.Printf("[webhook] xRocket MarkInvoicePaid error: %v", err)
+		}
+
+		// Уведомление пользователю и удаление сообщения с инвойсом
+		if telegramBot != nil {
+			confirmMsg := fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Нажмите «Получить Premium proxy» в меню для создания персонального прокси.", premiumDays)
+			if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
+				ctx := context.Background()
+				_, _ = telegramBot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+			}
+			_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+				ChatID:    userID,
+				Text:      confirmMsg,
+				ParseMode: models.ParseModeHTML,
+			})
 		}
 
 		log.Printf("[webhook] xRocket premium activated for user %d (invoice %d)", userID, invoiceID)

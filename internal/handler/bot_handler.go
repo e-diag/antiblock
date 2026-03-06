@@ -1827,7 +1827,10 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 				{{Text: "💵 Оплатить в TON (xRocket)", URL: payURL}},
 			},
 		}
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+		msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+		if errSend == nil && msg != nil && msg.ID != 0 {
+			_ = h.paymentUC.SetInvoiceMessage(invoiceID, userID, int64(msg.ID))
+		}
 	case "get_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleGetProxy(ctx, b, update)

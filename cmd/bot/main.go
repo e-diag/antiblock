@@ -188,7 +188,7 @@ func main() {
 				}
 				return n
 			}
-			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(userUC, paymentUC, cfg.XRocket.APIToken, getPremiumDays))
+			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(userUC, paymentUC, cfg.XRocket.APIToken, getPremiumDays, b))
 			srv := &http.Server{Addr: ":" + cfg.XRocket.WebhookPort, Handler: mux}
 			go func() {
 				log.Printf("xRocket webhook listening on :%s", cfg.XRocket.WebhookPort)

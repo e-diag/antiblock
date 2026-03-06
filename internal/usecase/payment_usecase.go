@@ -19,6 +19,8 @@ type PaymentUseCase interface {
 	CreateInvoice(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error)
 	CheckInvoiceStatus(invoiceID string) (bool, error)
 	GetUserIDByInvoiceID(invoiceID int64) (int64, bool)
+	SetInvoiceMessage(invoiceID int64, chatID int64, messageID int64) error
+	GetInvoiceMessageInfo(invoiceID int64) (chatID int64, messageID int64, ok bool)
 	MarkInvoicePaid(invoiceID int64) error
 	RecordStarPayment(tgID int64, amountTotal int64, currency string, daysGranted int, telegramPaymentChargeID string) error
 }
@@ -260,6 +262,24 @@ func (uc *paymentUseCase) GetUserIDByInvoiceID(invoiceID int64) (int64, bool) {
 		return 0, false
 	}
 	return inv.UserID, true
+}
+
+func (uc *paymentUseCase) SetInvoiceMessage(invoiceID int64, chatID int64, messageID int64) error {
+	inv, err := uc.invRepo.GetByInvoiceID(invoiceID)
+	if err != nil || inv == nil {
+		return fmt.Errorf("invoice not found")
+	}
+	inv.ChatID = chatID
+	inv.MessageID = messageID
+	return uc.invRepo.Update(inv)
+}
+
+func (uc *paymentUseCase) GetInvoiceMessageInfo(invoiceID int64) (chatID int64, messageID int64, ok bool) {
+	inv, err := uc.invRepo.GetByInvoiceID(invoiceID)
+	if err != nil || inv == nil || inv.ChatID == 0 || inv.MessageID == 0 {
+		return 0, 0, false
+	}
+	return inv.ChatID, inv.MessageID, true
 }
 
 func (uc *paymentUseCase) MarkInvoicePaid(invoiceID int64) error {
