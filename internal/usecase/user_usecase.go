@@ -30,11 +30,13 @@ type UserUseCase interface {
 }
 
 type userUseCase struct {
-	userRepo        repository.UserRepository
-	proxyRepo       repository.ProxyRepository
-	proxyUC         ProxyUseCase
-	dockerMgr       *docker.Manager
-	premiumServerIP string // IP премиум-сервера для записи в proxy_nodes; пусто — персональные прокси не создаём
+	userRepo              repository.UserRepository
+	proxyRepo             repository.ProxyRepository
+	proxyUC               ProxyUseCase
+	dockerMgr             *docker.Manager
+	premiumServerIP       string
+	onPremiumProxyReady   func(tgID int64, proxy *domain.ProxyNode) // при успешном создании контейнера
+	onPremiumProxyFailed  func(tgID int64, err error)               // при неудаче после всех попыток
 }
 
 // NewUserUseCase создает новый use case для пользователей.
@@ -46,6 +48,20 @@ func NewUserUseCase(userRepo repository.UserRepository, proxyRepo repository.Pro
 		proxyUC:         proxyUC,
 		dockerMgr:       dockerMgr,
 		premiumServerIP: premiumServerIP,
+	}
+}
+
+// SetOnPremiumProxyReady задаёт callback, вызываемый после успешного асинхронного создания премиум-прокси (например, отправка сообщения пользователю). Можно вызвать после создания бота в main.
+func SetOnPremiumProxyReady(uc UserUseCase, f func(tgID int64, proxy *domain.ProxyNode)) {
+	if u, ok := uc.(*userUseCase); ok {
+		u.onPremiumProxyReady = f
+	}
+}
+
+// SetOnPremiumProxyFailed задаёт callback, вызываемый при неудаче создания премиум-прокси после всех попыток (уведомление пользователя).
+func SetOnPremiumProxyFailed(uc UserUseCase, f func(tgID int64, err error)) {
+	if u, ok := uc.(*userUseCase); ok {
+		u.onPremiumProxyFailed = f
 	}
 }
 
@@ -85,16 +101,6 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		return errors.New("user not found")
 	}
 
-	// Проверка до обновления БД: при включённом премиум-прокси (serverIP задан) нужны proxyUC и dockerMgr, иначе не помечаем пользователя премиумом.
-	if uc.premiumServerIP != "" {
-		if uc.proxyUC == nil {
-			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("премиум-прокси настроен, но proxy use case недоступен"))
-		}
-		if uc.dockerMgr == nil {
-			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("Docker не подключён к премиум-серверу (проверьте TLS и cert_path)"))
-		}
-	}
-
 	// Подписка на durationDays (например 30). При повторной оплате (Stars или xRocket) — добавляем +durationDays к текущей дате окончания.
 	now := time.Now().UTC()
 	var premiumUntil time.Time
@@ -106,38 +112,46 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 	user.IsPremium = true
 	user.PremiumUntil = &premiumUntil
 	user.LastActiveAt = &now
-	user.PremiumReminderSentAt = nil // сброс, чтобы пользователь снова мог получить напоминание за 7 дней до следующего окончания
+	user.PremiumReminderSentAt = nil
 
 	if err := uc.userRepo.Update(user); err != nil {
 		return err
 	}
 
-	// Создаём персональный премиум-прокси и контейнер (до 3 попыток). dockerMgr проверен выше до обновления БД; повторная проверка — защита от паники.
-	if uc.premiumServerIP != "" && uc.proxyUC != nil {
-		if uc.dockerMgr == nil {
-			return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, errors.New("Docker не подключён к премиум-серверу (проверьте TLS и cert_path)"))
-		}
-		const maxAttempts = 3
-		var lastErr error
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			_, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
-			if err != nil {
-				lastErr = err
-				log.Printf("[Premium] EnsurePremiumProxyForUser attempt %d: %v", attempt+1, err)
-				continue
-			}
-			if err := uc.ensurePremiumContainer(tgID, user); err != nil {
-				lastErr = err
-				log.Printf("[Premium] ensurePremiumContainer attempt %d: %v", attempt+1, err)
-				continue
-			}
-			return nil
-		}
-		log.Printf("[Premium] ActivatePremium failed after %d attempts tg_id=%d: %v", maxAttempts, tgID, lastErr)
-		return fmt.Errorf("%w: %v", ErrPremiumProxyCreationFailed, lastErr)
+	// Создание контейнера и прокси — асинхронно, чтобы не блокировать ответ (до 90 сек при 3 попытках по 30 сек).
+	if uc.premiumServerIP != "" && uc.proxyUC != nil && uc.dockerMgr != nil {
+		go uc.activatePremiumContainerAsync(tgID, user)
 	}
 
 	return nil
+}
+
+// activatePremiumContainerAsync создаёт премиум-прокси и контейнер в фоне (до 3 попыток). При успехе вызывает onPremiumProxyReady.
+func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.User) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		proxy, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP)
+		if err != nil {
+			lastErr = err
+			log.Printf("[Premium] activatePremiumContainerAsync EnsurePremiumProxyForUser attempt %d tg_id=%d: %v", attempt+1, tgID, err)
+			continue
+		}
+		if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+			lastErr = err
+			log.Printf("[Premium] activatePremiumContainerAsync ensurePremiumContainer attempt %d tg_id=%d: %v", attempt+1, tgID, err)
+			continue
+		}
+		log.Printf("[Premium] activatePremiumContainerAsync success tg_id=%d", tgID)
+		if uc.onPremiumProxyReady != nil {
+			uc.onPremiumProxyReady(tgID, proxy)
+		}
+		return
+	}
+	log.Printf("[Premium] activatePremiumContainerAsync failed after %d attempts tg_id=%d: %v", maxAttempts, tgID, lastErr)
+	if uc.onPremiumProxyFailed != nil {
+		uc.onPremiumProxyFailed(tgID, lastErr)
+	}
 }
 
 func (uc *userUseCase) RevokePremium(tgID int64) error {

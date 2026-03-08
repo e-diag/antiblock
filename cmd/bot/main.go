@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/handler"
 	"github.com/yourusername/antiblock/internal/handler/middleware"
 	"github.com/yourusername/antiblock/internal/handler/webhook"
@@ -109,6 +111,32 @@ func main() {
 		log.Fatalf("Failed to create bot: %v", err)
 	}
 	botHandler.SetBot(b)
+
+	// После успешного асинхронного создания премиум-прокси отправляем пользователю сообщение с данными прокси.
+	usecase.SetOnPremiumProxyReady(userUC, func(tgID int64, proxy *domain.ProxyNode) {
+		if proxy == nil {
+			return
+		}
+		proxyURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", proxy.IP, proxy.Port, proxy.Secret)
+		msg := fmt.Sprintf("✅ Ваш Premium proxy готов!\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите кнопку для настройки:",
+			proxy.IP, proxy.Port, proxy.Secret)
+		kb := &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "🔗 Подключиться", URL: proxyURL}},
+			},
+		}
+		_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
+			ChatID: tgID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
+		})
+	})
+
+	// При неудаче асинхронного создания премиум-прокси уведомляем пользователя.
+	usecase.SetOnPremiumProxyFailed(userUC, func(tgID int64, err error) {
+		msg := "⚠️ Премиум активирован, но создание персонального прокси не удалось после нескольких попыток. Нажмите «Получить Premium proxy» в меню для повторной попытки."
+		_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
+			ChatID: tgID, Text: msg, ParseMode: models.ParseModeHTML,
+		})
+	})
 
 	// Пользовательские команды
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeExact, botHandler.HandleStart)

@@ -18,13 +18,52 @@ type RateLimiter struct {
 	window   time.Duration
 }
 
-// NewRateLimiter создает новый rate limiter
+// NewRateLimiter создает новый rate limiter и запускает фоновую горутину очистки устаревших записей каждые 60 секунд.
 func NewRateLimiter(requestsPerSecond int, burstSize int) *RateLimiter {
-	return &RateLimiter{
+	rl := &RateLimiter{
 		requests: make(map[int64][]time.Time),
 		limit:    burstSize,
 		window:   time.Second / time.Duration(requestsPerSecond),
 	}
+	go rl.cleanupLoop()
+	return rl
+}
+
+// cleanupLoop каждые 60 секунд удаляет из map записи, у которых все timestamps старше window.
+func (rl *RateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		rl.mu.Lock()
+		now := time.Now()
+		toDelete := make([]int64, 0)
+		toUpdate := make(map[int64][]time.Time)
+		for userID, timestamps := range rl.requests {
+			valid := validWithinWindow(timestamps, now, rl.window)
+			if len(valid) == 0 {
+				toDelete = append(toDelete, userID)
+			} else {
+				toUpdate[userID] = valid
+			}
+		}
+		for _, userID := range toDelete {
+			delete(rl.requests, userID)
+		}
+		for userID, valid := range toUpdate {
+			rl.requests[userID] = valid
+		}
+		rl.mu.Unlock()
+	}
+}
+
+func validWithinWindow(timestamps []time.Time, now time.Time, window time.Duration) []time.Time {
+	out := make([]time.Time, 0, len(timestamps))
+	for _, t := range timestamps {
+		if now.Sub(t) < window {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (rl *RateLimiter) userID(update *models.Update) int64 {
@@ -61,12 +100,7 @@ func (rl *RateLimiter) Middleware(next bot.HandlerFunc) bot.HandlerFunc {
 		now := time.Now()
 
 		userRequests := rl.requests[userID]
-		validRequests := make([]time.Time, 0)
-		for _, reqTime := range userRequests {
-			if now.Sub(reqTime) < rl.window {
-				validRequests = append(validRequests, reqTime)
-			}
-		}
+		validRequests := validWithinWindow(userRequests, now, rl.window)
 
 		if len(validRequests) >= rl.limit {
 			rl.mu.Unlock()

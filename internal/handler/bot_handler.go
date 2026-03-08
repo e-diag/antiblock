@@ -227,7 +227,8 @@ func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models
 	welcomeMsg, kb := h.mainMenuContent(user)
 	h.send(ctx, b, update, welcomeMsg, kb)
 	if !user.IsPremiumActive() {
-		h.sendActiveAdIfExists(ctx, b, userID)
+		runCtx := context.WithoutCancel(ctx)
+		go h.sendActiveAdIfExists(runCtx, b, userID)
 	}
 }
 
@@ -375,7 +376,8 @@ func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int
 		})
 	}
 	if !user.IsPremiumActive() {
-		h.sendActiveAdIfExists(ctx, b, chatID)
+		runCtx := context.WithoutCancel(ctx)
+		go h.sendActiveAdIfExists(runCtx, b, chatID)
 	}
 }
 
@@ -1147,48 +1149,50 @@ func (h *BotHandler) HandleBroadcast(ctx context.Context, b *bot.Bot, update *mo
 	h.send(ctx, b, update, msg, kb)
 }
 
-// flushBroadcastMediaGroup выполняет рассылку одного альбома по списку пользователей.
+// flushBroadcastMediaGroup выполняет рассылку одного альбома по списку пользователей в отдельной горутине.
 // audience передаётся явно (захватывается при добавлении в буфер), чтобы при срабатывании таймера не опираться на уже очищенный broadcastState.
 func (h *BotHandler) flushBroadcastMediaGroup(adminID int64, fromChatID int64, messageIDs []int, audience BroadcastAudience) {
-	if h.botRef == nil || len(messageIDs) == 0 {
+	botRef := h.botRef
+	if botRef == nil || len(messageIDs) == 0 {
 		return
 	}
-	// Telegram ожидает сообщения альбома в порядке по message_id
-	sort.Ints(messageIDs)
-	ctx := context.Background()
-	users, err := h.userRepo.GetAll()
-	if err != nil {
-		h.botRef.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: adminID, Text: "❌ Ошибка получения списка пользователей", ParseMode: models.ParseModeHTML,
-		})
-		return
-	}
-	sent, failed := 0, 0
-	var lastErr error
-	for _, u := range users {
-		if audience == BroadcastAudienceFree && u.IsPremiumActive() {
-			continue
-		}
-		_, err := h.botRef.CopyMessages(ctx, &bot.CopyMessagesParams{
-			ChatID:     u.TGID,
-			FromChatID: fromChatID,
-			MessageIDs: messageIDs,
-		})
+	go func() {
+		sort.Ints(messageIDs)
+		ctx := context.Background()
+		users, err := h.userRepo.GetAll()
 		if err != nil {
-			failed++
-			lastErr = err
-		} else {
-			sent++
+			botRef.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: adminID, Text: "❌ Ошибка получения списка пользователей", ParseMode: models.ParseModeHTML,
+			})
+			return
 		}
-		time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
-	}
-	resultMsg := fmt.Sprintf("✅ Рассылка альбома завершена. Доставлено: %d, ошибок: %d", sent, failed)
-	if failed > 0 && lastErr != nil {
-		resultMsg += fmt.Sprintf("\n\n⚠️ Пример ошибки: %v", lastErr)
-	}
-	h.botRef.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: adminID, Text: resultMsg, ParseMode: models.ParseModeHTML,
-	})
+		sent, failed := 0, 0
+		var lastErr error
+		for _, u := range users {
+			if audience == BroadcastAudienceFree && u.IsPremiumActive() {
+				continue
+			}
+			_, err := botRef.CopyMessages(ctx, &bot.CopyMessagesParams{
+				ChatID:     u.TGID,
+				FromChatID: fromChatID,
+				MessageIDs: messageIDs,
+			})
+			if err != nil {
+				failed++
+				lastErr = err
+			} else {
+				sent++
+			}
+			time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
+		}
+		resultMsg := fmt.Sprintf("✅ Рассылка альбома завершена. Доставлено: %d, ошибок: %d", sent, failed)
+		if failed > 0 && lastErr != nil {
+			resultMsg += fmt.Sprintf("\n\n⚠️ Пример ошибки: %v", lastErr)
+		}
+		botRef.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: adminID, Text: resultMsg, ParseMode: models.ParseModeHTML,
+		})
+	}()
 }
 
 // HandleBroadcastMessage выполняет рассылку по списку пользователей (текст, фото, видео, документ) с rate limit.
@@ -1225,10 +1229,12 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 		}
 	}
 
-	// Контент: текст из Message.Text или подпись к медиа
+	// Контент: текст из Message.Text или подпись к медиа; источник фиксируется явно.
 	text := update.Message.Text
+	textFromCaption := false
 	if text == "" && update.Message.Caption != "" {
 		text = update.Message.Caption
+		textFromCaption = true
 	}
 	hasMedia := len(update.Message.Photo) > 0 || update.Message.Video != nil || update.Message.Document != nil
 	if !hasMedia && text == "" {
@@ -1243,47 +1249,63 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 		return
 	}
 
-	sent, failed := 0, 0
+	// Копируем данные для горутины (контекст и update не должны использоваться после возврата).
 	aud := h.broadcastState.Audience(adminID)
 	fromChatID := update.Message.Chat.ID
 	messageID := update.Message.ID
-
-	for _, u := range users {
-		if aud == BroadcastAudienceFree && u.IsPremiumActive() {
-			continue
-		}
-
-		var err error
-		if hasMedia {
-			_, err = b.CopyMessage(ctx, &bot.CopyMessageParams{
-				ChatID:     u.TGID,
-				FromChatID: fromChatID,
-				MessageID:  messageID,
-				Caption:    text,
-				ParseMode:  models.ParseModeHTML,
-			})
-		} else {
-			// Сохраняем форматирование: при наличии Entities передаём их (и не задаём ParseMode, иначе сервер их игнорирует)
-			params := &bot.SendMessageParams{ChatID: u.TGID, Text: text}
-			if len(update.Message.Entities) > 0 {
-				params.Entities = update.Message.Entities
-			} else if text == update.Message.Caption && len(update.Message.CaptionEntities) > 0 {
-				params.Entities = update.Message.CaptionEntities
-			} else {
-				params.ParseMode = models.ParseModeHTML
-			}
-			_, err = b.SendMessage(ctx, params)
-		}
-		if err != nil {
-			failed++
-		} else {
-			sent++
-		}
-		time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
+	// Entities берём строго из того поля, откуда взят text, чтобы не применить
+	// CaptionEntities к тексту из Message.Text или наоборот.
+	var entitiesForText []models.MessageEntity
+	if !textFromCaption && len(update.Message.Entities) > 0 {
+		entitiesForText = append([]models.MessageEntity(nil), update.Message.Entities...)
+	} else if textFromCaption && len(update.Message.CaptionEntities) > 0 {
+		entitiesForText = append([]models.MessageEntity(nil), update.Message.CaptionEntities...)
 	}
 
 	h.broadcastState.Clear(adminID)
-	h.sendText(ctx, b, update, fmt.Sprintf("✅ Рассылка завершена. Доставлено: %d, ошибок: %d", sent, failed))
+	h.sendText(ctx, b, update, "📢 Рассылка запущена, вы получите отчёт по завершении.")
+
+	go func() {
+		bgCtx := context.Background()
+		sent, failed := 0, 0
+		botRef := h.botRef
+		if botRef == nil {
+			return
+		}
+		for _, u := range users {
+			if aud == BroadcastAudienceFree && u.IsPremiumActive() {
+				continue
+			}
+			var sendErr error
+			if hasMedia {
+				_, sendErr = botRef.CopyMessage(bgCtx, &bot.CopyMessageParams{
+					ChatID:     u.TGID,
+					FromChatID: fromChatID,
+					MessageID:  messageID,
+					Caption:    text,
+					ParseMode:  models.ParseModeHTML,
+				})
+			} else {
+				params := &bot.SendMessageParams{ChatID: u.TGID, Text: text}
+				if len(entitiesForText) > 0 {
+					params.Entities = entitiesForText
+				} else {
+					params.ParseMode = models.ParseModeHTML
+				}
+				_, sendErr = botRef.SendMessage(bgCtx, params)
+			}
+			if sendErr != nil {
+				failed++
+			} else {
+				sent++
+			}
+			time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
+		}
+		reportMsg := fmt.Sprintf("✅ Рассылка завершена. Доставлено: %d, ошибок: %d", sent, failed)
+		botRef.SendMessage(bgCtx, &bot.SendMessageParams{
+			ChatID: adminID, Text: reportMsg, ParseMode: models.ParseModeHTML,
+		})
+	}()
 }
 
 // DefaultHandler вызывается, если ни один обработчик не сработал (для broadcast, ad compose и т.д.)
@@ -1400,14 +1422,6 @@ func (h *BotHandler) HandleGrantPremium(ctx context.Context, b *bot.Bot, update 
 	}
 	err := h.userUC.ActivatePremium(tgID, days)
 	if err != nil {
-		if errors.Is(err, usecase.ErrPremiumProxyCreationFailed) {
-			h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум выдан пользователю %d на %d дн. Прокси не создан после 3 попыток — пользователь может нажать «Получить Premium proxy» в боте.", tgID, days))
-			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: tgID, ParseMode: models.ParseModeHTML,
-				Text: "✅ Премиум активирован. Нажмите «Получить Premium proxy» в меню для создания персонального прокси.",
-			})
-			return
-		}
 		h.sendText(ctx, b, update, "❌ "+err.Error())
 		return
 	}
@@ -2046,13 +2060,6 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 
 	err := h.userUC.ActivatePremium(userID, days)
 	if err != nil {
-		if errors.Is(err, usecase.ErrPremiumProxyCreationFailed) {
-			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: update.Message.Chat.ID, ParseMode: models.ParseModeHTML,
-				Text: fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Нажмите «Получить Premium proxy» в меню для создания персонального прокси.", days),
-			})
-			return
-		}
 		log.Printf("HandleSuccessfulPayment ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
@@ -2061,6 +2068,6 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 	}
 	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: update.Message.Chat.ID,
-		Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован.", days),
+		Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", days),
 	})
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -93,12 +92,6 @@ func CryptoPayWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCa
 		}
 		actErr := userUC.ActivatePremium(userID, premiumDays)
 		if actErr != nil {
-			if errors.Is(actErr, usecase.ErrPremiumProxyCreationFailed) {
-				_ = paymentUC.MarkInvoicePaid(invoiceID)
-				log.Printf("[webhook] cryptopay premium activated for user %d (invoice %d), but proxy creation failed after retries — notify manager manually or use Retry in bot", userID, invoiceID)
-				w.WriteHeader(http.StatusOK)
-				return
-			}
 			log.Printf("[webhook] cryptopay ActivatePremium error: %v", actErr)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
