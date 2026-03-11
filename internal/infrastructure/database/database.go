@@ -98,6 +98,22 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	if err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS op_channel_clicks (
+			id         BIGSERIAL PRIMARY KEY,
+			channel    VARCHAR(255) NOT NULL,
+			user_tg_id BIGINT NOT NULL,
+			clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_op_channel_clicks_channel ON op_channel_clicks(channel)
+	`).Error; err != nil {
+		return err
+	}
+
 	if err := seedAppSettings(db); err != nil {
 		return err
 	}
@@ -111,6 +127,8 @@ func seedAppSettings(db *gorm.DB) error {
 		"premium_days": "30",
 		"premium_usdt": "10", // сумма в TON (ключ оставлен для совместимости)
 		"premium_stars": "100",
+		"instruction_text": "📖 <b>Инструкция по использованию прокси</b>\n\n<b>1. Получите несколько прокси</b>\nНажмите «Получить прокси» 2-3 раза — вы получите разные прокси-серверы.\n\n<b>2. Добавьте все прокси в Telegram</b>\nНажмите «Подключиться» под каждым прокси и включите его.\n\n<b>3. Включите автопереключение</b>\nНастройки → Конфиденциальность и безопасность → Тип подключения → выберите все прокси.\n\nTelegram автоматически переключится на рабочий прокси при сбое!",
+		"instruction_photo_id": "",
 	}
 	for key, value := range defaults {
 		var exists int64

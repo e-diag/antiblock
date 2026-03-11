@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/handler"
@@ -22,6 +24,7 @@ import (
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/infrastructure/database"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
+	appmetrics "github.com/yourusername/antiblock/internal/infrastructure/metrics"
 	"github.com/yourusername/antiblock/internal/repository"
 	"github.com/yourusername/antiblock/internal/usecase"
 	"github.com/yourusername/antiblock/internal/worker"
@@ -57,6 +60,7 @@ func main() {
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
 	starPaymentRepo := repository.NewStarPaymentRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
+	opStatsRepo := repository.NewOPStatsRepository(db.DB)
 
 	proxyUC := usecase.NewProxyUseCase(proxyRepo, userProxyRepo)
 	var dockerMgr *docker.Manager
@@ -95,7 +99,7 @@ func main() {
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
 	adComposeState := handler.NewAdComposeState()
-	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, userProxyRepo, adRepo, adPinRepo, settingsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
+	botHandler := handler.NewBotHandler(userUC, proxyUC, paymentUC, userRepo, userProxyRepo, adRepo, adPinRepo, settingsRepo, opStatsRepo, dockerMgr, cfg.Telegram.ForcedSubscriptionChannel, broadcastState, broadcastMediaGroup, adComposeState, cfg.Telegram.GetAdminIDs())
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 
 	opts := []bot.Option{
@@ -161,6 +165,8 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpricing", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPricing))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_usdt", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceUSDT))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_stars", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceStars))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_text", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionText))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_photo", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionPhoto))
 
 	// Callback-кнопки
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
@@ -175,6 +181,8 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_premium_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "check_sub_forced", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cancel_payment", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "show_instructions", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "back_to_main", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "reminder_later", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "ad_click_", bot.MatchTypePrefix, botHandler.HandleCallback)
 
@@ -186,7 +194,7 @@ func main() {
 		return update.Message != nil && update.Message.SuccessfulPayment != nil
 	}, botHandler.HandleSuccessfulPayment)
 
-	healthCheckWorker := worker.NewHealthCheckWorker(proxyUC, cfg.Workers.HealthCheck)
+	healthCheckWorker := worker.NewHealthCheckWorker(proxyUC, b, cfg.Telegram.GetAdminIDs(), cfg.Workers.HealthCheck)
 	premiumHealthCheckWorker := worker.NewPremiumHealthCheckWorker(b, proxyUC, cfg.Telegram.GetAdminIDs(), cfg.Workers.PremiumHealthCheck)
 	subscriptionWorker := worker.NewSubscriptionWorker(userUC, cfg.Workers.SubscriptionChecker)
 	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, cfg.Workers.PremiumReminder)
@@ -241,6 +249,66 @@ func main() {
 		premiumReminderWorker.Stop()
 		dockerMonitorWorker.Stop()
 		cancel()
+	}()
+
+	// Горутина обновления метрик каждые 30 сек
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if stats, err := proxyUC.GetStats(); err == nil {
+					appmetrics.ActivePremiumProxies.Set(float64(stats.PremiumProxies))
+					appmetrics.UnreachablePremiumProxies.Set(float64(stats.UnreachablePremiumCount))
+				}
+				if allProxies, err := proxyUC.GetAllFreeProxies(); err == nil {
+					activeCount, inactiveCount := 0, 0
+					for _, p := range allProxies {
+						if p.Status == domain.ProxyStatusActive {
+							activeCount++
+						} else {
+							inactiveCount++
+						}
+						portStr := strconv.Itoa(p.Port)
+						appmetrics.FreeProxyLoad.WithLabelValues(p.IP, portStr).Set(float64(p.Load))
+					}
+					appmetrics.ActiveFreeProxies.Set(float64(activeCount))
+					appmetrics.InactiveFreeProxies.Set(float64(inactiveCount))
+				}
+				if count, err := userRepo.Count(); err == nil {
+					appmetrics.TotalUsers.Set(float64(count))
+				}
+				if premiumUsers, err := userRepo.GetPremiumUsers(); err == nil {
+					appmetrics.PremiumUsers.Set(float64(len(premiumUsers)))
+				}
+			}
+		}
+	}()
+
+	// HTTP-сервер метрик с поддержкой graceful shutdown по контексту.
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		})
+		srv := &http.Server{Addr: ":9090", Handler: mux}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("Metrics server shutdown error: %v", err)
+			}
+		}()
+		log.Println("Prometheus metrics at :9090/metrics")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Metrics server error: %v", err)
+		}
 	}()
 
 	log.Println("Bot started successfully!")

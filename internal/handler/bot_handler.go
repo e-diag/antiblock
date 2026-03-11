@@ -51,6 +51,7 @@ type BotHandler struct {
 	adRepo         repository.AdRepository
 	adPinRepo      repository.AdPinRepository
 	settingsRepo   repository.SettingsRepository
+	opStatsRepo    repository.OPStatsRepository
 
 	dockerMgr   *docker.Manager
 	forcedSubCh string // из конфига (fallback, если в БД пусто)
@@ -58,8 +59,12 @@ type BotHandler struct {
 	broadcastState       *BroadcastState
 	broadcastMediaGroup  *BroadcastMediaGroupBuffer
 	adComposeState      *AdComposeState
+	msgState             *MessageState
 	opAwaiting          map[int64]bool // админ вводит новый канал ОП
 	opMu                sync.Mutex
+	instrAwaitingText   map[int64]bool
+	instrAwaitingPhoto  map[int64]bool
+	instrMu             sync.Mutex
 	adminIDs            []int64
 	botRef              *bot.Bot // для асинхронной рассылки альбомов (устанавливается из main)
 }
@@ -74,6 +79,7 @@ func NewBotHandler(
 	adRepo repository.AdRepository,
 	adPinRepo repository.AdPinRepository,
 	settingsRepo repository.SettingsRepository,
+	opStatsRepo repository.OPStatsRepository,
 	dockerMgr *docker.Manager,
 	forcedSubCh string,
 	broadcastState      *BroadcastState,
@@ -90,12 +96,16 @@ func NewBotHandler(
 		adRepo:             adRepo,
 		adPinRepo:          adPinRepo,
 		settingsRepo:       settingsRepo,
+		opStatsRepo:        opStatsRepo,
 		dockerMgr:          dockerMgr,
 		forcedSubCh:        forcedSubCh,
 		broadcastState:     broadcastState,
 		broadcastMediaGroup: broadcastMediaGroup,
 		adComposeState:     adComposeState,
+		msgState:            NewMessageState(),
 		opAwaiting:         make(map[int64]bool),
+		instrAwaitingText:  make(map[int64]bool),
+		instrAwaitingPhoto: make(map[int64]bool),
 		adminIDs:           adminIDs,
 	}
 }
@@ -128,6 +138,35 @@ func (h *BotHandler) isOPAwaiting(adminID int64) bool {
 	h.opMu.Lock()
 	defer h.opMu.Unlock()
 	return h.opAwaiting[adminID]
+}
+
+func (h *BotHandler) setInstrAwaitingText(adminID int64, v bool) {
+	h.instrMu.Lock()
+	defer h.instrMu.Unlock()
+	if v {
+		h.instrAwaitingText[adminID] = true
+	} else {
+		delete(h.instrAwaitingText, adminID)
+	}
+}
+func (h *BotHandler) setInstrAwaitingPhoto(adminID int64, v bool) {
+	h.instrMu.Lock()
+	defer h.instrMu.Unlock()
+	if v {
+		h.instrAwaitingPhoto[adminID] = true
+	} else {
+		delete(h.instrAwaitingPhoto, adminID)
+	}
+}
+func (h *BotHandler) isInstrAwaitingText(id int64) bool {
+	h.instrMu.Lock()
+	defer h.instrMu.Unlock()
+	return h.instrAwaitingText[id]
+}
+func (h *BotHandler) isInstrAwaitingPhoto(id int64) bool {
+	h.instrMu.Lock()
+	defer h.instrMu.Unlock()
+	return h.instrAwaitingPhoto[id]
 }
 
 func chatID(update *models.Update) int64 {
@@ -165,6 +204,33 @@ func (h *BotHandler) send(ctx context.Context, b *bot.Bot, update *models.Update
 		ReplyMarkup: replyMarkup,
 	}
 	b.SendMessage(ctx, params)
+}
+
+// sendOrEdit редактирует последнее сообщение бота пользователю, если есть сохранённый messageID.
+// При неудаче отправляет новое. НЕ использовать для сообщений с прокси и объявлений.
+func (h *BotHandler) sendOrEdit(ctx context.Context, b *bot.Bot, userID int64, text string, replyMarkup *models.InlineKeyboardMarkup) {
+	if msgID, ok := h.msgState.Get(userID); ok {
+		_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      userID,
+			MessageID:   msgID,
+			Text:        text,
+			ParseMode:   models.ParseModeHTML,
+			ReplyMarkup: replyMarkup,
+		})
+		if err == nil {
+			return
+		}
+		h.msgState.Clear(userID)
+	}
+	msg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      userID,
+		Text:        text,
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: replyMarkup,
+	})
+	if err == nil && msg != nil {
+		h.msgState.Set(userID, msg.ID)
+	}
 }
 
 func (h *BotHandler) sendText(ctx context.Context, b *bot.Bot, update *models.Update, text string) {
@@ -212,6 +278,9 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: "📋 Мои прокси", CallbackData: "my_proxies"}})
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: "📖 Инструкция", CallbackData: "show_instructions"},
+	})
 	kb = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return welcomeMsg, kb
 }
@@ -225,7 +294,7 @@ func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 	welcomeMsg, kb := h.mainMenuContent(user)
-	h.send(ctx, b, update, welcomeMsg, kb)
+	h.sendOrEdit(ctx, b, userID, welcomeMsg, kb)
 	if !user.IsPremiumActive() {
 		runCtx := context.WithoutCancel(ctx)
 		go h.sendActiveAdIfExists(runCtx, b, userID)
@@ -527,7 +596,7 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 			{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
 		},
 	}
-	h.send(ctx, b, update, msg, kb)
+	h.sendOrEdit(ctx, b, userID, msg, kb)
 }
 
 // HandleAddProxy обрабатывает команду /addproxy (только для админов). Разрешён только тип Free; Premium создаётся автоматически.
@@ -591,6 +660,9 @@ func (h *BotHandler) managerPanelContent() (msg string, kb *models.InlineKeyboar
 				{Text: "📢 Управление ОП", CallbackData: "mgr_forcedsub"},
 			},
 			{
+				{Text: "📖 Инструкция", CallbackData: "mgr_instruction"},
+			},
+			{
 				{Text: "💎 Подписки", CallbackData: "mgr_subs"},
 				{Text: "⚙️ Настройки подписки", CallbackData: "mgr_pricing"},
 			},
@@ -638,7 +710,30 @@ func (h *BotHandler) buildManagerStatsMessage() (string, error) {
 	if ad != nil {
 		msg += fmt.Sprintf("\n📣 <b>Объявление</b> (ID %d)\n👁 Показы: %d\n🖱 Клики: %d", ad.ID, ad.Impressions, ad.Clicks)
 	}
-	if h.settingsRepo != nil {
+	if h.opStatsRepo != nil {
+		if clicksByChannel, err := h.opStatsRepo.GetClicksByChannel(); err == nil && len(clicksByChannel) > 0 {
+			msg += "\n\n📢 <b>Статистика ОП по каналам</b>\n"
+			channels := h.getForcedSubChannels()
+			for _, ch := range channels {
+				count := clicksByChannel[ch]
+				label := channelToChatID(ch)
+				msg += fmt.Sprintf("• %s: <b>%d</b>\n", label, count)
+			}
+			// Удалённые каналы со статистикой
+			for ch, count := range clicksByChannel {
+				found := false
+				for _, active := range channels {
+					if active == ch {
+						found = true
+						break
+					}
+				}
+				if !found {
+					msg += fmt.Sprintf("• %s (удалён): <b>%d</b>\n", ch, count)
+				}
+			}
+		}
+	} else if h.settingsRepo != nil {
 		if forcedSubs, _ := h.settingsRepo.Get("forced_subs_count"); forcedSubs != "" {
 			msg += fmt.Sprintf("\n\n📢 Подписок по ОП: %s", forcedSubs)
 		}
@@ -667,7 +762,18 @@ func (h *BotHandler) buildManagerProxiesMessage() (string, error) {
 		sb.WriteString("Нет.\n\n")
 	} else {
 		for _, p := range freeList {
-			sb.WriteString(formatProxyLine(p, true) + "\n")
+			status := "✅"
+			if p.Status != domain.ProxyStatusActive {
+				status = "🔴"
+			}
+			line := fmt.Sprintf("%s ID %d: %s:%d Load:%d", status, p.ID, p.IP, p.Port, p.Load)
+			if p.LastRTTMs != nil {
+				line += fmt.Sprintf(" TCP:%dмс", *p.LastRTTMs)
+			}
+			if p.LastCheck != nil {
+				line += fmt.Sprintf(" (проверен %s)", p.LastCheck.Format("15:04"))
+			}
+			sb.WriteString("• " + line + "\n")
 		}
 		sb.WriteString("\n")
 	}
@@ -914,6 +1020,16 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			for i, ch := range channels {
 				msg += fmt.Sprintf("%d. <code>%s</code>\n", i+1, ch)
 			}
+			if h.opStatsRepo != nil {
+				if clicksByChannel, err := h.opStatsRepo.GetClicksByChannel(); err == nil && len(clicksByChannel) > 0 {
+					msg += "\n<b>📊 Статистика подписок:</b>\n"
+					for _, ch := range channels {
+						count := clicksByChannel[ch]
+						label := channelToChatID(ch)
+						msg += fmt.Sprintf("%s: <b>%d</b>\n", label, count)
+					}
+				}
+			}
 		}
 		rows := [][]models.InlineKeyboardButton{{{Text: "➕ Добавить канал", CallbackData: "mgr_op_add"}}}
 		for i := range channels {
@@ -926,6 +1042,49 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML,
 			ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: rows},
 		})
+
+	case "mgr_instruction":
+		instrText := "(не задан)"
+		photoID := ""
+		if h.settingsRepo != nil {
+			if t, _ := h.settingsRepo.Get("instruction_text"); t != "" {
+				instrText = t
+			}
+			if p, _ := h.settingsRepo.Get("instruction_photo_id"); p != "" {
+				photoID = p
+			}
+		}
+		preview := instrText
+		{
+			n := 0
+			for i := range preview {
+				n++
+				if n > 100 {
+					preview = preview[:i] + "..."
+					break
+				}
+			}
+		}
+		photoStatus := "не задано"
+		if photoID != "" {
+			photoStatus = "✅ задано"
+		}
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, ParseMode: models.ParseModeHTML,
+			Text: fmt.Sprintf("📖 <b>Настройка инструкции</b>\n\n📷 Фото: %s\n📝 Текст: <code>%s</code>\n\nДля изменения используйте команды:\n<code>/set_instruction_text</code> — следующим сообщением отправьте новый текст (HTML)\n<code>/set_instruction_photo</code> — следующим сообщением отправьте фото", photoStatus, preview),
+			ReplyMarkup: &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{{Text: "🗑 Удалить фото", CallbackData: "mgr_instruction_clear_photo"}},
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+				},
+			},
+		})
+
+	case "mgr_instruction_clear_photo":
+		if h.settingsRepo != nil {
+			_ = h.settingsRepo.Set("instruction_photo_id", "")
+		}
+		send("✅ Фото инструкции удалено.")
 
 	case "mgr_op_add":
 		h.setOPAwaiting(chatID, true)
@@ -1336,6 +1495,43 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 	}
 	if h.isOPAwaiting(cid) {
 		h.HandleOPChannelInput(ctx, b, update)
+		return
+	}
+	if h.isInstrAwaitingText(cid) {
+		text := update.Message.Text
+		if text == "" {
+			h.sendText(ctx, b, update, "❌ Текст не может быть пустым. Отправьте текст или /cancel для отмены.")
+			return
+		}
+		h.setInstrAwaitingText(cid, false)
+		if h.settingsRepo == nil {
+			h.sendText(ctx, b, update, "❌ Ошибка: хранилище настроек недоступно.")
+			return
+		}
+		if err := h.settingsRepo.Set("instruction_text", text); err != nil {
+			h.sendText(ctx, b, update, "❌ Ошибка сохранения текста.")
+			return
+		}
+		h.sendText(ctx, b, update, "✅ Текст инструкции обновлён.")
+		return
+	}
+	if h.isInstrAwaitingPhoto(cid) {
+		if len(update.Message.Photo) == 0 {
+			h.sendText(ctx, b, update, "❌ Отправьте фото (не файл). Отмена: /cancel")
+			return
+		}
+		photo := update.Message.Photo[len(update.Message.Photo)-1]
+		h.setInstrAwaitingPhoto(cid, false)
+		if h.settingsRepo == nil {
+			h.sendText(ctx, b, update, "❌ Ошибка: хранилище настроек недоступно.")
+			return
+		}
+		if err := h.settingsRepo.Set("instruction_photo_id", photo.FileID); err != nil {
+			h.sendText(ctx, b, update, "❌ Ошибка сохранения фото.")
+			return
+		}
+		h.sendText(ctx, b, update, "✅ Фото инструкции обновлено.")
+		return
 	}
 }
 
@@ -1680,38 +1876,52 @@ func (h *BotHandler) HandleAdComposeMessage(ctx context.Context, b *bot.Bot, upd
 			h.adComposeState.Clear(adminID)
 			return
 		}
-		// Рассылка только для нового объявления — бесплатным пользователям с закреплением
-		var successMsg string
-		users, errUsers := h.userRepo.GetAll()
-		if errUsers == nil && h.adPinRepo != nil {
+		// Рассылка только для нового объявления — в фоне, бесплатным пользователям с закреплением
+		send("✅ Объявление создано. Рассылка запущена в фоне, вы получите отчёт по завершении.")
+		h.adComposeState.Clear(adminID)
+
+		go func(adCopy domain.Ad) {
+			bgCtx := context.Background()
+			botRef := h.botRef
+			if botRef == nil {
+				return
+			}
+			users, errUsers := h.userRepo.GetAll()
+			if errUsers != nil {
+				botRef.SendMessage(bgCtx, &bot.SendMessageParams{
+					ChatID:    adminID,
+					Text:      fmt.Sprintf("❌ Ошибка рассылки объявления: %v", errUsers),
+					ParseMode: models.ParseModeHTML,
+				})
+				return
+			}
 			sent := 0
-			kb := h.buildAdKeyboard(ad)
+			kb := h.buildAdKeyboard(&adCopy)
 			for _, u := range users {
 				if u.IsPremiumActive() {
 					continue
 				}
-				msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: u.TGID, Text: ad.Text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
+				msg, errSend := botRef.SendMessage(bgCtx, &bot.SendMessageParams{
+					ChatID: u.TGID, Text: adCopy.Text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
 				})
 				if errSend == nil && msg != nil && msg.ID != 0 {
-					if _, errPin := b.PinChatMessage(ctx, &bot.PinChatMessageParams{ChatID: u.TGID, MessageID: msg.ID}); errPin == nil {
-						_ = h.adPinRepo.Create(&domain.AdPin{AdID: ad.ID, UserID: u.TGID, ChatID: u.TGID, MessageID: msg.ID})
+					if _, errPin := botRef.PinChatMessage(bgCtx, &bot.PinChatMessageParams{
+						ChatID: u.TGID, MessageID: msg.ID,
+					}); errPin == nil {
+						_ = h.adPinRepo.Create(&domain.AdPin{
+							AdID: adCopy.ID, UserID: u.TGID, ChatID: u.TGID, MessageID: msg.ID,
+						})
 						sent++
 					}
 				}
 				time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
 			}
-			successMsg = fmt.Sprintf("✅ Объявление добавлено и активировано. Разослано и закреплено у %d бесплатных пользователей.", sent)
-		} else {
-			successMsg = "✅ Объявление добавлено и активировано."
-			if errUsers != nil {
-				successMsg += fmt.Sprintf(" Рассылка не выполнена: %v", errUsers)
-			} else if h.adPinRepo == nil {
-				successMsg += " Рассылка не выполнена (недоступен репозиторий закреплений)."
-			}
-		}
-		send(successMsg)
-		h.adComposeState.Clear(adminID)
+			botRef.SendMessage(bgCtx, &bot.SendMessageParams{
+				ChatID:    adminID,
+				Text:      fmt.Sprintf("✅ Рассылка объявления завершена. Закреплено у %d пользователей.", sent),
+				ParseMode: models.ParseModeHTML,
+			})
+		}(*ad)
 	}
 }
 
@@ -1797,9 +2007,35 @@ func (h *BotHandler) HandleCancel(ctx context.Context, b *bot.Bot, update *model
 		h.setOPAwaiting(adminID, false)
 		cancelled = true
 	}
+	if h.isInstrAwaitingText(adminID) {
+		h.setInstrAwaitingText(adminID, false)
+		cancelled = true
+	}
+	if h.isInstrAwaitingPhoto(adminID) {
+		h.setInstrAwaitingPhoto(adminID, false)
+		cancelled = true
+	}
 	if cancelled {
 		h.sendText(ctx, b, update, "❌ Ввод отменён.")
 	}
+}
+
+func (h *BotHandler) HandleSetInstructionText(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	adminID := chatID(update)
+	h.setInstrAwaitingText(adminID, true)
+	h.sendText(ctx, b, update, "📝 Отправьте новый текст инструкции (поддерживается HTML). Отмена: /cancel")
+}
+
+func (h *BotHandler) HandleSetInstructionPhoto(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	adminID := chatID(update)
+	h.setInstrAwaitingPhoto(adminID, true)
+	h.sendText(ctx, b, update, "📷 Отправьте фото для инструкции. Отмена: /cancel")
 }
 
 // HandleCallback обрабатывает callback-запросы от inline кнопок
@@ -1904,15 +2140,17 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			return
 		}
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID, Text: "✅ Спасибо! Выдаём прокси."})
-		if !user.ForcedSubCounted && h.settingsRepo != nil {
+		if !user.ForcedSubCounted {
 			user.ForcedSubCounted = true
 			_ = h.userRepo.Update(user)
-			if cur, _ := h.settingsRepo.Get("forced_subs_count"); cur != "" {
-				if n, err := strconv.Atoi(cur); err == nil {
-					_ = h.settingsRepo.Set("forced_subs_count", strconv.Itoa(n+1))
+			channels := h.getForcedSubChannels()
+			for _, ch := range channels {
+				if h.opStatsRepo != nil {
+					_ = h.opStatsRepo.RecordClick(ch, userID)
 				}
-			} else {
-				_ = h.settingsRepo.Set("forced_subs_count", "1")
+			}
+			if h.settingsRepo != nil {
+				_ = h.settingsRepo.Increment("forced_subs_count", 1)
 			}
 		}
 		h.sendProxyToUser(ctx, b, chatID, user, true)
@@ -1930,13 +2168,61 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			return
 		}
 		msg, kb := h.mainMenuContent(user)
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+		h.sendOrEdit(ctx, b, chatID, msg, kb)
 	case "reminder_later":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 			CallbackQueryID: cqID,
 			Text:            "Ок, напомним позже",
 		})
 		return
+	case "show_instructions":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		instrText := "📖 Инструкция пока не настроена. Обратитесь к администратору."
+		photoID := ""
+		if h.settingsRepo != nil {
+			if t, _ := h.settingsRepo.Get("instruction_text"); t != "" {
+				instrText = t
+			}
+			if p, _ := h.settingsRepo.Get("instruction_photo_id"); p != "" {
+				photoID = p
+			}
+		}
+		kb := &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "◀️ Назад", CallbackData: "back_to_main"}},
+			},
+		}
+		if photoID != "" {
+			// Удаляем предыдущее отслеживаемое сообщение, чтобы не плодить дубликаты.
+			if prevID, ok := h.msgState.Get(chatID); ok {
+				_, _ = b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+					ChatID:    chatID,
+					MessageID: prevID,
+				})
+				h.msgState.Clear(chatID)
+			}
+			msg, err := b.SendPhoto(ctx, &bot.SendPhotoParams{
+				ChatID:      chatID,
+				Photo:       &models.InputFileString{Data: photoID},
+				Caption:     instrText,
+				ParseMode:   models.ParseModeHTML,
+				ReplyMarkup: kb,
+			})
+			if err == nil && msg != nil {
+				h.msgState.Set(chatID, msg.ID)
+			}
+		} else {
+			h.sendOrEdit(ctx, b, chatID, instrText, kb)
+		}
+	case "back_to_main":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
+		if err != nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка.", ParseMode: models.ParseModeHTML})
+			return
+		}
+		msg, kb := h.mainMenuContent(user)
+		h.sendOrEdit(ctx, b, chatID, msg, kb)
 	default:
 		if strings.HasPrefix(data, "my_proxy_") {
 			idStr := strings.TrimPrefix(data, "my_proxy_")

@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: 'antiblock-bot'
+    static_configs:
+      - targets: ['bot:9090']
+    metrics_path: /metrics

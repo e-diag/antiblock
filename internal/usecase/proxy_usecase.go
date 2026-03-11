@@ -37,6 +37,10 @@ type ProxyUseCase interface {
 	// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
 	// выбирает свободный порт 20000-30000, создаёт/обновляет запись в proxy_nodes с serverIP.
 	EnsurePremiumProxyForUser(user *domain.User, serverIP string) (*domain.ProxyNode, error)
+	// GetAllFreeProxies возвращает все free-прокси (активные и неактивные) для мониторинга.
+	GetAllFreeProxies() ([]*domain.ProxyNode, error)
+	// CheckFreeProxy проверяет TCP-доступность free-прокси, обновляет статус и RTT в БД. Возвращает (reachable, rttMs).
+	CheckFreeProxy(proxy *domain.ProxyNode) (reachable bool, rttMs int)
 }
 
 type ProxyStats struct {
@@ -55,14 +59,26 @@ type proxyUseCase struct {
 // ErrNoMoreFreeProxiesForUser возвращается, когда пользователь уже получил все доступные бесплатные прокси.
 var ErrNoMoreFreeProxiesForUser = errors.New("user has received all available free proxies")
 
-var secretRegexp = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+var secretRegexpHex = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+var secretRegexpGeneral = regexp.MustCompile(`^[A-Za-z0-9+/=_\-]{16,255}$`)
 
 func validateSecret(secret string) error {
 	if secret == "" {
 		return errors.New("secret cannot be empty")
 	}
-	if !secretRegexp.MatchString(secret) {
-		return errors.New("invalid secret format")
+	// Формат MTProto v2: строго строчный префикс "dd" + 32+ hex-символов.
+	if strings.HasPrefix(secret, "dd") {
+		hexPart := secret[2:]
+		if len(hexPart) < 32 {
+			return errors.New("invalid secret: hex part too short (min 32 chars after dd prefix)")
+		}
+		if !secretRegexpHex.MatchString(hexPart) {
+			return errors.New("invalid secret: hex part contains non-hex characters")
+		}
+		return nil
+	}
+	if !secretRegexpGeneral.MatchString(secret) {
+		return errors.New("invalid secret format (allowed: A-Za-z0-9+/=_-, length 16-255)")
 	}
 	return nil
 }
@@ -400,4 +416,40 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 
 	log.Printf("[Premium proxy] failed to allocate port after %d retries for user_id=%d", maxRetries, user.ID)
 	return nil, fmt.Errorf("failed to allocate unique port after %d retries", maxRetries)
+}
+
+func (uc *proxyUseCase) GetAllFreeProxies() ([]*domain.ProxyNode, error) {
+	all, err := uc.proxyRepo.GetAll()
+	if err != nil {
+		return nil, err
+	}
+	var free []*domain.ProxyNode
+	for _, p := range all {
+		if p.Type == domain.ProxyTypeFree {
+			free = append(free, p)
+		}
+	}
+	return free, nil
+}
+
+func (uc *proxyUseCase) CheckFreeProxy(proxy *domain.ProxyNode) (reachable bool, rttMs int) {
+	timeout := 5 * time.Second
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxy.IP, proxy.Port), timeout)
+	now := time.Now()
+	proxy.LastCheck = &now
+
+	if err != nil {
+		proxy.Status = domain.ProxyStatusInactive
+		proxy.LastRTTMs = nil
+		_ = uc.proxyRepo.Update(proxy)
+		return false, 0
+	}
+	conn.Close()
+
+	ms := int(time.Since(start).Milliseconds())
+	proxy.LastRTTMs = &ms
+	proxy.Status = domain.ProxyStatusActive
+	_ = uc.proxyRepo.Update(proxy)
+	return true, ms
 }
