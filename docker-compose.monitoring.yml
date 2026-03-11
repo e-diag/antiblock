@@ -24,16 +24,6 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_SERVER_ROOT_URL: https://notecalendar.ru/grafana
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
-      # PostgreSQL — данные с первого дня (тот же .env, что и у основного приложения)
-      GF_DATASOURCE_2_NAME: PostgreSQL
-      GF_DATASOURCE_2_TYPE: postgres
-      GF_DATASOURCE_2_HOST: postgres
-      GF_DATASOURCE_2_PORT: "5432"
-      GF_DATASOURCE_2_DATABASE: antiblock
-      GF_DATASOURCE_2_USER: postgres
-      GF_DATASOURCE_2_PASSWORD: ${DB_PASSWORD:-postgres}
-      GF_DATASOURCE_2_IS_DEFAULT: "false"
-      GF_DATASOURCE_2_EDITABLE: "true"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

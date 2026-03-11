@@ -1,0 +1,15 @@
+# PostgreSQL — те же данные, что и у бота (дашборды «с первого дня»).
+# Пароль по умолчанию postgres; если в .env другой DB_PASSWORD — откройте Data sources → PostgreSQL и введите его, Save & test.
+apiVersion: 1
+datasources:
+  - name: PostgreSQL
+    type: postgres
+    url: postgres:5432
+    database: antiblock
+    user: postgres
+    secureJsonData:
+      password: "postgres"
+    jsonData:
+      sslmode: "disable"
+    isDefault: false
+    editable: true
