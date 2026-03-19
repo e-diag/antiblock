@@ -2,7 +2,9 @@ package timeweb
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -10,25 +12,65 @@ import (
 )
 
 type SSHClient struct {
-	host     string
-	port     int
-	user     string
-	password string
+	host          string
+	port          int
+	user          string
+	password      string
+	knownHostKey  string
+	onHostKeySeen func(hostKey string)
 }
 
 func NewSSHClient(host string, port int, user, password string) *SSHClient {
 	return &SSHClient{host: host, port: port, user: user, password: password}
 }
 
-func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) {
-	config := &ssh.ClientConfig{
-		User:            s.user,
-		Auth:            []ssh.AuthMethod{ssh.Password(s.password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         30 * time.Second,
+// WithKnownHostKey задаёт известный host key для верификации.
+// Если knownKey пустой — при первом подключении ключ будет принят и сохранён через onSave.
+func (s *SSHClient) WithKnownHostKey(knownKey string, onSave func(hostKey string)) *SSHClient {
+	s.knownHostKey = knownKey
+	s.onHostKeySeen = onSave
+	return s
+}
+
+func (s *SSHClient) buildHostKeyCallback() ssh.HostKeyCallback {
+	if s.knownHostKey != "" {
+		return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			got := base64.StdEncoding.EncodeToString(key.Marshal())
+			if got != s.knownHostKey {
+				expectedPrefix := s.knownHostKey
+				if len(expectedPrefix) > 16 {
+					expectedPrefix = expectedPrefix[:16] + "..."
+				}
+				gotPrefix := got
+				if len(gotPrefix) > 16 {
+					gotPrefix = gotPrefix[:16] + "..."
+				}
+				return fmt.Errorf("SSH host key mismatch for %s: expected %s, got %s", hostname, expectedPrefix, gotPrefix)
+			}
+			return nil
+		}
 	}
 
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", s.host, s.port), config)
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		hostKey := base64.StdEncoding.EncodeToString(key.Marshal())
+		if s.onHostKeySeen != nil {
+			s.onHostKeySeen(hostKey)
+		}
+		return nil
+	}
+}
+
+func (s *SSHClient) newConfig() *ssh.ClientConfig {
+	return &ssh.ClientConfig{
+		User:            s.user,
+		Auth:            []ssh.AuthMethod{ssh.Password(s.password)},
+		HostKeyCallback: s.buildHostKeyCallback(),
+		Timeout:         30 * time.Second,
+	}
+}
+
+func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) {
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", s.host, s.port), s.newConfig())
 	if err != nil {
 		return "", fmt.Errorf("ssh dial %s: %w", s.host, err)
 	}

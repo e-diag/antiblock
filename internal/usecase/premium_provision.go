@@ -46,6 +46,23 @@ func NewPremiumProvisioner(
 	}
 }
 
+// newSSHClient создаёт SSH клиент с верификацией host key.
+// Для нового сервера host key будет сохранён при первом успешном подключении.
+func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb.SSHClient {
+	client := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+	if strings.TrimSpace(server.SSHHostKey) != "" {
+		return client.WithKnownHostKey(server.SSHHostKey, nil)
+	}
+	return client.WithKnownHostKey("", func(hostKey string) {
+		server.SSHHostKey = hostKey
+		if err := p.serverRepo.Update(server); err != nil {
+			log.Printf("[SSH] failed to save host key for server %d: %v", server.ID, err)
+		} else {
+			log.Printf("[SSH] host key saved for server %s", server.IP)
+		}
+	})
+}
+
 // ProvisionForUser создаёт floating IP и запускает контейнеры для нового Premium-юзера.
 // В случае ErrFloatingIPDailyLimit возвращает (placeholderProxy, ErrFloatingIPDailyLimit),
 // чтобы dd/ee секреты были сгенерированы один раз на момент первой покупки.
@@ -56,7 +73,7 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 	}
 
 	ownerID := user.ID
-	sshClient := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+	sshClient := p.newSSHClient(server)
 
 	// Генерируем ee-секрет сразу (чтобы он не менялся при последующей выдаче/провижининге).
 	secretEE, err := sshClient.GenerateEESecret(ctx)
@@ -124,7 +141,7 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 	}
 	proxy.PremiumServerID = &server.ID
 
-	sshClient := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+	sshClient := p.newSSHClient(server)
 
 	floatingIP, err := p.twClient.CreateFloatingIP(ctx, p.zone)
 	if err != nil {
@@ -172,7 +189,7 @@ func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user 
 		return fmt.Errorf("premium server not found")
 	}
 
-	sshClient := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+	sshClient := p.newSSHClient(server)
 	return sshClient.StartPremiumContainers(ctx, user.TGID, proxy.FloatingIP, proxy.Secret, proxy.SecretEE)
 }
 
@@ -188,7 +205,7 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 		return "", "", fmt.Errorf("premium server not found")
 	}
 
-	sshClient := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+	sshClient := p.newSSHClient(server)
 
 	// Создаем новый floating IP сначала.
 	newFloating, err := p.twClient.CreateFloatingIP(ctx, p.zone)
@@ -224,7 +241,7 @@ func (p *PremiumProvisioner) DeprovisionForUser(ctx context.Context, user *domai
 	if proxy.PremiumServerID != nil && *proxy.PremiumServerID != 0 {
 		server, err := p.serverRepo.GetByID(*proxy.PremiumServerID)
 		if err == nil && server != nil {
-			sshClient := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+			sshClient := p.newSSHClient(server)
 			sshClient.StopPremiumContainers(ctx, user.TGID)
 		}
 	}
@@ -285,7 +302,10 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		return nil, errors.New("cannot extract server main IPv4")
 	}
 
-	sshClient := timeweb.NewSSHClient(mainIP, 22, p.sshUser, p.sshPassword)
+	hostKeySeen := ""
+	sshClient := timeweb.NewSSHClient(mainIP, 22, p.sshUser, p.sshPassword).WithKnownHostKey("", func(hostKey string) {
+		hostKeySeen = hostKey
+	})
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
@@ -312,6 +332,7 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		IP:        mainIP,
 		TimewebID: serverInfo.ID,
 		IsActive:  true,
+		SSHHostKey: hostKeySeen,
 	}
 	if err := p.serverRepo.Create(premiumServer); err != nil {
 		return nil, fmt.Errorf("save premium server: %w", err)

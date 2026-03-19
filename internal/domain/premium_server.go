@@ -24,6 +24,8 @@ type PremiumServer struct {
 
 	// DockerPort — порт Docker (сохраняется для совместимости с legacy-дизайном).
 	DockerPort int `gorm:"default:2376" json:"docker_port"`
+	// SSHHostKey — base64 публичного ключа SSH-сервера (для верификации host key).
+	SSHHostKey string `gorm:"type:text" json:"ssh_host_key,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
