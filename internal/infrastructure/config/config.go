@@ -202,6 +202,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Timeweb.SSHKeyPath == "" {
 		cfg.Timeweb.SSHKeyPath = getEnv("TIMEWEB_SSH_KEY_PATH", "/antiblock/premium-keys/premium_bot_key")
 	}
+	cfg.Telegram.AdminIDs = mergeAdminIDs(cfg.Telegram.AdminIDs)
 
 	return &cfg, nil
 }
@@ -256,4 +257,45 @@ func trimDatabaseStrings(d *DatabaseConfig) {
 	d.DBName = trimQuotes(d.DBName)
 	d.SSLMode = trimQuotes(d.SSLMode)
 	d.Timezone = trimQuotes(d.Timezone)
+}
+
+// mergeAdminIDs объединяет admin_ids из config.yaml и окружения:
+// - TELEGRAM_ADMIN_IDS="id1,id2,..."
+// - TELEGRAM_ADMIN_ID_* (например TELEGRAM_ADMIN_ID_1, TELEGRAM_ADMIN_ID_2, ...)
+func mergeAdminIDs(base []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(base)+4)
+	add := func(v string) {
+		v = strings.TrimSpace(trimQuotes(v))
+		if v == "" || strings.HasPrefix(v, "${") {
+			return
+		}
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+
+	for _, v := range base {
+		add(v)
+	}
+
+	if raw := os.Getenv("TELEGRAM_ADMIN_IDS"); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			add(part)
+		}
+	}
+
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TELEGRAM_ADMIN_ID_") {
+			continue
+		}
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		add(parts[1])
+	}
+
+	return out
 }

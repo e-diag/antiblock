@@ -1685,10 +1685,15 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		} else {
 			msg += fmt.Sprintf("Активных групп: <b>%d</b>\n\n", len(groups))
 			for _, g := range groups {
+				subsCount, errCount := h.proUC.CountActiveSubscribersByGroup(g.ID)
+				if errCount != nil {
+					subsCount = 0
+				}
 				msg += fmt.Sprintf(
-					"• ID <code>%d</code> | дата: <code>%s</code>\n  DD: <code>%s:%d</code>\n  EE: <code>%s:%d</code>\n  infra до: <code>%s</code>\n\n",
+					"• ID <code>%d</code> | дата: <code>%s</code> | юзеров: <b>%d</b>\n  DD: <code>%s:%d</code>\n  EE: <code>%s:%d</code>\n  infra до: <code>%s</code>\n\n",
 					g.ID,
 					g.Date.UTC().Format("2006-01-02"),
+					subsCount,
 					g.ServerIP, g.PortDD,
 					g.ServerIP, g.PortEE,
 					g.InfrastructureExpiresAt.UTC().Format("2006-01-02 15:04"),
