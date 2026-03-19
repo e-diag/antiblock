@@ -1,0 +1,380 @@
+package timeweb
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+const baseURL = "https://api.timeweb.cloud/api/v1"
+const baseRootURL = "https://api.timeweb.cloud"
+
+// ErrFloatingIPDailyLimit возвращается, когда исчерпан суточный лимит
+// на создание floating IP (10/день).
+var ErrFloatingIPDailyLimit = errors.New("timeweb: daily floating IP limit reached (10/day)")
+
+type Client struct {
+	token      string
+	httpClient *http.Client
+}
+
+func NewClient(token string) *Client {
+	return &Client{
+		token:      token,
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, body any) ([]byte, int, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, bodyReader)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return respBody, resp.StatusCode, nil
+}
+
+// --- Floating IPs ---
+
+// FloatingIP соответствует схеме `floating-ip`.
+type FloatingIP struct {
+	ID              string `json:"id"`
+	IP              string `json:"ip,omitempty"`
+	IsDDOSGuard     bool   `json:"is_ddos_guard,omitempty"`
+	AvailabilityZone string `json:"availability_zone,omitempty"`
+
+	// Ниже поля не используются напрямую, но оставлены для полноты.
+	ResourceType string `json:"resource_type,omitempty"`
+	ResourceID   any    `json:"resource_id,omitempty"`
+	Comment       string `json:"comment,omitempty"`
+	Ptr           string `json:"ptr,omitempty"`
+}
+
+type createFloatingIPRequest struct {
+	IsDDOSGuard       bool   `json:"is_ddos_guard"`
+	AvailabilityZone  string `json:"availability_zone"`
+}
+
+type bindFloatingIPRequest struct {
+	ResourceType string `json:"resource_type"` // usually "server"
+	ResourceID   any    `json:"resource_id"`   // number in API schema
+}
+
+// CreateFloatingIP создаёт floating IP в указанной зоне.
+func (c *Client) CreateFloatingIP(ctx context.Context, zone string) (*FloatingIP, error) {
+	req := createFloatingIPRequest{
+		IsDDOSGuard:      false,
+		AvailabilityZone: zone,
+	}
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, "/floating-ips", &req)
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusTooManyRequests {
+		bodyStr := strings.ToLower(string(respBody))
+		if strings.Contains(bodyStr, "limit") ||
+			strings.Contains(bodyStr, "daily") ||
+			strings.Contains(bodyStr, "лимит") {
+			return nil, ErrFloatingIPDailyLimit
+		}
+		return nil, fmt.Errorf("timeweb rate limit (429): %s", strings.TrimSpace(string(respBody)))
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb create floating ip: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+
+	var out struct {
+		IP string `json:"ip"`
+		// На практике ip приходит объектом `floating-ip` (allOf), поэтому распакуем корректно:
+		FloatingIP FloatingIP `json:"-"`
+	}
+	// Универсальный распарсер: response содержит поле `ip`, которое является floating-ip объектом.
+	// Поэтому делаем unmarshal через вспомогательную структуру.
+	var out2 struct {
+		IP FloatingIP `json:"ip"`
+	}
+	if err := json.Unmarshal(respBody, &out2); err == nil && out2.IP.ID != "" {
+		return &out2.IP, nil
+	}
+	// fallback — если unmarshal не распознал тип, вернём ошибку
+	_ = out
+	return nil, fmt.Errorf("timeweb create floating ip: unexpected response: %s", strings.TrimSpace(string(respBody)))
+}
+
+// BindFloatingIP привязывает floating IP к серверу.
+func (c *Client) BindFloatingIP(ctx context.Context, floatingIPID string, serverID int) error {
+	req := bindFloatingIPRequest{
+		ResourceType: "server",
+		ResourceID:   serverID,
+	}
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/floating-ips/%s/bind", floatingIPID), &req)
+	if err != nil {
+		return err
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("timeweb bind floating ip: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// UnbindFloatingIP отвязывает floating IP от сервера.
+func (c *Client) UnbindFloatingIP(ctx context.Context, floatingIPID string) error {
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/floating-ips/%s/unbind", floatingIPID), nil)
+	if err != nil {
+		return err
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("timeweb unbind floating ip: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// DeleteFloatingIP удаляет floating IP.
+func (c *Client) DeleteFloatingIP(ctx context.Context, floatingIPID string) error {
+	respBody, code, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/floating-ips/%s", floatingIPID), nil)
+	if err != nil {
+		return err
+	}
+	// API обычно отдаёт 204 No Content
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("timeweb delete floating ip: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// --- Servers ---
+
+// Server соответствует схеме `vds` (ответ для сервера).
+type Server struct {
+	ID              int    `json:"id"`
+	Name            string `json:"name,omitempty"`
+	Status          string `json:"status,omitempty"`
+	AvailabilityZone string `json:"availability_zone,omitempty"`
+	Networks        []ServerNetwork `json:"networks,omitempty"`
+}
+
+type ServerNetwork struct {
+	Type string `json:"type,omitempty"`
+	Ips  []ServerIP `json:"ips,omitempty"`
+}
+
+type ServerIP struct {
+	Type   string `json:"type,omitempty"`
+	IP     string `json:"ip,omitempty"`
+	IsMain bool   `json:"is_main,omitempty"`
+}
+
+// CreateServerRequest соответствует схеме `create-server`.
+// Минимально заполняем поля, которые нужны для создания VPS в нужной конфигурации.
+type CreateServerRequest struct {
+	Name             string `json:"name"`
+	PresetID         int    `json:"preset_id,omitempty"`
+	ImageID          string `json:"image_id,omitempty"`
+	AvailabilityZone string `json:"availability_zone,omitempty"`
+	IsDDOSGuard      bool   `json:"is_ddos_guard,omitempty"`
+}
+
+// CreateServer создаёт новый сервер (VPS).
+func (c *Client) CreateServer(ctx context.Context, req CreateServerRequest) (*Server, error) {
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, "/servers", &req)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb create server: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+
+	var out struct {
+		Server Server `json:"server"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("timeweb create server: unmarshal: %w", err)
+	}
+	return &out.Server, nil
+}
+
+// GetServer возвращает информацию о сервере.
+func (c *Client) GetServer(ctx context.Context, serverID int) (*Server, error) {
+	respBody, code, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/servers/%d", serverID), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb get server: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+	var out struct {
+		Server Server `json:"server"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("timeweb get server: unmarshal: %w", err)
+	}
+	return &out.Server, nil
+}
+
+// WaitServerReady polling каждые 10 сек, таймаут 10 мин.
+func (c *Client) WaitServerReady(ctx context.Context, serverID int) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeweb wait server ready timeout: %w", ctx.Err())
+		case <-ticker.C:
+			srv, err := c.GetServer(context.Background(), serverID)
+			if err != nil {
+				continue
+			}
+			// Swagger enum для vds.status содержит "on".
+			if strings.EqualFold(srv.Status, "on") {
+				return nil
+			}
+		}
+	}
+}
+
+// --- Directories (OS images / Configurations) ---
+
+// OSImage соответствует схеме `image`.
+type OSImage struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Configuration соответствует схеме `servers-preset`.
+type Configuration struct {
+	ID              int     `json:"id"`
+	Location        string  `json:"location,omitempty"`
+	Price           float64 `json:"price,omitempty"`
+	CPU             int     `json:"cpu,omitempty"`
+	RAM             int     `json:"ram,omitempty"`
+	Disk            int     `json:"disk,omitempty"`
+	DescriptionShort string `json:"description_short,omitempty"`
+}
+
+type osImagesOutResponse struct {
+	Images []OSImage `json:"images"`
+}
+
+type configurationsOutResponse struct {
+	ServerPresets []Configuration `json:"server_presets"`
+}
+
+// LocationDTO соответствует схеме `location-dto` из /api/v2/locations.
+type LocationDTO struct {
+	AvailabilityZones []string `json:"availability_zones"`
+}
+
+// GetRegions возвращает список доступных availability_zone.
+// Используется для менеджерского диалога создания Premium VPS.
+func (c *Client) GetRegions(ctx context.Context) ([]string, error) {
+	// Endpoint живёт в /api/v2 согласно swagger bundle.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseRootURL+"/api/v2/locations", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("timeweb get regions: http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out struct {
+		Locations []LocationDTO `json:"locations"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("timeweb get regions: unmarshal: %w", err)
+	}
+
+	set := make(map[string]struct{})
+	for _, l := range out.Locations {
+		for _, z := range l.AvailabilityZones {
+			z = strings.TrimSpace(z)
+			if z != "" {
+				set[z] = struct{}{}
+			}
+		}
+	}
+
+	regions := make([]string, 0, len(set))
+	for z := range set {
+		regions = append(regions, z)
+	}
+	return regions, nil
+}
+
+// GetOSImages возвращает список доступных образов ОС.
+func (c *Client) GetOSImages(ctx context.Context) ([]OSImage, error) {
+	// Пагинация не реализуем: подбираем limit по умолчанию из документации,
+	// либо берём первые N.
+	respBody, code, err := c.doRequest(ctx, http.MethodGet, "/images?limit=200&offset=0", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb get os images: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+
+	var out osImagesOutResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("timeweb get os images: unmarshal: %w", err)
+	}
+	return out.Images, nil
+}
+
+// GetConfigurations возвращает список доступных конфигураций VPS.
+func (c *Client) GetConfigurations(ctx context.Context) ([]Configuration, error) {
+	respBody, code, err := c.doRequest(ctx, http.MethodGet, "/presets/servers?limit=200&offset=0", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb get configurations: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+	var out configurationsOutResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("timeweb get configurations: unmarshal: %w", err)
+	}
+	return out.ServerPresets, nil
+}
+

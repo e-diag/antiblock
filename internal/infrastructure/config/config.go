@@ -17,18 +17,27 @@ type Config struct {
 	Database      DatabaseConfig      `yaml:"database"`
 	CryptoBot     CryptoBotConfig     `yaml:"cryptobot"` // устаревший блок (CryptoPay), можно не заполнять
 	XRocket       XRocketConfig       `yaml:"xrocket"`
+	Timeweb       TimewebConfig       `yaml:"timeweb"`
 	RateLimit     RateLimitConfig     `yaml:"rate_limit"`
 	Workers       WorkersConfig       `yaml:"workers"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
-	PremiumDocker PremiumDockerConfig `yaml:"premium_docker"`
+	ProDocker ProDockerConfig `yaml:"pro_docker"`
 }
 
-// PremiumDockerConfig — подключение к премиум-серверу по TLS для создания персональных mtg-контейнеров.
-type PremiumDockerConfig struct {
+// ProDockerConfig — Pro-сервер (Free + Pro-группы + legacy Premium cleanup) по Docker TLS.
+type ProDockerConfig struct {
 	Host     string `yaml:"host"`      // хост премиум-сервера (Docker daemon)
 	Port     int    `yaml:"port"`      // порт TLS, обычно 2376
 	CertPath string `yaml:"cert_path"` // путь к сертификатам, например /antiblock/docker-certs/
 	ServerIP string `yaml:"server_ip"` // IP сервера для записи в proxy_nodes (выдача пользователю)
+}
+
+// TimewebConfig — настройки TimeWeb Cloud API для Premium provisioning.
+type TimewebConfig struct {
+	APIToken          string `yaml:"api_token"`
+	AvailabilityZone  string `yaml:"availability_zone"`
+	SSHUser           string `yaml:"ssh_user"`
+	SSHPassword       string `yaml:"ssh_password"`
 }
 
 type AppConfig struct {
@@ -97,6 +106,7 @@ type WorkersConfig struct {
 	DockerMonitor       WorkerConfig              `yaml:"docker_monitor"`
 	PremiumReminder     WorkerConfig              `yaml:"premium_reminder"`
 	AdRePin             WorkerConfig              `yaml:"ad_repin"`
+	InvoiceCleanup      WorkerConfig              `yaml:"invoice_cleanup"`
 	PremiumHealthCheck  PremiumHealthCheckConfig  `yaml:"premium_health_check"`
 }
 
@@ -169,6 +179,20 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.XRocket.WebhookSecret == "" {
 		cfg.XRocket.WebhookSecret = getEnv("XROCKET_WEBHOOK_SECRET", "")
+	}
+
+	// TimeWeb Premium (условно включаем по TIMEWEB_API_TOKEN).
+	if cfg.Timeweb.APIToken == "" {
+		cfg.Timeweb.APIToken = getEnv("TIMEWEB_API_TOKEN", "")
+	}
+	if cfg.Timeweb.AvailabilityZone == "" {
+		cfg.Timeweb.AvailabilityZone = getEnv("TIMEWEB_AVAILABILITY_ZONE", "spb-3")
+	}
+	if cfg.Timeweb.SSHUser == "" {
+		cfg.Timeweb.SSHUser = getEnv("TIMEWEB_SSH_USER", "root")
+	}
+	if cfg.Timeweb.SSHPassword == "" {
+		cfg.Timeweb.SSHPassword = getEnv("TIMEWEB_SSH_PASSWORD", "")
 	}
 
 	return &cfg, nil

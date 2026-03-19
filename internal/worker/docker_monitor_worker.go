@@ -24,14 +24,21 @@ type DockerMonitorWorker struct {
 	adminIDs []int64
 	cfg      config.WorkerConfig
 	stop     chan struct{}
+	cli      *client.Client
 }
 
 func NewDockerMonitorWorker(b *bot.Bot, adminIDs []int64, cfg config.WorkerConfig) *DockerMonitorWorker {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Printf("docker monitor: failed to init client: %v", err)
+		cli = nil
+	}
 	return &DockerMonitorWorker{
 		bot:      b,
 		adminIDs: adminIDs,
 		cfg:      cfg,
 		stop:     make(chan struct{}),
+		cli:      cli,
 	}
 }
 
@@ -77,16 +84,11 @@ func (w *DockerMonitorWorker) checkOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		log.Printf("docker monitor: new client error: %v", err)
-		w.notifyAdmins(ctx, fmt.Sprintf("❗ Ошибка подключения к Docker: %v", err))
+	cli := w.cli
+	if cli == nil {
+		w.notifyAdmins(ctx, "❗ Docker monitor: Docker client не инициализирован.")
 		return
 	}
-	defer cli.Close()
 
 	args := filters.NewArgs()
 	args.Add("name", "mtg-user-")

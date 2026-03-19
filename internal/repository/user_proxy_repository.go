@@ -10,6 +10,8 @@ type UserProxyRepository interface {
 	Create(up *domain.UserProxy) error
 	ListByUserID(userID uint) ([]*domain.UserProxy, error)
 	GetByID(id uint) (*domain.UserProxy, error)
+	// GetByUserIDAndProxy возвращает запись, если пользователь уже получал этот прокси (ip, port, secret).
+	GetByUserIDAndProxy(userID uint, ip string, port int, secret string) (*domain.UserProxy, error)
 	// DeleteByIPPort удаляет все записи выданных прокси с указанными ip и port (при удалении узла из proxy_nodes).
 	DeleteByIPPort(ip string, port int) error
 	// DeleteByIPPortSecret удаляет записи по точному совпадению ip, port, secret (один прокси).
@@ -37,6 +39,18 @@ func (r *userProxyRepository) ListByUserID(userID uint) ([]*domain.UserProxy, er
 func (r *userProxyRepository) GetByID(id uint) (*domain.UserProxy, error) {
 	var up domain.UserProxy
 	err := r.db.First(&up, id).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &up, nil
+}
+
+func (r *userProxyRepository) GetByUserIDAndProxy(userID uint, ip string, port int, secret string) (*domain.UserProxy, error) {
+	var up domain.UserProxy
+	err := r.db.Where("user_id = ? AND ip = ? AND port = ? AND secret = ?", userID, ip, port, secret).First(&up).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}

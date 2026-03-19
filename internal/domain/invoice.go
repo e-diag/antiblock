@@ -7,6 +7,8 @@ type Invoice struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	InvoiceID  int64     `gorm:"uniqueIndex;not null" json:"invoice_id"` // ID в платёжной системе
 	UserID     int64     `gorm:"not null" json:"user_id"`               // TG user id (= chat_id в личке)
+	Kind       string    `gorm:"size:20;default:'premium'" json:"kind"` // premium|pro
+	DaysGranted int      `gorm:"default:0" json:"days_granted"`         // количество дней, выдаваемых при оплате
 	Status     string    `gorm:"size:20;default:'pending'" json:"status"`
 	Amount     float64   `json:"amount"`
 	Currency   string    `gorm:"size:10" json:"currency"`

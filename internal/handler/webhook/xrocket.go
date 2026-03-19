@@ -11,20 +11,31 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
 
 // XRocketWebhook обрабатывает webhook от xRocket Pay при успешной оплате счёта.
-// apiToken — API-ключ приложения (Rocket-Pay-Key). Подпись верифицируется по SHA256(apiToken) согласно документации xRocket.
-// getPremiumDays возвращает текущее число дней премиума из настроек (по умолчанию 30).
-// telegramBot — бот для отправки подтверждения пользователю и удаления сообщения с инвойсом (может быть nil).
-func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase, apiToken string, getPremiumDays func() int, telegramBot *bot.Bot) http.HandlerFunc {
+// В зависимости от payment invoice.Kind выдаёт premium или pro.
+func XRocketWebhook(
+	activatePremium func(tgID int64, days int) error,
+	activatePro func(tgID int64, days int) (*domain.ProGroup, bool, error),
+	paymentUC usecase.PaymentUseCase,
+	apiToken string,
+	getPremiumDays func() int,
+	getProDays func() int,
+	telegramBot *bot.Bot,
+) http.HandlerFunc {
 	if getPremiumDays == nil {
 		getPremiumDays = func() int { return 30 }
+	}
+	if getProDays == nil {
+		getProDays = func() int { return 30 }
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -107,12 +118,87 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 			return
 		}
 
-		premiumDays := getPremiumDays()
-		if premiumDays < 1 {
-			premiumDays = 30
+		inv, _ := paymentUC.GetInvoice(invoiceID)
+		kind := "premium"
+		days := 0
+		if inv != nil {
+			if inv.Kind != "" {
+				kind = strings.ToLower(strings.TrimSpace(inv.Kind))
+			}
+			if inv.DaysGranted > 0 {
+				days = inv.DaysGranted
+			}
 		}
-		// ActivatePremium продлевает подписку на premiumDays; если уже есть активный премиум — добавляет +premiumDays к дате окончания.
-		if err := userUC.ActivatePremium(userID, premiumDays); err != nil {
+		if days <= 0 {
+			if kind == "pro" {
+				days = getProDays()
+			} else {
+				days = getPremiumDays()
+			}
+			if days < 1 {
+				days = 30
+			}
+		}
+
+		if kind == "pro" {
+			if activatePro == nil {
+				log.Printf("[webhook] xRocket pro activator is nil")
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			group, extendedOnly, err := activatePro(userID, days)
+			if err != nil {
+				log.Printf("[webhook] xRocket ActivatePro error: %v", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			_ = paymentUC.MarkInvoicePaid(invoiceID)
+
+			if telegramBot != nil && group != nil {
+				if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
+					ctx := context.Background()
+					_, _ = telegramBot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+				}
+				if extendedOnly {
+					cycle := getProDays()
+					if cycle < 1 {
+						cycle = 30
+					}
+					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+						ChatID: userID, ParseMode: models.ParseModeHTML,
+						Text: fmt.Sprintf("✅ <b>Pro продлён</b> на %d дн.\n\nТекущие прокси не меняются. Раз в <b>%d</b> дн. ключи обновляются — новые данные придут в этот чат.", days, cycle),
+					})
+				} else {
+					ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortDD, group.SecretDD)
+					msgDD := fmt.Sprintf("✅ <b>Ваш Pro proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:",
+						group.ServerIP, group.PortDD, group.SecretDD)
+					kbDD := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (dd)", URL: ddURL}}}}
+					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+						ChatID: userID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD,
+					})
+
+					eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
+					msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Используйте этот прокси если стандартный заблокирован</i>",
+						group.ServerIP, group.PortEE, group.SecretEE)
+					kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
+					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+						ChatID: userID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
+					})
+				}
+			}
+
+			log.Printf("[webhook] xRocket pro activated for user %d (invoice %d)", userID, invoiceID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// premium
+		if activatePremium == nil {
+			log.Printf("[webhook] xRocket premium activator is nil")
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if err := activatePremium(userID, days); err != nil {
 			log.Printf("[webhook] xRocket ActivatePremium error: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -123,7 +209,7 @@ func XRocketWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCase
 
 		// Уведомление пользователю и удаление сообщения с инвойсом
 		if telegramBot != nil {
-			confirmMsg := fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", premiumDays)
+			confirmMsg := "✅ Оплата получена! Ваш Premium прокси будет готов в течение нескольких минут — мы уведомим вас."
 			if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
 				ctx := context.Background()
 				_, _ = telegramBot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})

@@ -8,6 +8,14 @@ type ProxyType string
 const (
 	ProxyTypeFree    ProxyType = "free"
 	ProxyTypePremium ProxyType = "premium"
+	ProxyTypePro     ProxyType = "pro"
+)
+
+// PremiumPortDD/EE — фиксированные порты для Premium-ключей при TimeWeb provisioning.
+// dd — стандартный прокси (p3terx/mtg), ee — fake-TLS (nineseconds/mtg:2).
+const (
+	PremiumPortDD = 8443
+	PremiumPortEE = 443
 )
 
 // ProxyStatus определяет статус прокси-сервера
@@ -26,7 +34,18 @@ type ProxyNode struct {
 	IP     string `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"ip"`
 	Port   int    `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"port"`
 	Secret string `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"secret"`
+	SecretEE string `gorm:"size:255" json:"secret_ee,omitempty"`
 	Type          ProxyType   `gorm:"type:varchar(20);not null" json:"type"`
+
+	// TimeWeb Premium: персональный floating IP пользователя.
+	// По требованиям пользователя — пользователю выдаётся только floating IP.
+	FloatingIP string `gorm:"size:45;index" json:"floating_ip,omitempty"`
+	// TimewebFloatingIPID — ID floating IP в TimeWeb (нужен для unbind/delete).
+	// Timeweb Cloud возвращает ID floating IP как string (UUID), поэтому храним строкой.
+	TimewebFloatingIPID string `gorm:"size:64;default:'';index" json:"timeweb_floating_ip_id,omitempty"`
+	// PremiumServerID — сервер в TimeWeb, к которому привязан floating IP.
+	PremiumServerID *uint `gorm:"index" json:"premium_server_id,omitempty"`
+
 	// OwnerID задает владельца премиум-прокси (один прокси на пользователя)
 	OwnerID       *uint       `gorm:"uniqueIndex:idx_premium_owner,where:type = 'premium'" json:"owner_id,omitempty"`
 	ContainerName string      `gorm:"size:255" json:"container_name"`

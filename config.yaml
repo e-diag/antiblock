@@ -49,6 +49,10 @@ workers:
     enabled: true
     interval_seconds: 3600  # 1 раз в час — повторное закрепление объявления, если пользователь открепил
 
+  invoice_cleanup:
+    enabled: true
+    interval_seconds: 3600  # 1 раз в час — отменяем pending xRocket-инвойсы старше часа
+
   premium_health_check:
     enabled: true
     interval_seconds: 900   # 15 мин — проверка всех активных премиум-прокси
@@ -58,12 +62,16 @@ proxy:
   default_secret_length: 32
   free_trial_days: 0  # 0 = нет бесплатного пробного периода
 
-# Премиум Docker: создание персональных mtg-контейнеров на удалённом сервере по TLS.
-# cert_path — путь внутри контейнера/на машине к папке с ca.pem, cert.pem, key.pem.
-#   В Docker: смонтировать папку с сертификатами в /antiblock/docker-certs (volumes в docker-compose, :ro).
-#   Локально: укажите свой путь (например C:/antiblock/docker-certs на Windows).
-premium_docker:
+# Pro-сервер — Free прокси + Pro-группы + удаление legacy Premium-контейнеров (Docker TLS).
+pro_docker:
   host: "185.104.113.242"
   port: 2376
   cert_path: "/antiblock/docker-certs"
   server_ip: "185.104.113.242"
+
+# TimeWeb — новые Premium (floating IP). Без токена новые покупки ставятся в очередь до настройки.
+timeweb:
+  api_token: "${TIMEWEB_API_TOKEN}"
+  availability_zone: "spb-3"
+  ssh_user: "root"
+  ssh_password: "${TIMEWEB_SSH_PASSWORD}"
