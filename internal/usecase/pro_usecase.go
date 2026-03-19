@@ -16,6 +16,7 @@ type ProUseCase interface {
 	GetActiveSubscription(userID uint) (*domain.ProSubscription, error)
 	CleanupExpiredGroups(dockerMgr *docker.Manager, cycleDays int) error
 	GetActiveGroups() ([]*domain.ProGroup, error)
+	GetGroupByID(id uint) (*domain.ProGroup, error)
 	SetOnProRotated(fn func(tgID int64, group *domain.ProGroup))
 }
 
@@ -245,6 +246,10 @@ func (uc *proUseCase) ActivateProSubscription(user *domain.User, days int, serve
 
 func (uc *proUseCase) GetActiveSubscription(userID uint) (*domain.ProSubscription, error) {
 	return uc.subRepo.GetByUserID(userID)
+}
+
+func (uc *proUseCase) GetGroupByID(id uint) (*domain.ProGroup, error) {
+	return uc.groupRepo.GetByID(id)
 }
 
 func (uc *proUseCase) CleanupExpiredGroups(dockerMgr *docker.Manager, cycleDays int) error {

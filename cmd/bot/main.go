@@ -118,7 +118,8 @@ func main() {
 			premiumServerRepo,
 			vpsReqRepo,
 			cfg.Timeweb.SSHUser,
-			cfg.Timeweb.SSHPassword,
+			cfg.Timeweb.SSHKeyPath,
+			cfg.Timeweb.SSHKeyID,
 			cfg.Timeweb.AvailabilityZone,
 		)
 		log.Println("TimeWeb Premium provisioner initialized")
@@ -148,6 +149,7 @@ func main() {
 		premiumProvisioner,
 		vpsReqRepo,
 		premiumServerRepo,
+		cfg.Timeweb.SSHKeyPath,
 		cfg.Telegram.GetAdminIDs(),
 	)
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
@@ -173,16 +175,11 @@ func main() {
 			return
 		}
 		bg := context.Background()
-		ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", g.ServerIP, g.PortDD, g.SecretDD)
-		msgDD := fmt.Sprintf("🔄 <b>Pro: обновлены ключи</b> (плановая смена на сервере)\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:",
-			g.ServerIP, g.PortDD, g.SecretDD)
-		kbDD := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (dd)", URL: ddURL}}}}
-		_, _ = b.SendMessage(bg, &bot.SendMessageParams{ChatID: tgID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD})
-		eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", g.ServerIP, g.PortEE, g.SecretEE)
-		msgEE := fmt.Sprintf("🛡 <b>Pro: ee (маскировка)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>",
-			g.ServerIP, g.PortEE, g.SecretEE)
-		kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
-		_, _ = b.SendMessage(bg, &bot.SendMessageParams{ChatID: tgID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE})
+		_, _ = b.SendMessage(bg, &bot.SendMessageParams{
+			ChatID: tgID, ParseMode: models.ParseModeHTML,
+			Text: "🔄 <b>Pro: ключи обновлены</b> (плановая ротация на сервере)\n\nВот ваши новые прокси:",
+		})
+		botHandler.SendProGroupProxiesToUser(bg, b, tgID, g)
 	})
 
 	// После успешного асинхронного создания премиум-прокси отправляем dd+ee (через общий helper в handler).
@@ -261,6 +258,7 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/premium_info", bot.MatchTypePrefix, adminMiddleware(botHandler.HandlePremiumInfo))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/replace_ip", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleReplaceIP))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setup_ssh_key", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetupSSHKey))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpricing", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPricing))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_usdt", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceUSDT))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_stars", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceStars))
@@ -278,6 +276,7 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_extra_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_pro_proxy", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "my_proxies", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "my_proxy_", bot.MatchTypePrefix, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "get_premium_proxy", bot.MatchTypeExact, botHandler.HandleCallback)

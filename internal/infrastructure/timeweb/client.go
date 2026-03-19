@@ -65,21 +65,21 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 
 // FloatingIP соответствует схеме `floating-ip`.
 type FloatingIP struct {
-	ID              string `json:"id"`
-	IP              string `json:"ip,omitempty"`
-	IsDDOSGuard     bool   `json:"is_ddos_guard,omitempty"`
+	ID               string `json:"id"`
+	IP               string `json:"ip,omitempty"`
+	IsDDOSGuard      bool   `json:"is_ddos_guard,omitempty"`
 	AvailabilityZone string `json:"availability_zone,omitempty"`
 
 	// Ниже поля не используются напрямую, но оставлены для полноты.
 	ResourceType string `json:"resource_type,omitempty"`
 	ResourceID   any    `json:"resource_id,omitempty"`
-	Comment       string `json:"comment,omitempty"`
-	Ptr           string `json:"ptr,omitempty"`
+	Comment      string `json:"comment,omitempty"`
+	Ptr          string `json:"ptr,omitempty"`
 }
 
 type createFloatingIPRequest struct {
-	IsDDOSGuard       bool   `json:"is_ddos_guard"`
-	AvailabilityZone  string `json:"availability_zone"`
+	IsDDOSGuard      bool   `json:"is_ddos_guard"`
+	AvailabilityZone string `json:"availability_zone"`
 }
 
 type bindFloatingIPRequest struct {
@@ -173,15 +173,15 @@ func (c *Client) DeleteFloatingIP(ctx context.Context, floatingIPID string) erro
 
 // Server соответствует схеме `vds` (ответ для сервера).
 type Server struct {
-	ID              int    `json:"id"`
-	Name            string `json:"name,omitempty"`
-	Status          string `json:"status,omitempty"`
-	AvailabilityZone string `json:"availability_zone,omitempty"`
-	Networks        []ServerNetwork `json:"networks,omitempty"`
+	ID               int             `json:"id"`
+	Name             string          `json:"name,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	AvailabilityZone string          `json:"availability_zone,omitempty"`
+	Networks         []ServerNetwork `json:"networks,omitempty"`
 }
 
 type ServerNetwork struct {
-	Type string `json:"type,omitempty"`
+	Type string     `json:"type,omitempty"`
 	Ips  []ServerIP `json:"ips,omitempty"`
 }
 
@@ -199,6 +199,54 @@ type CreateServerRequest struct {
 	ImageID          string `json:"image_id,omitempty"`
 	AvailabilityZone string `json:"availability_zone,omitempty"`
 	IsDDOSGuard      bool   `json:"is_ddos_guard,omitempty"`
+	SSHKeysIDs       []int  `json:"ssh_keys_ids,omitempty"`
+}
+
+type SSHKey struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// GetSSHKeys возвращает список SSH-ключей аккаунта.
+func (c *Client) GetSSHKeys(ctx context.Context) ([]SSHKey, error) {
+	respBody, code, err := c.doRequest(ctx, http.MethodGet, "/ssh-keys", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb get ssh-keys: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+
+	var out struct {
+		SSHKeys []SSHKey `json:"ssh_keys"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("timeweb get ssh-keys: unmarshal: %w", err)
+	}
+	return out.SSHKeys, nil
+}
+
+// UploadSSHKey загружает публичный SSH-ключ в TimeWeb и возвращает объект ключа.
+func (c *Client) UploadSSHKey(ctx context.Context, name, publicKey string) (*SSHKey, error) {
+	body := map[string]string{
+		"name": name,
+		"body": publicKey,
+	}
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, "/ssh-keys", body)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("timeweb upload ssh-key: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+
+	var out struct {
+		SSHKey SSHKey `json:"ssh_key"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("timeweb upload ssh-key: unmarshal: %w", err)
+	}
+	return &out.SSHKey, nil
 }
 
 // CreateServer создаёт новый сервер (VPS).
@@ -273,13 +321,13 @@ type OSImage struct {
 
 // Configuration соответствует схеме `servers-preset`.
 type Configuration struct {
-	ID              int     `json:"id"`
-	Location        string  `json:"location,omitempty"`
-	Price           float64 `json:"price,omitempty"`
-	CPU             int     `json:"cpu,omitempty"`
-	RAM             int     `json:"ram,omitempty"`
-	Disk            int     `json:"disk,omitempty"`
-	DescriptionShort string `json:"description_short,omitempty"`
+	ID               int     `json:"id"`
+	Location         string  `json:"location,omitempty"`
+	Price            float64 `json:"price,omitempty"`
+	CPU              int     `json:"cpu,omitempty"`
+	RAM              int     `json:"ram,omitempty"`
+	Disk             int     `json:"disk,omitempty"`
+	DescriptionShort string  `json:"description_short,omitempty"`
 }
 
 type osImagesOutResponse struct {
@@ -377,4 +425,3 @@ func (c *Client) GetConfigurations(ctx context.Context) ([]Configuration, error)
 	}
 	return out.ServerPresets, nil
 }
-

@@ -74,4 +74,5 @@ timeweb:
   api_token: "${TIMEWEB_API_TOKEN}"
   availability_zone: "spb-3"
   ssh_user: "root"
-  ssh_password: "${TIMEWEB_SSH_PASSWORD}"
+  ssh_key_id: 0
+  ssh_key_path: "/antiblock/premium-keys/premium_bot_key"

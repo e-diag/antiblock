@@ -25,23 +25,27 @@ type PremiumProvisioner struct {
 	serverRepo       repository.PremiumServerRepository
 	provisionReqRepo repository.VPSProvisionRequestRepository
 
-	sshUser     string
-	sshPassword string
-	zone        string
+	sshUser    string
+	sshKeyPath string
+	sshKeyID   int
+	zone       string
 }
 
 func NewPremiumProvisioner(
 	twClient *timeweb.Client,
 	serverRepo repository.PremiumServerRepository,
 	provisionReqRepo repository.VPSProvisionRequestRepository,
-	sshUser, sshPassword, zone string,
+	sshUser, sshKeyPath string,
+	sshKeyID int,
+	zone string,
 ) *PremiumProvisioner {
 	return &PremiumProvisioner{
 		twClient:         twClient,
 		serverRepo:       serverRepo,
 		provisionReqRepo: provisionReqRepo,
 		sshUser:          sshUser,
-		sshPassword:      sshPassword,
+		sshKeyPath:       sshKeyPath,
+		sshKeyID:         sshKeyID,
 		zone:             zone,
 	}
 }
@@ -49,7 +53,7 @@ func NewPremiumProvisioner(
 // newSSHClient создаёт SSH клиент с верификацией host key.
 // Для нового сервера host key будет сохранён при первом успешном подключении.
 func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb.SSHClient {
-	client := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshPassword)
+	client := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshKeyPath)
 	if strings.TrimSpace(server.SSHHostKey) != "" {
 		return client.WithKnownHostKey(server.SSHHostKey, nil)
 	}
@@ -282,6 +286,9 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		AvailabilityZone: req.RegionID,
 		IsDDOSGuard:      false,
 	}
+	if p.sshKeyID > 0 {
+		createReq.SSHKeysIDs = []int{p.sshKeyID}
+	}
 
 	serverInfo, err := p.twClient.CreateServer(ctx, createReq)
 	if err != nil {
@@ -303,7 +310,7 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	}
 
 	hostKeySeen := ""
-	sshClient := timeweb.NewSSHClient(mainIP, 22, p.sshUser, p.sshPassword).WithKnownHostKey("", func(hostKey string) {
+	sshClient := timeweb.NewSSHClient(mainIP, 22, p.sshUser, p.sshKeyPath).WithKnownHostKey("", func(hostKey string) {
 		hostKeySeen = hostKey
 	})
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
@@ -328,10 +335,10 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	}
 
 	premiumServer := &domain.PremiumServer{
-		Name:      req.Name,
-		IP:        mainIP,
-		TimewebID: serverInfo.ID,
-		IsActive:  true,
+		Name:       req.Name,
+		IP:         mainIP,
+		TimewebID:  serverInfo.ID,
+		IsActive:   true,
 		SSHHostKey: hostKeySeen,
 	}
 	if err := p.serverRepo.Create(premiumServer); err != nil {
@@ -378,4 +385,3 @@ func parsePendingUserIDs(raw string) ([]int64, error) {
 	}
 	return ids, nil
 }
-

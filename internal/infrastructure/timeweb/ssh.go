@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -15,13 +16,13 @@ type SSHClient struct {
 	host          string
 	port          int
 	user          string
-	password      string
+	keyPath       string
 	knownHostKey  string
 	onHostKeySeen func(hostKey string)
 }
 
-func NewSSHClient(host string, port int, user, password string) *SSHClient {
-	return &SSHClient{host: host, port: port, user: user, password: password}
+func NewSSHClient(host string, port int, user, keyPath string) *SSHClient {
+	return &SSHClient{host: host, port: port, user: user, keyPath: keyPath}
 }
 
 // WithKnownHostKey задаёт известный host key для верификации.
@@ -60,17 +61,30 @@ func (s *SSHClient) buildHostKeyCallback() ssh.HostKeyCallback {
 	}
 }
 
-func (s *SSHClient) newConfig() *ssh.ClientConfig {
+func (s *SSHClient) newConfig() (*ssh.ClientConfig, error) {
+	key, err := os.ReadFile(s.keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read ssh key %s: %w", s.keyPath, err)
+	}
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("parse ssh key: %w", err)
+	}
+
 	return &ssh.ClientConfig{
 		User:            s.user,
-		Auth:            []ssh.AuthMethod{ssh.Password(s.password)},
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: s.buildHostKeyCallback(),
 		Timeout:         30 * time.Second,
-	}
+	}, nil
 }
 
 func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) {
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", s.host, s.port), s.newConfig())
+	cfg, err := s.newConfig()
+	if err != nil {
+		return "", err
+	}
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", s.host, s.port), cfg)
 	if err != nil {
 		return "", fmt.Errorf("ssh dial %s: %w", s.host, err)
 	}
@@ -173,4 +187,3 @@ func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
 	nameDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
 	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s 2>/dev/null || true", nameEE, nameDD))
 }
-

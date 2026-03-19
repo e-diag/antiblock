@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -197,33 +198,34 @@ func markActive(text string, active bool) string {
 
 // BotHandler обрабатывает команды бота
 type BotHandler struct {
-	userUC         usecase.UserUseCase
-	proxyUC        usecase.ProxyUseCase
-	proUC          usecase.ProUseCase
-	paymentUC      usecase.PaymentUseCase
-	userRepo       repository.UserRepository
-	userProxyRepo  repository.UserProxyRepository
-	proxyRepo      repository.ProxyRepository
-	adRepo         repository.AdRepository
-	adPinRepo      repository.AdPinRepository
-	settingsRepo          repository.SettingsRepository
-	opStatsRepo           repository.OPStatsRepository
-	maintenanceWaitRepo   repository.MaintenanceWaitRepository
+	userUC              usecase.UserUseCase
+	proxyUC             usecase.ProxyUseCase
+	proUC               usecase.ProUseCase
+	paymentUC           usecase.PaymentUseCase
+	userRepo            repository.UserRepository
+	userProxyRepo       repository.UserProxyRepository
+	proxyRepo           repository.ProxyRepository
+	adRepo              repository.AdRepository
+	adPinRepo           repository.AdPinRepository
+	settingsRepo        repository.SettingsRepository
+	opStatsRepo         repository.OPStatsRepository
+	maintenanceWaitRepo repository.MaintenanceWaitRepository
 
 	// Premium provisioning через TimeWeb (floating IP + docker запуск по SSH).
-	twClient            *timeweb.Client
+	twClient           *timeweb.Client
 	premiumProvisioner *usecase.PremiumProvisioner
 	vpsReqRepo         repository.VPSProvisionRequestRepository
-	premiumServerRepo repository.PremiumServerRepository
+	premiumServerRepo  repository.PremiumServerRepository
+	sshKeyPath         string
 
 	proDockerMgr *docker.Manager
 	proServerIP  string
-	forcedSubCh string // из конфига (fallback, если в БД пусто)
+	forcedSubCh  string // из конфига (fallback, если в БД пусто)
 
-	broadcastState       *BroadcastState
-	broadcastMediaGroup  *BroadcastMediaGroupBuffer
+	broadcastState      *BroadcastState
+	broadcastMediaGroup *BroadcastMediaGroupBuffer
 	adComposeState      *AdComposeState
-	msgState             *MessageState
+	msgState            *MessageState
 	opAwaiting          map[int64]bool // админ вводит новый канал ОП
 	opMu                sync.Mutex
 	instrAwaitingText   map[int64]bool
@@ -253,44 +255,46 @@ func NewBotHandler(
 	proDockerMgr *docker.Manager,
 	proServerIP string,
 	forcedSubCh string,
-	broadcastState      *BroadcastState,
+	broadcastState *BroadcastState,
 	broadcastMediaGroup *BroadcastMediaGroupBuffer,
-	adComposeState      *AdComposeState,
+	adComposeState *AdComposeState,
 	twClient *timeweb.Client,
 	premiumProvisioner *usecase.PremiumProvisioner,
 	vpsReqRepo repository.VPSProvisionRequestRepository,
 	premiumServerRepo repository.PremiumServerRepository,
-	adminIDs            []int64,
+	sshKeyPath string,
+	adminIDs []int64,
 ) *BotHandler {
 	return &BotHandler{
-		userUC:             userUC,
-		proxyUC:            proxyUC,
-		proUC:              proUC,
-		paymentUC:          paymentUC,
-		userRepo:           userRepo,
-		userProxyRepo:      userProxyRepo,
-		proxyRepo:         proxyRepo,
-		adRepo:             adRepo,
-		adPinRepo:          adPinRepo,
-		settingsRepo:         settingsRepo,
-		opStatsRepo:          opStatsRepo,
-		maintenanceWaitRepo:  maintenanceWaitRepo,
-		proDockerMgr:         proDockerMgr,
-		proServerIP:        proServerIP,
-		forcedSubCh:        forcedSubCh,
-		broadcastState:     broadcastState,
+		userUC:              userUC,
+		proxyUC:             proxyUC,
+		proUC:               proUC,
+		paymentUC:           paymentUC,
+		userRepo:            userRepo,
+		userProxyRepo:       userProxyRepo,
+		proxyRepo:           proxyRepo,
+		adRepo:              adRepo,
+		adPinRepo:           adPinRepo,
+		settingsRepo:        settingsRepo,
+		opStatsRepo:         opStatsRepo,
+		maintenanceWaitRepo: maintenanceWaitRepo,
+		proDockerMgr:        proDockerMgr,
+		proServerIP:         proServerIP,
+		forcedSubCh:         forcedSubCh,
+		broadcastState:      broadcastState,
 		broadcastMediaGroup: broadcastMediaGroup,
-		adComposeState:     adComposeState,
+		adComposeState:      adComposeState,
 		msgState:            NewMessageState(),
-		opAwaiting:         make(map[int64]bool),
-		instrAwaitingText:  make(map[int64]bool),
-		instrAwaitingPhoto: make(map[int64]bool),
-		twClient:           twClient,
-		premiumProvisioner: premiumProvisioner,
-		vpsReqRepo:         vpsReqRepo,
-		premiumServerRepo: premiumServerRepo,
-		vpsSetupSteps:     make(map[int64]*VPSSetupData),
-		adminIDs:           adminIDs,
+		opAwaiting:          make(map[int64]bool),
+		instrAwaitingText:   make(map[int64]bool),
+		instrAwaitingPhoto:  make(map[int64]bool),
+		twClient:            twClient,
+		premiumProvisioner:  premiumProvisioner,
+		vpsReqRepo:          vpsReqRepo,
+		premiumServerRepo:   premiumServerRepo,
+		sshKeyPath:          sshKeyPath,
+		vpsSetupSteps:       make(map[int64]*VPSSetupData),
+		adminIDs:            adminIDs,
 	}
 }
 
@@ -323,6 +327,16 @@ func (h *BotHandler) activateProAndSend(ctx context.Context, b *bot.Bot, tgID in
 	if err != nil || user == nil {
 		return fmt.Errorf("user not found")
 	}
+
+	// days=0 — только показать текущие Pro-прокси без активации/продления.
+	if days == 0 {
+		sub, err := h.proUC.GetActiveSubscription(user.ID)
+		if err != nil || sub == nil {
+			return fmt.Errorf("no active pro subscription")
+		}
+		return h.sendProGroupProxies(ctx, b, tgID, sub.ProGroupID)
+	}
+
 	cycle := h.getProDays()
 	if cycle < 1 {
 		cycle = 30
@@ -338,20 +352,51 @@ func (h *BotHandler) activateProAndSend(ctx context.Context, b *bot.Bot, tgID in
 		})
 		return nil
 	}
+	h.SendProGroupProxiesToUser(ctx, b, tgID, group)
+	return nil
+}
 
+// sendProGroupProxies отправляет dd+ee прокси по ID группы.
+func (h *BotHandler) sendProGroupProxies(ctx context.Context, b *bot.Bot, tgID int64, groupID uint) error {
+	if h.proUC == nil {
+		return fmt.Errorf("pro is not configured")
+	}
+	group, err := h.proUC.GetGroupByID(groupID)
+	if err != nil || group == nil {
+		return fmt.Errorf("pro group not found")
+	}
+	h.SendProGroupProxiesToUser(ctx, b, tgID, group)
+	return nil
+}
+
+// SendProGroupProxiesToUser отправляет два сообщения с Pro-прокси (dd + ee).
+func (h *BotHandler) SendProGroupProxiesToUser(ctx context.Context, b *bot.Bot, tgID int64, group *domain.ProGroup) {
+	if group == nil {
+		return
+	}
 	ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortDD, group.SecretDD)
-	msgDD := fmt.Sprintf("✅ <b>Ваш Pro proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:",
+	msgDD := fmt.Sprintf("⚡ <b>Ваш Pro proxy (стандартный dd)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>",
 		group.ServerIP, group.PortDD, group.SecretDD)
-	kbDD := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (dd)", URL: ddURL}}}}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: tgID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD})
+	kbDD := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "🔗 Подключиться (dd)", URL: ddURL}},
+		},
+	}
+	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: tgID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD,
+	})
 
 	eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
-	msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Используйте этот прокси если стандартный заблокирован</i>",
+	msgEE := fmt.Sprintf("🛡 <b>Ваш Pro proxy (маскировка ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Используйте если стандартный заблокирован</i>",
 		group.ServerIP, group.PortEE, group.SecretEE)
-	kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: tgID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE})
-
-	return nil
+	kbEE := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "🔗 Подключиться (ee)", URL: eeURL}},
+		},
+	}
+	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: tgID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
+	})
 }
 
 // SetBot сохраняет ссылку на бота для асинхронной рассылки альбомов (вызывается из main после создания бота)
@@ -442,9 +487,9 @@ func (h *BotHandler) getUsername(update *models.Update) string {
 
 func (h *BotHandler) send(ctx context.Context, b *bot.Bot, update *models.Update, text string, replyMarkup models.ReplyMarkup) {
 	params := &bot.SendMessageParams{
-		ChatID:    chatID(update),
-		Text:      text,
-		ParseMode:  models.ParseModeHTML,
+		ChatID:      chatID(update),
+		Text:        text,
+		ParseMode:   models.ParseModeHTML,
 		ReplyMarkup: replyMarkup,
 	}
 	b.SendMessage(ctx, params)
@@ -486,42 +531,84 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	welcomeMsg = "👋 <b>Добро пожаловать в eDiag Proxy Bot!</b>\n\n"
 	welcomeMsg += "🔐 Безопасный доступ к Telegram через MTProto-прокси.\n\n"
 	welcomeMsg += "Нажми: <b>«Получить proxy»</b> → <b>«Подключиться»</b> → <b>«Включить»</b> — и Telegram работает без замедлений!\n\n"
-	welcomeMsg += "💎 Купи Premium — получи персональный Proxy, без ограничений по скорости и количеству.\n\n"
-	if user.IsPremiumActive() {
+
+	hasPremium := user.IsPremiumActive()
+	hasPro := false
+	var proSub *domain.ProSubscription
+	if h.proUC != nil {
+		proSub, _ = h.proUC.GetActiveSubscription(user.ID)
+		hasPro = proSub != nil
+	}
+
+	if hasPremium {
 		premiumUntil := "неограниченно"
 		if user.PremiumUntil != nil {
 			premiumUntil = user.PremiumUntil.Format("02.01.2006 15:04")
 		}
-		welcomeMsg += fmt.Sprintf("✨ Ваш премиум активен до: %s\n\n", premiumUntil)
+		welcomeMsg += fmt.Sprintf("💎 Premium активен до: <b>%s</b>\n", premiumUntil)
+	}
+	if hasPro && proSub != nil {
+		welcomeMsg += fmt.Sprintf("⚡ Pro активен до: <b>%s</b>\n", proSub.ExpiresAt.Format("02.01.2006 15:04"))
+	}
+	if hasPremium || hasPro {
+		welcomeMsg += "\n"
 	}
 	welcomeMsg += "Выберите действие:"
+
 	days := h.getPremiumDays()
 	usdt := h.getPremiumUSDT()
 	stars := h.getPremiumStars()
-	btnPremium := fmt.Sprintf("💎 Premium — получи персональный proxy на %d дн. (%.2f TON / %d ⭐)", days, usdt, stars)
-	if len(btnPremium) > 64 {
-		btnPremium = fmt.Sprintf("💎 Premium — proxy на %d дн.", days)
-	}
-	// Одна кнопка на получение бесплатного прокси: для новых — «Получить прокси», если уже есть хотя бы один free — «Получить дополнительный прокси».
-	btnGetProxy := "🔗 Получить прокси"
-	if h.userProxyRepo != nil {
-		if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
-			for _, up := range list {
-				if up.ProxyType == domain.ProxyTypeFree {
-					btnGetProxy = "➕ Получить дополнительный прокси"
-					break
+	proDays := h.getProDays()
+	proUSDT := h.getProUSDT()
+	proStars := h.getProStars()
+
+	var rows [][]models.InlineKeyboardButton
+
+	// Free-кнопка только если нет активных Pro и Premium.
+	if !hasPremium && !hasPro {
+		btnGetProxy := "🔗 Получить прокси"
+		if h.userProxyRepo != nil {
+			if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
+				for _, up := range list {
+					if up.ProxyType == domain.ProxyTypeFree {
+						btnGetProxy = "➕ Получить дополнительный прокси"
+						break
+					}
 				}
 			}
 		}
+		rows = append(rows, []models.InlineKeyboardButton{{Text: btnGetProxy, CallbackData: "get_proxy"}})
 	}
-	rows := [][]models.InlineKeyboardButton{
-		{{Text: btnGetProxy, CallbackData: "get_proxy"}},
-		{{Text: "⚡ Pro — быстрый прокси без рекламы", CallbackData: "buy_pro"}},
-		{{Text: btnPremium, CallbackData: "buy_premium"}},
+
+	if !hasPro {
+		btnPro := fmt.Sprintf("⚡ Купить Pro на %d дн. (%.2f TON / %d ⭐)", proDays, proUSDT, proStars)
+		if len(btnPro) > 64 {
+			btnPro = fmt.Sprintf("⚡ Купить Pro на %d дн.", proDays)
+		}
+		rows = append(rows, []models.InlineKeyboardButton{{Text: btnPro, CallbackData: "buy_pro"}})
 	}
-	if user.IsPremiumActive() {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
+	if !hasPremium {
+		btnPremium := fmt.Sprintf("💎 Купить Premium на %d дн. (%.2f TON / %d ⭐)", days, usdt, stars)
+		if len(btnPremium) > 64 {
+			btnPremium = fmt.Sprintf("💎 Купить Premium на %d дн.", days)
+		}
+		rows = append(rows, []models.InlineKeyboardButton{{Text: btnPremium, CallbackData: "buy_premium"}})
 	}
+
+	if hasPro {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "⚡ Получить Pro proxy (dd + ee)", CallbackData: "get_pro_proxy"}})
+	}
+	if hasPremium {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy (dd + ee)", CallbackData: "get_premium_proxy"}})
+	}
+
+	if hasPro {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "⚡ Продлить Pro", CallbackData: "buy_pro"}})
+	}
+	if hasPremium {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "💎 Продлить Premium", CallbackData: "buy_premium"}})
+	}
+
 	rows = append(rows, []models.InlineKeyboardButton{{Text: "📋 Мои прокси", CallbackData: "my_proxies"}})
 	rows = append(rows, []models.InlineKeyboardButton{
 		{Text: "📖 Инструкция", CallbackData: "show_instructions"},
@@ -1234,9 +1321,9 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		}
 		_, _ = b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:      msgObj.Chat.ID,
-			MessageID:  msgObj.ID,
-			Text:       msg,
-			ParseMode:  models.ParseModeHTML,
+			MessageID:   msgObj.ID,
+			Text:        msg,
+			ParseMode:   models.ParseModeHTML,
 			ReplyMarkup: refreshKeyboardStats(),
 		})
 
@@ -1262,9 +1349,9 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		}
 		_, _ = b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:      msgObj.Chat.ID,
-			MessageID:  msgObj.ID,
-			Text:       text,
-			ParseMode:  models.ParseModeHTML,
+			MessageID:   msgObj.ID,
+			Text:        text,
+			ParseMode:   models.ParseModeHTML,
 			ReplyMarkup: kb,
 		})
 
@@ -2323,7 +2410,7 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 		kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
 		for i, r := range regions {
 			btn := models.InlineKeyboardButton{
-				Text:          r,
+				Text:         r,
 				CallbackData: fmt.Sprintf("mgr_vps_region_%s", r),
 			}
 			// 2 кнопки в строке
@@ -2599,6 +2686,90 @@ func (h *BotHandler) HandleReplaceIP(ctx context.Context, b *bot.Bot, update *mo
 	h.SendPremiumProxyToUser(ctx, b, tgID, user, proxy)
 
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ IP заменён: <code>%s</code> → <code>%s</code>", oldIP, newIP))
+}
+
+// HandleSetupSSHKey — проверка и загрузка SSH-ключа бота в TimeWeb.
+// Использование:
+//
+//	/setup_ssh_key
+//	/setup_ssh_key upload
+func (h *BotHandler) HandleSetupSSHKey(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	action := ""
+	if len(args) >= 2 {
+		action = strings.TrimSpace(args[1])
+	}
+
+	keyPath := strings.TrimSpace(h.sshKeyPath)
+	if keyPath == "" {
+		keyPath = "/antiblock/premium-keys/premium_bot_key"
+	}
+	pubKeyPath := keyPath + ".pub"
+
+	_, errKey := os.Stat(keyPath)
+	keyExists := errKey == nil
+
+	if action == "" {
+		if keyExists {
+			pubBytes, _ := os.ReadFile(pubKeyPath)
+			pubKey := strings.TrimSpace(string(pubBytes))
+			if pubKey == "" {
+				h.sendText(ctx, b, update, fmt.Sprintf(
+					"⚠️ Приватный ключ найден: <code>%s</code>\nПубличный ключ не найден или пуст: <code>%s</code>\n\nДля генерации:\n<pre>ssh-keygen -t ed25519 -f %s -N \"\"</pre>",
+					keyPath, pubKeyPath, keyPath,
+				))
+				return
+			}
+			h.sendText(ctx, b, update, fmt.Sprintf(
+				"✅ SSH-ключ найден: <code>%s</code>\n\n📋 Публичный ключ:\n<pre>%s</pre>\n\nДля загрузки в TimeWeb: <code>/setup_ssh_key upload</code>",
+				keyPath, pubKey,
+			))
+			return
+		}
+		h.sendText(ctx, b, update, fmt.Sprintf(
+			"❌ SSH-ключ не найден по пути <code>%s</code>\n\nСгенерируйте ключ на сервере:\n<pre>ssh-keygen -t ed25519 -f %s -N \"\"</pre>\n\nЗатем выполните: <code>/setup_ssh_key upload</code>",
+			keyPath, keyPath,
+		))
+		return
+	}
+
+	if action == "upload" {
+		if !keyExists {
+			h.sendText(ctx, b, update, "❌ Ключ не найден. Сначала сгенерируйте его на сервере.")
+			return
+		}
+		if h.twClient == nil {
+			h.sendText(ctx, b, update, "❌ TimeWeb не настроен (TIMEWEB_API_TOKEN пустой).")
+			return
+		}
+
+		pubBytes, err := os.ReadFile(pubKeyPath)
+		if err != nil {
+			h.sendText(ctx, b, update, "❌ Не удалось прочитать публичный ключ: "+err.Error())
+			return
+		}
+		pubKey := strings.TrimSpace(string(pubBytes))
+		if pubKey == "" {
+			h.sendText(ctx, b, update, "❌ Публичный ключ пустой.")
+			return
+		}
+
+		key, err := h.twClient.UploadSSHKey(ctx, "antiblock-bot", pubKey)
+		if err != nil {
+			h.sendText(ctx, b, update, "❌ Ошибка загрузки ключа в TimeWeb: "+err.Error())
+			return
+		}
+		h.sendText(ctx, b, update, fmt.Sprintf(
+			"✅ Ключ загружен в TimeWeb!\n\n🔑 ID ключа: <code>%d</code>\n\nДобавьте в .env:\n<pre>TIMEWEB_SSH_KEY_ID=%d</pre>\n\nИ перезапустите бота.",
+			key.ID, key.ID,
+		))
+		return
+	}
+
+	h.sendText(ctx, b, update, "❌ Неизвестное действие. Используйте: /setup_ssh_key или /setup_ssh_key upload")
 }
 
 // HandleSubs список премиум-подписок (админ)
@@ -2990,7 +3161,7 @@ func (h *BotHandler) HandleOPChannelInput(ctx context.Context, b *bot.Bot, updat
 		UserID: adminID, // достаточно попытаться получить участника-админа; при нехватке прав вернётся ошибка
 	}); err != nil {
 		h.setOPAwaiting(adminID, false)
-		text := fmt.Sprintf("❌ Бот не является администратором канала %s.\n\n" +
+		text := fmt.Sprintf("❌ Бот не является администратором канала %s.\n\n"+
 			"Добавьте бота в админы этого канала и затем снова нажмите «➕ Добавить канал».", chatID)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -3212,9 +3383,18 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		text := "📋 <b>Ваши прокси</b> (нажмите для подключения):"
 		var rows [][]models.InlineKeyboardButton
 		for i, up := range list {
-			label := fmt.Sprintf("🌐 %s:%d", up.IP, up.Port)
+			typeLabel := ""
+			switch up.ProxyType {
+			case domain.ProxyTypeFree:
+				typeLabel = "🆓"
+			case domain.ProxyTypePro:
+				typeLabel = "⚡"
+			case domain.ProxyTypePremium:
+				typeLabel = "💎"
+			}
+			label := fmt.Sprintf("%s %s:%d", typeLabel, up.IP, up.Port)
 			if len(label) > 64 {
-				label = fmt.Sprintf("Прокси %d", i+1)
+				label = fmt.Sprintf("%s Прокси %d", typeLabel, i+1)
 			}
 			rows = append(rows, []models.InlineKeyboardButton{{Text: label, CallbackData: "my_proxy_" + strconv.FormatUint(uint64(up.ID), 10)}})
 		}
@@ -3240,6 +3420,33 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			return
 		}
 		h.SendPremiumProxyToUser(ctx, b, chatID, user, proxy)
+	case "get_pro_proxy":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
+		if err != nil || user == nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML,
+			})
+			return
+		}
+		if h.proUC == nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID, Text: "❌ Pro не настроен.", ParseMode: models.ParseModeHTML,
+			})
+			return
+		}
+		sub, err := h.proUC.GetActiveSubscription(user.ID)
+		if err != nil || sub == nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID, Text: "❌ У вас нет активной Pro подписки.", ParseMode: models.ParseModeHTML,
+			})
+			return
+		}
+		if err := h.activateProAndSend(ctx, b, chatID, 0); err != nil {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID, Text: "❌ Ошибка получения Pro proxy. Попробуйте позже.", ParseMode: models.ParseModeHTML,
+			})
+		}
 	case "check_sub_forced":
 		userID := update.CallbackQuery.From.ID
 		user, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
