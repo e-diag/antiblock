@@ -1792,13 +1792,13 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 				send("❌ TimeWeb не настроен.")
 				return
 			}
-			osImages, err := h.twClient.GetOSImages(ctx)
+			osImages, err := h.twClient.GetOSImages(ctx, region)
 			if err != nil {
-				send("❌ Ошибка получения OS images.")
+				send("❌ Ошибка получения OS images для выбранного региона.")
 				return
 			}
 			if len(osImages) == 0 {
-				send("❌ Нет доступных OS images.")
+				send("❌ Для этого региона нет доступных образов ОС. Начните заново и выберите другой регион из списка.")
 				return
 			}
 			if len(osImages) > 8 {
@@ -2508,13 +2508,13 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 			h.sendText(ctx, b, update, "❌ TimeWeb не настроен (twClient=nil).")
 			return
 		}
-		regions, err := h.twClient.GetRegions(ctx)
+		regions, err := h.twClient.GetRegionsWithOSImages(ctx)
 		if err != nil {
-			h.sendText(ctx, b, update, "❌ Ошибка получения регионов TimeWeb.")
+			h.sendText(ctx, b, update, "❌ Не удалось получить регионы с доступными образами ОС в TimeWeb. Проверьте токен API и зоны доступности.")
 			return
 		}
 		if len(regions) == 0 {
-			h.sendText(ctx, b, update, "❌ Нет доступных регионов.")
+			h.sendText(ctx, b, update, "❌ Нет регионов с доступными образами ОС.")
 			return
 		}
 		// Ограничиваем количество кнопок, чтобы сообщение не стало слишком большим.

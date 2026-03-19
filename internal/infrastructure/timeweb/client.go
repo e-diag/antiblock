@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -333,8 +335,38 @@ func (c *Client) WaitServerReady(ctx context.Context, serverID int) error {
 
 // OSImage соответствует схеме `image`.
 type OSImage struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	AvailabilityZones []string `json:"availability_zones,omitempty"`
+}
+
+// filterOSImagesByAvailabilityZone оставляет образы для указанной зоны, если в ответе API есть поле зон.
+// Если ни у одного образа зоны не заданы — возвращает images как есть (полагаемся на query availability_zone).
+func filterOSImagesByAvailabilityZone(images []OSImage, zone string) []OSImage {
+	az := strings.TrimSpace(zone)
+	if az == "" {
+		return images
+	}
+	hasZoneInfo := false
+	for _, img := range images {
+		if len(img.AvailabilityZones) > 0 {
+			hasZoneInfo = true
+			break
+		}
+	}
+	if !hasZoneInfo {
+		return images
+	}
+	out := make([]OSImage, 0, len(images))
+	for _, img := range images {
+		for _, z := range img.AvailabilityZones {
+			if strings.EqualFold(strings.TrimSpace(z), az) {
+				out = append(out, img)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // Configuration соответствует схеме `servers-preset`.
@@ -410,10 +442,17 @@ func (c *Client) GetRegions(ctx context.Context) ([]string, error) {
 }
 
 // GetOSImages возвращает список доступных образов ОС.
-func (c *Client) GetOSImages(ctx context.Context) ([]OSImage, error) {
-	// Пагинация не реализуем: подбираем limit по умолчанию из документации,
-	// либо берём первые N.
-	respBody, code, err := c.doRequest(ctx, http.MethodGet, "/images?limit=200&offset=0", nil)
+// availabilityZone — необязательно: передаётся в API как availability_zone и дополнительно фильтруется по полю availability_zones в JSON, если оно есть.
+func (c *Client) GetOSImages(ctx context.Context, availabilityZone string) ([]OSImage, error) {
+	q := url.Values{}
+	q.Set("limit", "200")
+	q.Set("offset", "0")
+	if az := strings.TrimSpace(availabilityZone); az != "" {
+		q.Set("availability_zone", az)
+	}
+	path := "/images?" + q.Encode()
+
+	respBody, code, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +464,35 @@ func (c *Client) GetOSImages(ctx context.Context) ([]OSImage, error) {
 	if err := json.Unmarshal(respBody, &out); err != nil {
 		return nil, fmt.Errorf("timeweb get os images: unmarshal: %w", err)
 	}
-	return out.Images, nil
+	images := filterOSImagesByAvailabilityZone(out.Images, availabilityZone)
+	return images, nil
+}
+
+// GetRegionsWithOSImages возвращает только те availability_zone, для которых TimeWeb отдаёт хотя бы один образ ОС.
+func (c *Client) GetRegionsWithOSImages(ctx context.Context) ([]string, error) {
+	regions, err := c.GetRegions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(regions))
+	for _, r := range regions {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		imgs, err := c.GetOSImages(ctx, r)
+		if err != nil {
+			continue
+		}
+		if len(imgs) > 0 {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("timeweb: no availability zones with OS images")
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // GetConfigurations возвращает список доступных конфигураций VPS.
