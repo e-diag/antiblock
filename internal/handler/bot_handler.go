@@ -3609,6 +3609,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		}
 		proxy, err := h.userUC.RetryPremiumProxyCreation(chatID)
 		if err != nil {
+			log.Printf("[Premium] get_premium_proxy tg_id=%d user_id=%d err=%v", chatID, user.ID, err)
 			if errors.Is(err, usecase.ErrFloatingIPDailyLimit) {
 				msg := "✅ Оплата получена! Ваш Premium прокси будет готов в течение нескольких минут — мы уведомим вас."
 				b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML})
