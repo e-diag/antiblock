@@ -51,9 +51,11 @@ func main() {
 	if cfg.Telegram.BotToken == "" || strings.HasPrefix(cfg.Telegram.BotToken, "${") {
 		log.Fatalf("Invalid config: TELEGRAM_BOT_TOKEN is required and must be set (e.g. in .env or environment)")
 	}
-	if len(cfg.Telegram.GetAdminIDs()) == 0 {
+	adminIDs := cfg.Telegram.GetAdminIDs()
+	if len(adminIDs) == 0 {
 		log.Fatalf("Invalid config: at least one Telegram admin ID is required (TELEGRAM_ADMIN_ID_1)")
 	}
+	log.Printf("Telegram: %d admin user(s) configured (maintenance bypass + /manager)", len(adminIDs))
 	if cfg.Database.Host == "" {
 		log.Fatalf("Invalid config: database host is required (DB_HOST)")
 	}
