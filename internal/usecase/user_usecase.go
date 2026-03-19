@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -42,9 +41,10 @@ type userUseCase struct {
 	premiumServerIP       string
 	userProxyRepo         repository.UserProxyRepository
 	premiumProvisioner    *PremiumProvisioner
+	appCtx                context.Context
 	onPremiumProxyReady   func(tgID int64, proxy *domain.ProxyNode) // при успешном создании контейнера
 	onPremiumProxyFailed  func(tgID int64, err error)               // при неудаче после всех попыток
-	onPremiumVPSRequested func(req *domain.VPSProvisionRequest)   // уведомить админов о необходимости нового Premium VPS
+	onPremiumVPSRequested func(req *domain.VPSProvisionRequest)     // уведомить админов о необходимости нового Premium VPS
 }
 
 // NewUserUseCase создает новый use case для пользователей.
@@ -57,15 +57,20 @@ func NewUserUseCase(
 	premiumServerIP string,
 	userProxyRepo repository.UserProxyRepository,
 	premiumProvisioner *PremiumProvisioner,
+	appCtx context.Context,
 ) UserUseCase {
+	if appCtx == nil {
+		appCtx = context.Background()
+	}
 	return &userUseCase{
-		userRepo:        userRepo,
-		proxyRepo:       proxyRepo,
-		proxyUC:         proxyUC,
-		dockerMgr:       dockerMgr,
-		premiumServerIP: premiumServerIP,
-		userProxyRepo:   userProxyRepo,
+		userRepo:           userRepo,
+		proxyRepo:          proxyRepo,
+		proxyUC:            proxyUC,
+		dockerMgr:          dockerMgr,
+		premiumServerIP:    premiumServerIP,
+		userProxyRepo:      userProxyRepo,
 		premiumProvisioner: premiumProvisioner,
+		appCtx:             appCtx,
 	}
 }
 
@@ -98,8 +103,8 @@ func (uc *userUseCase) GetOrCreateUser(tgID int64, username string) (*domain.Use
 
 	if user == nil {
 		user = &domain.User{
-			TGID:     tgID,
-			Username: username,
+			TGID:      tgID,
+			Username:  username,
 			IsPremium: false,
 		}
 		if err := uc.userRepo.Create(user); err != nil {
@@ -174,7 +179,7 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 	}
 
 	if uc.premiumProvisioner != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		ctx, cancel := context.WithTimeout(uc.appCtx, 15*time.Minute)
 		defer cancel()
 
 		if existing != nil && existing.TimewebFloatingIPID != "" {
@@ -463,7 +468,6 @@ func (uc *userUseCase) CleanupExpiredProxies(graceDays int) error {
 	// Дополнительно пытаемся удалить контейнеры/keys для "заброшенных" подписок.
 	users, err := uc.userRepo.GetAll()
 	if err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		for _, u := range users {
 			if u.PremiumUntil == nil || !u.PremiumUntil.Before(cutoff) {
 				continue
@@ -479,17 +483,20 @@ func (uc *userUseCase) CleanupExpiredProxies(graceDays int) error {
 
 			if !uc.isLegacyPremiumRecord(proxy) {
 				if uc.premiumProvisioner != nil {
-					_ = uc.premiumProvisioner.DeprovisionForUser(ctx, u, proxy)
+					depCtx, depCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					_ = uc.premiumProvisioner.DeprovisionForUser(depCtx, u, proxy)
+					depCancel()
 				}
 				continue
 			}
 
 			if uc.dockerMgr != nil {
-				_ = uc.dockerMgr.RemoveUserContainer(ctx, fmt.Sprintf(docker.UserContainerNameDD, u.TGID))
-				_ = uc.dockerMgr.RemoveUserContainerEE(ctx, u.TGID)
+				depCtx, depCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				_ = uc.dockerMgr.RemoveUserContainer(depCtx, fmt.Sprintf(docker.UserContainerNameDD, u.TGID))
+				_ = uc.dockerMgr.RemoveUserContainerEE(depCtx, u.TGID)
+				depCancel()
 			}
 		}
-		cancel()
 	}
 
 	return uc.proxyRepo.CleanupExpiredPremiumProxies(cutoff)
@@ -565,57 +572,17 @@ func (uc *userUseCase) enqueueUserForNewServer(tgID int64) error {
 	if uc.premiumProvisioner == nil || uc.premiumProvisioner.provisionReqRepo == nil {
 		return nil
 	}
-
-	req, err := uc.premiumProvisioner.provisionReqRepo.GetPending()
+	reqID, isNew, err := uc.premiumProvisioner.provisionReqRepo.AppendPendingUserID(tgID)
 	if err != nil {
 		return err
 	}
-
-	newCreated := false
-	if req == nil {
-		req = &domain.VPSProvisionRequest{
-			Status:          "pending",
-			PendingUserIDs: "[]",
-		}
-		newCreated = true
-	}
-
-	ids, err := parsePendingUserIDs(req.PendingUserIDs)
-	if err != nil {
-		return err
-	}
-	if ids == nil {
-		ids = []int64{}
-	}
-
-	found := false
-	for _, id := range ids {
-		if id == tgID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		ids = append(ids, tgID)
-	}
-
-	raw, err := json.Marshal(ids)
-	if err != nil {
-		return err
-	}
-	req.PendingUserIDs = string(raw)
-
-	if newCreated {
-		if err := uc.premiumProvisioner.provisionReqRepo.Create(req); err != nil {
-			return err
-		}
-		if uc.onPremiumVPSRequested != nil {
+	if isNew && uc.onPremiumVPSRequested != nil {
+		req, err := uc.premiumProvisioner.provisionReqRepo.GetByID(reqID)
+		if err == nil && req != nil {
 			uc.onPremiumVPSRequested(req)
 		}
-		return nil
 	}
-
-	return uc.premiumProvisioner.provisionReqRepo.Update(req)
+	return nil
 }
 
 func (uc *userUseCase) upsertPremiumProxy(proxy *domain.ProxyNode) error {
@@ -646,4 +613,3 @@ func (uc *userUseCase) upsertPremiumProxy(proxy *domain.ProxyNode) error {
 
 	return uc.proxyRepo.Update(existing)
 }
-

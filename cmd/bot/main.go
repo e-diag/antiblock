@@ -44,6 +44,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	if cfg.Database.Debug {
+		log.Println("[WARN] database.debug=true — SQL queries (including proxy secrets) will be logged. Disable in production!")
+	}
 
 	if cfg.Telegram.BotToken == "" || strings.HasPrefix(cfg.Telegram.BotToken, "${") {
 		log.Fatalf("Invalid config: TELEGRAM_BOT_TOKEN is required and must be set (e.g. in .env or environment)")
@@ -54,6 +57,8 @@ func main() {
 	if cfg.Database.Host == "" {
 		log.Fatalf("Invalid config: database host is required (DB_HOST)")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	db, err := database.New(&cfg.Database)
 	if err != nil {
@@ -127,7 +132,7 @@ func main() {
 		log.Println("TIMEWEB_API_TOKEN not set — новый Premium через TimeWeb недоступен до настройки токена")
 	}
 
-	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, proDockerMgr, proServerIP, userProxyRepo, premiumProvisioner)
+	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, proDockerMgr, proServerIP, userProxyRepo, premiumProvisioner, ctx)
 	// Платежи TON через xRocket Pay API.
 	paymentUC := usecase.NewPaymentUseCase(cfg.XRocket.APIToken, cfg.XRocket.APIURL, invoiceRepo, starPaymentRepo)
 
@@ -299,7 +304,7 @@ func main() {
 	premiumHealthCheckWorker := worker.NewPremiumHealthCheckWorker(b, proxyUC, cfg.Telegram.GetAdminIDs(), cfg.Workers.PremiumHealthCheck)
 	subscriptionWorker := worker.NewSubscriptionWorker(userUC, cfg.Workers.SubscriptionChecker)
 	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, cfg.Workers.PremiumReminder)
-	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor)
+	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor, proDockerMgr)
 	adRePinWorker := worker.NewAdRePinWorker(b, adRepo, adPinRepo, cfg.Workers.AdRePin)
 	invoiceCleanupWorker := worker.NewInvoiceCleanupWorker(b, invoiceRepo, paymentUC, cfg.Workers.InvoiceCleanup)
 
@@ -359,9 +364,6 @@ func main() {
 			}()
 		}
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Ротация Pro-групп: через pro_days снимаем контейнеры, активных подписчиков переносим в новую группу.
 	go func() {

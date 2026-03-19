@@ -51,26 +51,27 @@ func XRocketWebhook(
 		defer r.Body.Close()
 
 		// Проверка подписи: xRocket подписывает body как hex(HMAC-SHA256(body, SHA256(apiToken))).
-		if apiToken != "" {
-			sig := r.Header.Get("Rocket-Pay-Signature")
-			if !verifyXRocketSignature(body, sig, apiToken) {
-				log.Printf("[webhook] xRocket invalid signature")
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-		} else {
-			log.Printf("[webhook] xRocket WARNING: API token empty, signature verification disabled")
+		if apiToken == "" {
+			log.Printf("[webhook] xRocket FATAL: XROCKET_API_TOKEN not configured — all requests rejected")
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		sig := r.Header.Get("Rocket-Pay-Signature")
+		if !verifyXRocketSignature(body, sig, apiToken) {
+			log.Printf("[webhook] xRocket invalid signature")
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
 		}
 
 		// xRocket присылает type=invoicePay с data.id и data.status. Альтернатива: invoice.id.
 		var payload struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
 			Invoice struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 			} `json:"invoice"`
 			Data struct {
-				ID     interface{} `json:"id"`     // может быть string или number
+				ID     interface{} `json:"id"` // может быть string или number
 				Status string      `json:"status"`
 			} `json:"data"`
 		}
@@ -246,4 +247,3 @@ func verifyXRocketSignature(body []byte, signatureHeader, apiToken string) bool 
 
 	return hmac.Equal(expected, got)
 }
-

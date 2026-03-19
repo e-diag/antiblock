@@ -16,6 +16,7 @@ import (
 	"github.com/go-telegram/bot"
 
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
+	"github.com/yourusername/antiblock/internal/infrastructure/docker"
 )
 
 // DockerMonitorWorker следит за использованием памяти контейнерами mtg-user-{tg_id}
@@ -29,11 +30,15 @@ type DockerMonitorWorker struct {
 	cli      *client.Client
 }
 
-func NewDockerMonitorWorker(b *bot.Bot, adminIDs []int64, cfg config.WorkerConfig) *DockerMonitorWorker {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		log.Printf("docker monitor: failed to init client: %v", err)
-		cli = nil
+func NewDockerMonitorWorker(
+	b *bot.Bot,
+	adminIDs []int64,
+	cfg config.WorkerConfig,
+	dockerMgr *docker.Manager,
+) *DockerMonitorWorker {
+	var cli *client.Client
+	if dockerMgr != nil {
+		cli = dockerMgr.GetClient()
 	}
 	return &DockerMonitorWorker{
 		bot:      b,
@@ -79,6 +84,11 @@ func (w *DockerMonitorWorker) Stop() {
 }
 
 func (w *DockerMonitorWorker) checkOnce() {
+	if w.cli == nil {
+		log.Printf("docker monitor: Docker client not configured, skipping")
+		return
+	}
+
 	timeout := w.cfg.Timeout()
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -86,16 +96,10 @@ func (w *DockerMonitorWorker) checkOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cli := w.cli
-	if cli == nil {
-		w.notifyAdmins(ctx, "❗ Docker monitor: Docker client не инициализирован.")
-		return
-	}
-
 	args := filters.NewArgs()
 	args.Add("name", "mtg-user-")
 
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
+	containers, err := w.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: args,
 	})
@@ -122,7 +126,7 @@ func (w *DockerMonitorWorker) checkOnce() {
 			continue
 		}
 
-		statsResp, err := cli.ContainerStats(ctx, c.ID, false)
+		statsResp, err := w.cli.ContainerStats(ctx, c.ID, false)
 		if err != nil {
 			log.Printf("docker monitor: stats error for %s: %v", name, err)
 			continue
@@ -170,4 +174,3 @@ func (w *DockerMonitorWorker) notifyAdmins(ctx context.Context, text string) {
 		})
 	}
 }
-

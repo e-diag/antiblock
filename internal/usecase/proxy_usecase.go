@@ -15,7 +15,6 @@ import (
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
 	"github.com/yourusername/antiblock/internal/repository"
-	"gorm.io/gorm"
 )
 
 // ProxyUseCase определяет бизнес-логику для работы с прокси
@@ -46,16 +45,16 @@ type ProxyUseCase interface {
 }
 
 type ProxyStats struct {
-	TotalProxies          int64
-	ActiveProxies         int64
-	FreeProxies           int64
-	PremiumProxies        int64 // только активные премиум
+	TotalProxies            int64
+	ActiveProxies           int64
+	FreeProxies             int64
+	PremiumProxies          int64 // только активные премиум
 	UnreachablePremiumCount int64
 }
 
 type proxyUseCase struct {
-	proxyRepo      repository.ProxyRepository
-	userProxyRepo  repository.UserProxyRepository
+	proxyRepo     repository.ProxyRepository
+	userProxyRepo repository.UserProxyRepository
 }
 
 // ErrNoMoreFreeProxiesForUser возвращается, когда пользователь уже получил все доступные бесплатные прокси.
@@ -88,18 +87,6 @@ func validateSecret(secret string) error {
 		return errors.New("invalid secret format (allowed: A-Za-z0-9+/=_-, length 16-255)")
 	}
 	return nil
-}
-
-// isDuplicateKeyError определяет, является ли ошибка нарушением уникального ограничения (дубликат).
-func isDuplicateKeyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return true
-	}
-	s := err.Error()
-	return strings.Contains(s, "23505") || strings.Contains(s, "duplicate key")
 }
 
 // NewProxyUseCase создает новый use case для прокси. userProxyRepo опционален: если задан, при выдаче free-прокси исключаются уже выданные этому пользователю.
@@ -316,10 +303,10 @@ func (uc *proxyUseCase) GetStats() (ProxyStats, error) {
 		}
 	}
 	return ProxyStats{
-		TotalProxies:           total,
-		ActiveProxies:          active,
-		FreeProxies:            freeCount,
-		PremiumProxies:         activePremium,
+		TotalProxies:            total,
+		ActiveProxies:           active,
+		FreeProxies:             freeCount,
+		PremiumProxies:          activePremium,
 		UnreachablePremiumCount: unreachablePremium,
 	}, nil
 }
@@ -453,14 +440,14 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		}
 
 		proxy := &domain.ProxyNode{
-			IP:      serverIP,
-			Port:    port,
-			Secret:  secretDD,
+			IP:       serverIP,
+			Port:     port,
+			Secret:   secretDD,
 			SecretEE: secretEE,
-			Type:    domain.ProxyTypePremium,
-			Status:  domain.ProxyStatusActive,
-			Load:    0,
-			OwnerID: &ownerID,
+			Type:     domain.ProxyTypePremium,
+			Status:   domain.ProxyStatusActive,
+			Load:     0,
+			OwnerID:  &ownerID,
 		}
 
 		if err := uc.proxyRepo.Create(proxy); err != nil {

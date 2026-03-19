@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -233,6 +234,7 @@ type BotHandler struct {
 	instrMu             sync.Mutex
 	adminIDs            []int64
 	botRef              *bot.Bot // для асинхронной рассылки альбомов (устанавливается из main)
+	broadcastSem        chan struct{}
 
 	vpsSetupSteps map[int64]*VPSSetupData
 	vpsSetupMu    sync.Mutex
@@ -295,6 +297,7 @@ func NewBotHandler(
 		sshKeyPath:          sshKeyPath,
 		vpsSetupSteps:       make(map[int64]*VPSSetupData),
 		adminIDs:            adminIDs,
+		broadcastSem:        make(chan struct{}, 1),
 	}
 }
 
@@ -684,6 +687,17 @@ func channelToChatID(s string) string {
 		return "@" + s
 	}
 	return s
+}
+
+// isValidChannelInput проверяет, что ввод похож на username канала или t.me-ссылку.
+func isValidChannelInput(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "https://t.me/") || strings.HasPrefix(s, "t.me/") {
+		return true
+	}
+	s = strings.TrimPrefix(s, "@")
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_]{4,64}$`, s)
+	return matched
 }
 
 // channelToURL возвращает URL для кнопки «Подписаться»
@@ -2191,6 +2205,9 @@ func (h *BotHandler) flushBroadcastMediaGroup(adminID int64, fromChatID int64, m
 		return
 	}
 	go func() {
+		h.broadcastSem <- struct{}{}
+		defer func() { <-h.broadcastSem }()
+
 		sort.Ints(messageIDs)
 		ctx := context.Background()
 		users, err := h.userRepo.GetAll()
@@ -2300,6 +2317,9 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 	h.sendText(ctx, b, update, "📢 Рассылка запущена, вы получите отчёт по завершении.")
 
 	go func() {
+		h.broadcastSem <- struct{}{}
+		defer func() { <-h.broadcastSem }()
+
 		bgCtx := context.Background()
 		sent, failed := 0, 0
 		botRef := h.botRef
@@ -3133,6 +3153,12 @@ func (h *BotHandler) HandleOPChannelInput(ctx context.Context, b *bot.Bot, updat
 	raw := strings.TrimSpace(update.Message.Text)
 	if raw == "" {
 		h.sendText(ctx, b, update, "❌ Введите @username или ссылку на канал. Отмена: /cancel")
+		return
+	}
+	if !isValidChannelInput(raw) {
+		h.setOPAwaiting(adminID, false)
+		h.sendText(ctx, b, update,
+			"❌ Неверный формат. Введите @username или https://t.me/channel. Отмена: /cancel")
 		return
 	}
 	// Нормализуем: сохраняем как есть или добавляем @

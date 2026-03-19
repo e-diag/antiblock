@@ -31,6 +31,13 @@ type Manager struct {
 	cli *client.Client
 }
 
+func (m *Manager) GetClient() *client.Client {
+	if m == nil {
+		return nil
+	}
+	return m.cli
+}
+
 // GenerateEESecretViaDocker генерирует ee-секрет на удалённом Docker (по TLS),
 // запуская ephemeral-контейнер nineseconds/mtg:2.
 // Это нужно для Pro-групп: контейнер бота не имеет доступа к локальному Docker daemon.
@@ -45,19 +52,21 @@ func (m *Manager) GenerateEESecretViaDocker(ctx context.Context) (string, error)
 	}
 
 	hostCfg := &container.HostConfig{}
+	var containerID string
+	defer func() {
+		if containerID != "" {
+			_ = m.cli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{
+				Force:         true,
+				RemoveVolumes: true,
+			})
+		}
+	}()
+
 	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("create ee gen container: %w", err)
 	}
-	containerID := resp.ID
-
-	// На всякий случай: если контекст тайм-аутнулся, try-best-effort очистим контейнер.
-	defer func() {
-		_ = m.cli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{
-			Force:         true,
-			RemoveVolumes: true,
-		})
-	}()
+	containerID = resp.ID
 
 	if err := m.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		return "", fmt.Errorf("start ee gen container: %w", err)
@@ -390,4 +399,3 @@ func (m *Manager) IsContainerRunning(ctx context.Context, name string) (bool, er
 	}
 	return inspect.ContainerJSONBase.State.Running, nil
 }
-

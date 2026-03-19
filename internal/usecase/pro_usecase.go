@@ -72,7 +72,9 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 	}
 	secretEE, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
 	if err != nil {
-		return nil, fmt.Errorf("generate ee secret via docker: %w", err)
+		log.Printf("[Pro] createGroupForDay: GenerateEESecretViaDocker failed date=%s serverIP=%s: %v",
+			dayStart.Format("2006-01-02"), serverIP, err)
+		return nil, fmt.Errorf("generate ee secret: %w", err)
 	}
 
 	portDD, err := uc.findFreeProPort(30001, 39999)
@@ -186,7 +188,14 @@ func (uc *proUseCase) ensureTodayGroup(serverIP string, dockerMgr *docker.Manage
 		return nil, err
 	}
 	if g == nil {
-		return uc.createGroupForDay(now, serverIP, dockerMgr, cycleDays)
+		newGroup, err := uc.createGroupForDay(now, serverIP, dockerMgr, cycleDays)
+		if err != nil {
+			if isDuplicateKeyError(err) {
+				return uc.groupRepo.GetByDate(now)
+			}
+			return nil, err
+		}
+		return newGroup, nil
 	}
 	if g.InfrastructureExpiresAt.After(now) {
 		return g, nil

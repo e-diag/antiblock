@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -57,12 +56,13 @@ func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb
 	if strings.TrimSpace(server.SSHHostKey) != "" {
 		return client.WithKnownHostKey(server.SSHHostKey, nil)
 	}
+	serverID := server.ID
+	serverIP := server.IP
 	return client.WithKnownHostKey("", func(hostKey string) {
-		server.SSHHostKey = hostKey
-		if err := p.serverRepo.Update(server); err != nil {
-			log.Printf("[SSH] failed to save host key for server %d: %v", server.ID, err)
+		if err := p.serverRepo.UpdateSSHHostKey(serverID, hostKey); err != nil {
+			log.Printf("[SSH] failed to save host key for server %d: %v", serverID, err)
 		} else {
-			log.Printf("[SSH] host key saved for server %s", server.IP)
+			log.Printf("[SSH] host key saved for server %s (id=%d)", serverIP, serverID)
 		}
 	})
 }
@@ -374,14 +374,3 @@ func extractMainIPv4(srv *timeweb.Server) string {
 }
 
 // parsePendingUserIDs — полезно для handler/worker.
-func parsePendingUserIDs(raw string) ([]int64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	var ids []int64
-	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
-		return nil, err
-	}
-	return ids, nil
-}

@@ -12,6 +12,7 @@ type PremiumServerRepository interface {
 	GetByID(id uint) (*domain.PremiumServer, error)
 	GetAll() ([]*domain.PremiumServer, error)
 	Update(s *domain.PremiumServer) error
+	UpdateSSHHostKey(id uint, hostKey string) error
 }
 
 type premiumServerRepository struct {
@@ -62,3 +63,8 @@ func (r *premiumServerRepository) Update(s *domain.PremiumServer) error {
 	return r.db.Save(s).Error
 }
 
+func (r *premiumServerRepository) UpdateSSHHostKey(id uint, hostKey string) error {
+	return r.db.Model(&domain.PremiumServer{}).
+		Where("id = ?", id).
+		Update("ssh_host_key", hostKey).Error
+}
