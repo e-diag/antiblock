@@ -246,6 +246,9 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.RegionID) == "" || strings.TrimSpace(req.OSImageID) == "" || req.ConfigID <= 0 {
 		return nil, errors.New("invalid request params")
 	}
+	if req.Status == "creating" || req.Status == "done" {
+		return nil, fmt.Errorf("request already processed (status=%s)", req.Status)
+	}
 
 	// Меняем статус (best-effort).
 	if req.Status == "pending" {

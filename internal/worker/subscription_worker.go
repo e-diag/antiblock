@@ -2,6 +2,7 @@ package worker
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
@@ -13,6 +14,7 @@ type SubscriptionWorker struct {
 	userUC usecase.UserUseCase
 	config config.WorkerConfig
 	stop   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewSubscriptionWorker создает новый worker для проверки подписок
@@ -52,7 +54,7 @@ func (w *SubscriptionWorker) Start() {
 
 // Stop останавливает worker
 func (w *SubscriptionWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 const workerRetryDelay = 5 * time.Second

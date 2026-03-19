@@ -87,7 +87,7 @@ func (s *SSHClient) GenerateEESecret(ctx context.Context) (string, error) {
 			return line, nil
 		}
 	}
-	return "", fmt.Errorf("ee secret not found in output: %q", out)
+	return "", fmt.Errorf("ee secret not found in output")
 }
 
 // StartPremiumContainers запускает ee (443) и dd (8443) контейнеры,

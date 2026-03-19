@@ -251,7 +251,7 @@ func (c *Client) WaitServerReady(ctx context.Context, serverID int) error {
 		case <-ctx.Done():
 			return fmt.Errorf("timeweb wait server ready timeout: %w", ctx.Err())
 		case <-ticker.C:
-			srv, err := c.GetServer(context.Background(), serverID)
+			srv, err := c.GetServer(ctx, serverID)
 			if err != nil {
 				continue
 			}

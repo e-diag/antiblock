@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -25,6 +26,7 @@ type PremiumReminderWorker struct {
 	settingsRepo repository.SettingsRepository
 	config       config.WorkerConfig
 	stop         chan struct{}
+	stopOnce     sync.Once
 }
 
 // NewPremiumReminderWorker создаёт воркер напоминаний о продлении премиума
@@ -72,7 +74,7 @@ func (w *PremiumReminderWorker) Start() {
 
 // Stop останавливает воркер
 func (w *PremiumReminderWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 func (w *PremiumReminderWorker) getPremiumDays() int {

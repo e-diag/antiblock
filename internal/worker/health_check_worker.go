@@ -21,6 +21,7 @@ type HealthCheckWorker struct {
 	adminIDs []int64
 	config   config.WorkerConfig
 	stop     chan struct{}
+	stopOnce sync.Once
 
 	// prevMu защищает prevStatus от конкурентного доступа (checkProxies может вызываться по таймеру и при рефакторинге — из других мест).
 	prevMu     sync.Mutex
@@ -59,7 +60,7 @@ func (w *HealthCheckWorker) Start() {
 }
 
 func (w *HealthCheckWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 type proxyCheckResult struct {

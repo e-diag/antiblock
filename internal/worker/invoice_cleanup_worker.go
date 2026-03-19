@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -20,6 +21,7 @@ type InvoiceCleanupWorker struct {
 	paymentUC  usecase.PaymentUseCase
 	config     config.WorkerConfig
 	stop       chan struct{}
+	stopOnce   sync.Once
 }
 
 func NewInvoiceCleanupWorker(b *bot.Bot, invoiceRepo repository.InvoiceRepository, paymentUC usecase.PaymentUseCase, cfg config.WorkerConfig) *InvoiceCleanupWorker {
@@ -59,7 +61,7 @@ func (w *InvoiceCleanupWorker) Start() {
 }
 
 func (w *InvoiceCleanupWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 const invoicePendingMaxAge = 1 * time.Hour

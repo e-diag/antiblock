@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
@@ -150,7 +151,8 @@ func (uc *userUseCase) isLegacyPremiumRecord(p *domain.ProxyNode) bool {
 	if p == nil || p.Type != domain.ProxyTypePremium {
 		return false
 	}
-	if p.TimewebFloatingIPID != "" {
+	fip := strings.TrimSpace(p.TimewebFloatingIPID)
+	if fip != "" && fip != "0" {
 		return false
 	}
 	if p.PremiumServerID != nil && *p.PremiumServerID != 0 {
@@ -234,6 +236,11 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 
 		proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD)
 		if err != nil {
+			if proxy != nil {
+				if errUp := uc.upsertPremiumProxy(proxy); errUp != nil {
+					log.Printf("[Premium] save placeholder proxy tg_id=%d: %v", tgID, errUp)
+				}
+			}
 			if errors.Is(err, ErrFloatingIPDailyLimit) {
 				_ = uc.enqueueUserForNewServer(tgID)
 			}
@@ -266,6 +273,7 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 	}
 
 	log.Printf("[Premium] provisioner not configured, tg_id=%d queued", tgID)
+	_ = uc.enqueueUserForNewServer(tgID)
 	if uc.onPremiumProxyFailed != nil {
 		uc.onPremiumProxyFailed(tgID, ErrProvisionerNotConfigured)
 	}

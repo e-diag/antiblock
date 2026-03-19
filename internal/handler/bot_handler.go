@@ -691,7 +691,11 @@ func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int
 	}
 	b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
 	if h.userProxyRepo != nil {
-		existing, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, proxy.IP, proxy.Port, proxy.Secret)
+		existing, err := h.userProxyRepo.GetByUserIDAndProxy(user.ID, proxy.IP, proxy.Port, proxy.Secret)
+		if err != nil {
+			log.Printf("sendProxyToUser: dedupe check failed user_id=%d: %v", user.ID, err)
+			return
+		}
 		if existing == nil {
 			_ = h.userProxyRepo.Create(&domain.UserProxy{
 				UserID:    user.ID,
@@ -1736,6 +1740,13 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 					_, _ = b.SendMessage(runCtx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка: request не найден."})
 					return
 				}
+				if req.Status == "creating" || req.Status == "done" {
+					_, _ = b.SendMessage(runCtx, &bot.SendMessageParams{
+						ChatID: chatID,
+						Text:   fmt.Sprintf("ℹ️ Заявка уже в статусе %q. Повторный запуск пропущен.", req.Status),
+					})
+					return
+				}
 				req.Name = cpy.Name
 				req.RegionID = cpy.Region
 				req.OSImageID = cpy.OSImageID
@@ -1798,6 +1809,9 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 						Text:   fmt.Sprintf("⚠️ Floating IP лимит всё ещё исчерпан. Обработано: %d. Осталось в очереди: %d", processed, len(remaining)),
 					})
 				} else {
+					req.Status = "done"
+					req.PendingUserIDs = "[]"
+					_ = h.vpsReqRepo.Update(req)
 					_, _ = b.SendMessage(runCtx, &bot.SendMessageParams{
 						ChatID: chatID,
 						Text:   fmt.Sprintf("✅ VPS создан. Обработано из очереди: %d", processed),
@@ -1833,7 +1847,6 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			}
 		}
 		if data == "mgr_noop" {
-			b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 			return
 		}
 		// Удаление канала ОП по индексу: mgr_op_del_0, mgr_op_del_1, ...

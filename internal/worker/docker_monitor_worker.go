@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -24,6 +25,7 @@ type DockerMonitorWorker struct {
 	adminIDs []int64
 	cfg      config.WorkerConfig
 	stop     chan struct{}
+	stopOnce sync.Once
 	cli      *client.Client
 }
 
@@ -73,7 +75,7 @@ func (w *DockerMonitorWorker) Start() {
 }
 
 func (w *DockerMonitorWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 func (w *DockerMonitorWorker) checkOnce() {
