@@ -49,6 +49,11 @@ func NewPremiumProvisioner(
 	}
 }
 
+// IsConfigured true, если задан TimeWeb API client с токеном.
+func (p *PremiumProvisioner) IsConfigured() bool {
+	return p != nil && p.twClient != nil && p.twClient.IsConfigured()
+}
+
 // newSSHClient создаёт SSH клиент с верификацией host key.
 // Для нового сервера host key будет сохранён при первом успешном подключении.
 func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb.SSHClient {
@@ -71,19 +76,30 @@ func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb
 // В случае ErrFloatingIPDailyLimit возвращает (placeholderProxy, ErrFloatingIPDailyLimit),
 // чтобы dd/ee секреты были сгенерированы один раз на момент первой покупки.
 func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.User, secretDD string) (*domain.ProxyNode, error) {
+	if user == nil {
+		return nil, errors.New("user is nil")
+	}
+	tgID := user.TGID
+	log.Printf("[Premium] ProvisionForUser: start tg_id=%d user_id=%d zone=%s", tgID, user.ID, p.zone)
+
 	server, err := p.serverRepo.GetActive()
 	if err != nil || server == nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at GetActivePremiumServer: %v", tgID, err)
 		return nil, ErrNoActivePremiumServer
 	}
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: active premium server id=%d ip=%s timeweb_id=%d", tgID, server.ID, server.IP, server.TimewebID)
 
 	ownerID := user.ID
 	sshClient := p.newSSHClient(server)
 
 	// Генерируем ee-секрет сразу (чтобы он не менялся при последующей выдаче/провижининге).
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=GenerateEESecret via SSH %s", tgID, server.IP)
 	secretEE, err := sshClient.GenerateEESecret(ctx)
 	if err != nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at GenerateEESecret: %v", tgID, err)
 		return nil, fmt.Errorf("generate ee secret: %w", err)
 	}
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: ee secret generated prefix=%.8s…", tgID, secretEE)
 
 	placeholder := &domain.ProxyNode{
 		IP:                  server.IP, // временно; после успешного floating IP обновим.
@@ -99,43 +115,56 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 		TimewebFloatingIPID: "",
 	}
 
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=CreateFloatingIP zone=%s", tgID, p.zone)
 	floatingIP, err := p.twClient.CreateFloatingIP(ctx, p.zone)
 	if err != nil {
 		if errors.Is(err, ErrFloatingIPDailyLimit) {
+			log.Printf("[Premium] ProvisionForUser tg_id=%d: daily floating IP limit — returning placeholder", tgID)
 			return placeholder, ErrFloatingIPDailyLimit
 		}
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at CreateFloatingIP: %v", tgID, err)
 		return nil, err
 	}
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: floating IP created id=%s ip=%s", tgID, floatingIP.ID, floatingIP.IP)
 
-	// Привязка floating IP к серверу.
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=BindFloatingIP fip_id=%s → server timeweb_id=%d", tgID, floatingIP.ID, server.TimewebID)
 	if err := p.twClient.BindFloatingIP(ctx, floatingIP.ID, server.TimewebID); err != nil {
 		_ = p.twClient.DeleteFloatingIP(ctx, floatingIP.ID)
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at BindFloatingIP: %v", tgID, err)
 		return nil, fmt.Errorf("bind floating ip: %w", err)
 	}
 
-	// Запуск контейнеров с bind на floating IP.
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=StartPremiumContainers SSH=%s bind=%s portDD=%d portEE=%d dd_secret=%.8s…",
+		tgID, server.IP, floatingIP.IP, domain.PremiumPortDD, domain.PremiumPortEE, secretDD)
 	if err := sshClient.StartPremiumContainers(ctx, user.TGID, floatingIP.IP, secretDD, secretEE); err != nil {
-		log.Printf("[Premium Provision] StartPremiumContainers non-fatal: %v", err)
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: StartPremiumContainers non-fatal: %v", tgID, err)
 	}
 
 	placeholder.FloatingIP = floatingIP.IP
 	placeholder.TimewebFloatingIPID = floatingIP.ID
 	placeholder.IP = floatingIP.IP
 	placeholder.Status = domain.ProxyStatusActive
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: DONE floating_ip=%s fip_id=%s portDD=%d portEE=%d",
+		tgID, floatingIP.IP, floatingIP.ID, domain.PremiumPortDD, domain.PremiumPortEE)
 	return placeholder, nil
 }
 
 // ProvisionExistingProxyForUser финализирует provisioning для уже созданного proxy (placeholder),
 // используя уже сохраненные dd/ee секреты (не генерирует ee повторно).
 func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, user *domain.User, proxy *domain.ProxyNode) (*domain.ProxyNode, error) {
+	tgID := user.TGID
+	log.Printf("[Premium] ProvisionExistingProxyForUser: start tg_id=%d user_id=%d zone=%s", tgID, user.ID, p.zone)
 	if proxy == nil {
 		return nil, errors.New("proxy is nil")
 	}
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d proxy_id=%d", tgID, proxy.ID)
 	if proxy.Secret == "" || proxy.SecretEE == "" {
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: FAILED empty secrets", tgID)
 		return nil, errors.New("proxy secrets are empty")
 	}
 	server, err := p.serverRepo.GetActive()
 	if err != nil || server == nil {
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: FAILED no active server: %v", tgID, err)
 		return nil, ErrNoActivePremiumServer
 	}
 
@@ -147,36 +176,45 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 
 	sshClient := p.newSSHClient(server)
 
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: CreateFloatingIP zone=%s", tgID, p.zone)
 	floatingIP, err := p.twClient.CreateFloatingIP(ctx, p.zone)
 	if err != nil {
 		if errors.Is(err, ErrFloatingIPDailyLimit) {
-			// Не меняем поля, остаёмся в placeholder-состоянии.
+			log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: daily FIP limit (placeholder unchanged)", tgID)
 			return proxy, ErrFloatingIPDailyLimit
 		}
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: FAILED CreateFloatingIP: %v", tgID, err)
 		return nil, err
 	}
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: floating IP id=%s ip=%s", tgID, floatingIP.ID, floatingIP.IP)
 
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: BindFloatingIP fip=%s server=%d", tgID, floatingIP.ID, server.TimewebID)
 	if err := p.twClient.BindFloatingIP(ctx, floatingIP.ID, server.TimewebID); err != nil {
 		_ = p.twClient.DeleteFloatingIP(ctx, floatingIP.ID)
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: FAILED BindFloatingIP: %v", tgID, err)
 		return nil, fmt.Errorf("bind floating ip: %w", err)
 	}
 
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers ssh=%s bind=%s", tgID, server.IP, floatingIP.IP)
 	if err := sshClient.StartPremiumContainers(ctx, user.TGID, floatingIP.IP, proxy.Secret, proxy.SecretEE); err != nil {
-		log.Printf("[Premium ProvisionExisting] StartPremiumContainers non-fatal: %v", err)
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers non-fatal: %v", tgID, err)
 	}
 
 	proxy.FloatingIP = floatingIP.IP
 	proxy.TimewebFloatingIPID = floatingIP.ID
 	proxy.IP = floatingIP.IP
 	proxy.Status = domain.ProxyStatusActive
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: DONE ip=%s fip_id=%s", tgID, proxy.IP, proxy.TimewebFloatingIPID)
 	return proxy, nil
 }
 
 // RestartContainersForUser поднимает контейнеры с теми же секретами (при продлении подписки).
 func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user *domain.User, proxy *domain.ProxyNode) error {
+	tgID := user.TGID
 	if proxy == nil {
 		return errors.New("proxy is nil")
 	}
+	log.Printf("[Premium] RestartContainersForUser: start tg_id=%d user_id=%d proxy_id=%d", tgID, user.ID, proxy.ID)
 	if proxy.PremiumServerID == nil || *proxy.PremiumServerID == 0 {
 		return errors.New("proxy.PremiumServerID is empty")
 	}
@@ -190,11 +228,18 @@ func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user 
 
 	server, err := p.serverRepo.GetByID(*proxy.PremiumServerID)
 	if err != nil || server == nil {
+		log.Printf("[Premium] RestartContainersForUser tg_id=%d: FAILED server lookup: %v", tgID, err)
 		return fmt.Errorf("premium server not found")
 	}
 
 	sshClient := p.newSSHClient(server)
-	return sshClient.StartPremiumContainers(ctx, user.TGID, proxy.FloatingIP, proxy.Secret, proxy.SecretEE)
+	log.Printf("[Premium] RestartContainersForUser tg_id=%d: SSH=%s floating_ip=%s", tgID, server.IP, proxy.FloatingIP)
+	if err := sshClient.StartPremiumContainers(ctx, user.TGID, proxy.FloatingIP, proxy.Secret, proxy.SecretEE); err != nil {
+		log.Printf("[Premium] RestartContainersForUser tg_id=%d: FAILED: %v", tgID, err)
+		return err
+	}
+	log.Printf("[Premium] RestartContainersForUser tg_id=%d: DONE", tgID)
+	return nil
 }
 
 // ReplaceFloatingIP меняет floating IP для Premium юзера.
@@ -242,19 +287,27 @@ func (p *PremiumProvisioner) DeprovisionForUser(ctx context.Context, user *domai
 	if proxy == nil {
 		return nil
 	}
+	tgID := user.TGID
+	log.Printf("[Premium] DeprovisionForUser: start tg_id=%d user_id=%d proxy_id=%d fip_id=%q", tgID, user.ID, proxy.ID, proxy.TimewebFloatingIPID)
 	if proxy.PremiumServerID != nil && *proxy.PremiumServerID != 0 {
 		server, err := p.serverRepo.GetByID(*proxy.PremiumServerID)
 		if err == nil && server != nil {
+			log.Printf("[Premium] DeprovisionForUser tg_id=%d: stopping containers on server %s", tgID, server.IP)
 			sshClient := p.newSSHClient(server)
 			sshClient.StopPremiumContainers(ctx, user.TGID)
+		} else {
+			log.Printf("[Premium] DeprovisionForUser tg_id=%d: skip SSH stop (server lookup err=%v)", tgID, err)
 		}
 	}
 	if proxy.TimewebFloatingIPID != "" {
+		log.Printf("[Premium] DeprovisionForUser tg_id=%d: unbind+delete floating IP id=%s ip=%s", tgID, proxy.TimewebFloatingIPID, proxy.FloatingIP)
 		_ = p.twClient.UnbindFloatingIP(ctx, proxy.TimewebFloatingIPID)
 		if err := p.twClient.DeleteFloatingIP(ctx, proxy.TimewebFloatingIPID); err != nil {
+			log.Printf("[Premium] DeprovisionForUser tg_id=%d: FAILED delete floating IP: %v", tgID, err)
 			return fmt.Errorf("delete floating ip: %w", err)
 		}
 	}
+	log.Printf("[Premium] DeprovisionForUser tg_id=%d: DONE", tgID)
 	return nil
 }
 

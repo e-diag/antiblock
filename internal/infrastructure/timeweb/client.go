@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -31,6 +32,11 @@ func NewClient(token string) *Client {
 	}
 }
 
+// IsConfigured true, если задан непустой API-токен.
+func (c *Client) IsConfigured() bool {
+	return c != nil && strings.TrimSpace(c.token) != ""
+}
+
 func (c *Client) doRequest(ctx context.Context, method, path string, body any) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
@@ -50,15 +56,27 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		log.Printf("[TimeWeb] %s %s → transport err: %v", method, path, err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[TimeWeb] %s %s → read body err: %v (status=%d)", method, path, err, resp.StatusCode)
 		return nil, resp.StatusCode, err
 	}
-	return respBody, resp.StatusCode, nil
+	code := resp.StatusCode
+	if code >= 200 && code < 300 {
+		log.Printf("[TimeWeb] %s %s → status=%d OK", method, path, code)
+	} else {
+		preview := strings.TrimSpace(string(respBody))
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		log.Printf("[TimeWeb] %s %s → status=%d body=%q", method, path, code, preview)
+	}
+	return respBody, code, nil
 }
 
 // --- Floating IPs ---

@@ -123,6 +123,7 @@ func (uc *userUseCase) GetOrCreateUser(tgID int64, username string) (*domain.Use
 }
 
 func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
+	log.Printf("[Premium] ActivatePremium: start tg_id=%d duration_days=%d", tgID, durationDays)
 	user, err := uc.userRepo.GetByTGID(tgID)
 	if err != nil {
 		return err
@@ -148,6 +149,8 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 		return err
 	}
 
+	log.Printf("[Premium] ActivatePremium tg_id=%d: DB updated premium_until=%s", tgID, premiumUntil.Format(time.RFC3339))
+	log.Printf("[Premium] ActivatePremium tg_id=%d: launching async activatePremiumContainerAsync", tgID)
 	go uc.activatePremiumContainerAsync(tgID, user)
 	return nil
 }
@@ -170,94 +173,138 @@ func (uc *userUseCase) isLegacyPremiumActive(p *domain.ProxyNode) bool {
 	return uc.isLegacyPremiumRecord(p) && p.Status == domain.ProxyStatusActive
 }
 
-// activatePremiumContainerAsync: новый Premium через TimeWeb; legacy с активной подпиской — только уведомление;
-// после истечения legacy — как первая покупка через TimeWeb.
-func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.User) {
-	existing, _ := uc.proxyRepo.GetByOwnerID(user.ID)
+// hasPremiumTimeWeb — настроен TimeWeb API (токен), можно выдавать floating IP.
+func (uc *userUseCase) hasPremiumTimeWeb() bool {
+	return uc.premiumProvisioner != nil && uc.premiumProvisioner.IsConfigured()
+}
+
+// migrateLegacyPremiumToTimeweb деактивирует строку legacy в БД и снимает Docker на Pro-сервере перед выдачей через TimeWeb.
+func (uc *userUseCase) migrateLegacyPremiumToTimeweb(tgID int64, user *domain.User, existing *domain.ProxyNode) error {
+	if existing == nil || !uc.isLegacyPremiumRecord(existing) {
+		return nil
+	}
+	log.Printf("[Premium] migrating legacy proxy_id=%d port=%d → TimeWeb floating IP tg_id=%d user_id=%d",
+		existing.ID, existing.Port, tgID, user.ID)
+	existing.Status = domain.ProxyStatusInactive
+	if err := uc.proxyRepo.Update(existing); err != nil {
+		log.Printf("[Premium] migrate legacy tg_id=%d: deactivate proxy row failed: %v", tgID, err)
+		return err
+	}
+	if uc.dockerMgr != nil {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = uc.dockerMgr.RemoveUserContainer(cleanCtx, fmt.Sprintf(docker.UserContainerNameDD, tgID))
+		_ = uc.dockerMgr.RemoveUserContainerEE(cleanCtx, tgID)
+		log.Printf("[Premium] legacy docker containers removed tg_id=%d before TimeWeb provision", tgID)
+	}
+	return nil
+}
+
+// premiumTimeWebActivateOrRenew — общая логика: restart / placeholder / миграция legacy + новый FIP / новая выдача.
+// Должна вызываться только при uc.hasPremiumTimeWeb() && uc.proxyRepo != nil.
+func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID int64, user *domain.User) (*domain.ProxyNode, error) {
+	existing, err := uc.proxyRepo.GetByOwnerID(user.ID)
+	if err != nil {
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: GetByOwnerID err=%v", tgID, err)
+		return nil, fmt.Errorf("get premium proxy: %w", err)
+	}
 	if existing != nil && existing.Type != domain.ProxyTypePremium {
 		existing = nil
 	}
 
-	if uc.premiumProvisioner != nil {
+	var fipID, st string
+	var psid any
+	var isLeg bool
+	if existing != nil {
+		fipID = existing.TimewebFloatingIPID
+		st = string(existing.Status)
+		isLeg = uc.isLegacyPremiumRecord(existing)
+		if existing.PremiumServerID != nil {
+			psid = *existing.PremiumServerID
+		}
+	}
+	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d user_id=%d has_row=%v legacy=%v fip_id=%q premium_srv=%v status=%s",
+		tgID, user.ID, existing != nil, isLeg, fipID, psid, st)
+
+	if existing != nil && strings.TrimSpace(existing.TimewebFloatingIPID) != "" {
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=RestartContainers floating_ip=%s", tgID, existing.FloatingIP)
+		if err := uc.premiumProvisioner.RestartContainersForUser(ctx, user, existing); err != nil {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: RestartContainers FAILED: %v", tgID, err)
+			return nil, fmt.Errorf("restart premium containers: %w", err)
+		}
+		return existing, nil
+	}
+
+	if existing != nil && uc.isLegacyPremiumRecord(existing) {
+		if err := uc.migrateLegacyPremiumToTimeweb(tgID, user, existing); err != nil {
+			return nil, err
+		}
+		existing, err = uc.proxyRepo.GetByOwnerID(user.ID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil && existing.Type != domain.ProxyTypePremium {
+			existing = nil
+		}
+	}
+
+	if existing != nil && existing.PremiumServerID != nil && *existing.PremiumServerID != 0 &&
+		strings.TrimSpace(existing.TimewebFloatingIPID) == "" && !uc.isLegacyPremiumRecord(existing) {
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=ProvisionExistingProxy proxy_id=%d", tgID, existing.ID)
+		proxy, provErr := uc.premiumProvisioner.ProvisionExistingProxyForUser(ctx, user, existing)
+		if provErr != nil {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ProvisionExistingProxy FAILED: %v", tgID, provErr)
+			return proxy, provErr
+		}
+		if err := uc.upsertPremiumProxy(proxy); err != nil {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: upsert after ProvisionExisting FAILED: %v", tgID, err)
+			return proxy, fmt.Errorf("upsert premium proxy: %w", err)
+		}
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ProvisionExisting OK proxy_id=%d ip=%s", tgID, proxy.ID, proxy.IP)
+		return proxy, nil
+	}
+
+	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=ProvisionForUser (new secrets + floating IP)", tgID)
+	secretDD, err := generatePremiumSecret()
+	if err != nil {
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: generatePremiumSecret FAILED: %v", tgID, err)
+		return nil, err
+	}
+	proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD)
+	if err != nil {
+		if proxy != nil {
+			if errUp := uc.upsertPremiumProxy(proxy); errUp != nil {
+				log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: save placeholder after error: %v", tgID, errUp)
+			}
+		}
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ProvisionForUser FAILED: %v", tgID, err)
+		return proxy, err
+	}
+	if err := uc.upsertPremiumProxy(proxy); err != nil {
+		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: upsert after ProvisionForUser FAILED: %v", tgID, err)
+		return proxy, fmt.Errorf("upsert premium proxy: %w", err)
+	}
+	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ProvisionForUser OK proxy_id=%d ip=%s", tgID, proxy.ID, proxy.IP)
+	return proxy, nil
+}
+
+// activatePremiumContainerAsync: при настроенном TimeWeb — всегда путь floating IP (в т.ч. миграция legacy);
+// без TimeWeb — только legacy Docker или очередь админу.
+func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.User) {
+	if uc.proxyRepo == nil {
+		log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: proxyRepo nil, skip", tgID)
+		return
+	}
+
+	if uc.hasPremiumTimeWeb() {
 		ctx, cancel := context.WithTimeout(uc.appCtx, 15*time.Minute)
 		defer cancel()
-
-		if existing != nil && existing.TimewebFloatingIPID != "" {
-			log.Printf("[Premium] renewal new-style tg_id=%d floating_ip=%s", tgID, existing.FloatingIP)
-			if err := uc.premiumProvisioner.RestartContainersForUser(ctx, user, existing); err != nil {
-				log.Printf("[Premium] RestartContainers tg_id=%d: %v (non-fatal)", tgID, err)
-			}
-			if uc.onPremiumProxyReady != nil {
-				uc.onPremiumProxyReady(tgID, existing)
-			}
-			return
-		}
-
-		if existing != nil && existing.PremiumServerID != nil && *existing.PremiumServerID != 0 && existing.TimewebFloatingIPID == "" {
-			proxy, err := uc.premiumProvisioner.ProvisionExistingProxyForUser(ctx, user, existing)
-			if err != nil {
-				if errors.Is(err, ErrFloatingIPDailyLimit) {
-					_ = uc.enqueueUserForNewServer(tgID)
-					if uc.onPremiumProxyFailed != nil {
-						uc.onPremiumProxyFailed(tgID, ErrFloatingIPDailyLimit)
-					}
-					return
-				}
-				if uc.onPremiumProxyFailed != nil {
-					uc.onPremiumProxyFailed(tgID, err)
-				}
-				return
-			}
-			if err := uc.upsertPremiumProxy(proxy); err != nil {
-				log.Printf("[Premium] upsertPremiumProxy tg_id=%d: %v", tgID, err)
-			}
-			if uc.onPremiumProxyReady != nil {
-				uc.onPremiumProxyReady(tgID, proxy)
-			}
-			return
-		}
-
-		if uc.isLegacyPremiumActive(existing) {
-			if uc.onPremiumProxyReady != nil {
-				uc.onPremiumProxyReady(tgID, existing)
-			}
-			return
-		}
-
-		if existing != nil && uc.isLegacyPremiumRecord(existing) {
-			log.Printf("[Premium] legacy upgrade tg_id=%d → new Premium with floating IP", tgID)
-			existing.Status = domain.ProxyStatusInactive
-			_ = uc.proxyRepo.Update(existing)
-		}
-
-		secretDD, err := generatePremiumSecret()
+		proxy, err := uc.premiumTimeWebActivateOrRenew(ctx, tgID, user)
 		if err != nil {
-			log.Printf("[Premium] generatePremiumSecret tg_id=%d: %v", tgID, err)
-			if uc.onPremiumProxyFailed != nil {
-				uc.onPremiumProxyFailed(tgID, err)
-			}
-			return
-		}
-
-		proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD)
-		if err != nil {
-			if proxy != nil {
-				if errUp := uc.upsertPremiumProxy(proxy); errUp != nil {
-					log.Printf("[Premium] save placeholder proxy tg_id=%d: %v", tgID, errUp)
-				}
-			}
 			if errors.Is(err, ErrFloatingIPDailyLimit) {
 				_ = uc.enqueueUserForNewServer(tgID)
 			}
-			log.Printf("[Premium] ProvisionForUser tg_id=%d: %v", tgID, err)
-			if uc.onPremiumProxyFailed != nil {
-				uc.onPremiumProxyFailed(tgID, err)
-			}
-			return
-		}
-
-		if err := uc.upsertPremiumProxy(proxy); err != nil {
-			log.Printf("[Premium] save proxy tg_id=%d: %v", tgID, err)
+			log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: premiumTimeWebActivateOrRenew err=%v", tgID, err)
 			if uc.onPremiumProxyFailed != nil {
 				uc.onPremiumProxyFailed(tgID, err)
 			}
@@ -269,15 +316,34 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 		return
 	}
 
-	// TimeWeb не настроен
+	existing, _ := uc.proxyRepo.GetByOwnerID(user.ID)
+	if existing != nil && existing.Type != domain.ProxyTypePremium {
+		existing = nil
+	}
+
 	if uc.isLegacyPremiumActive(existing) {
+		log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: TimeWeb off, legacy active — notify only", tgID)
+		if uc.onPremiumProxyReady != nil {
+			uc.onPremiumProxyReady(tgID, existing)
+		}
+		return
+	}
+	if existing != nil && uc.isLegacyPremiumRecord(existing) && uc.dockerMgr != nil {
+		log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: TimeWeb off, legacy docker path port=%d", tgID, existing.Port)
+		if err := uc.ensurePremiumContainer(tgID, user); err != nil {
+			log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: ensurePremiumContainer: %v", tgID, err)
+			if uc.onPremiumProxyFailed != nil {
+				uc.onPremiumProxyFailed(tgID, err)
+			}
+			return
+		}
 		if uc.onPremiumProxyReady != nil {
 			uc.onPremiumProxyReady(tgID, existing)
 		}
 		return
 	}
 
-	log.Printf("[Premium] provisioner not configured, tg_id=%d queued", tgID)
+	log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: no TimeWeb and no applicable legacy path — enqueue admin", tgID)
 	_ = uc.enqueueUserForNewServer(tgID)
 	if uc.onPremiumProxyFailed != nil {
 		uc.onPremiumProxyFailed(tgID, ErrProvisionerNotConfigured)
@@ -299,7 +365,7 @@ func (uc *userUseCase) RevokePremium(tgID int64) error {
 		proxy, _ = uc.proxyRepo.GetByOwnerID(user.ID)
 	}
 	legacy := proxy != nil && uc.isLegacyPremiumRecord(proxy)
-	if proxy != nil && !legacy && uc.premiumProvisioner != nil {
+	if proxy != nil && !legacy && uc.hasPremiumTimeWeb() {
 		depCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		if err := uc.premiumProvisioner.DeprovisionForUser(depCtx, user, proxy); err != nil {
 			log.Printf("[Premium] DeprovisionForUser user_id=%d: %v", user.ID, err)
@@ -350,91 +416,60 @@ func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode,
 		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: premium not active", tgID, user.ID)
 		return nil, errors.New("user is not premium")
 	}
-	if uc.premiumProvisioner != nil {
+
+	if uc.hasPremiumTimeWeb() {
 		if uc.proxyRepo == nil {
 			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: proxyRepo is nil", tgID)
 			return nil, errors.New("premium proxy repo is nil")
 		}
 		ctx, cancel := context.WithTimeout(uc.appCtx, 15*time.Minute)
 		defer cancel()
-
-		existing, errEx := uc.proxyRepo.GetByOwnerID(user.ID)
-		if errEx != nil {
-			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: GetByOwnerID err=%v", tgID, user.ID, errEx)
-			return nil, fmt.Errorf("get premium proxy row: %w", errEx)
-		}
-		if existing == nil {
-			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: no proxy_nodes row for owner (async create not finished or failed)", tgID, user.ID)
-			return nil, errors.New("premium proxy not found")
-		}
-
-		psid := uint(0)
-		if existing.PremiumServerID != nil {
-			psid = *existing.PremiumServerID
-		}
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: proxy_id=%d status=%s legacy=%v premium_server_id=%d timeweb_fip_id=%q port=%d dockerMgr=%v",
-			tgID, user.ID, existing.ID, existing.Status, uc.isLegacyPremiumRecord(existing), psid, existing.TimewebFloatingIPID, existing.Port, uc.dockerMgr != nil)
-
-		if existing.TimewebFloatingIPID != "" {
-			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: path=RestartContainersForUser (floating IP already set)", tgID)
-			if err := uc.premiumProvisioner.RestartContainersForUser(ctx, user, existing); err != nil {
-				log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: RestartContainersForUser failed: %v", tgID, err)
-				return nil, err
-			}
-			return existing, nil
-		}
-
-		if existing.PremiumServerID != nil && *existing.PremiumServerID != 0 {
-			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: path=ProvisionExistingProxyForUser", tgID)
-			proxy, err := uc.premiumProvisioner.ProvisionExistingProxyForUser(ctx, user, existing)
-			if err != nil {
-				if errors.Is(err, ErrFloatingIPDailyLimit) {
-					_ = uc.enqueueUserForNewServer(tgID)
-					if uc.onPremiumProxyFailed != nil {
-						uc.onPremiumProxyFailed(tgID, ErrFloatingIPDailyLimit)
-					}
+		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: TimeWeb path (same as activatePremiumContainerAsync)", tgID, user.ID)
+		proxy, err := uc.premiumTimeWebActivateOrRenew(ctx, tgID, user)
+		if err != nil {
+			if errors.Is(err, ErrFloatingIPDailyLimit) {
+				_ = uc.enqueueUserForNewServer(tgID)
+				if uc.onPremiumProxyFailed != nil {
+					uc.onPremiumProxyFailed(tgID, ErrFloatingIPDailyLimit)
 				}
-				log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: ProvisionExistingProxyForUser failed: %v", tgID, err)
-				return nil, err
 			}
-			_ = uc.upsertPremiumProxy(proxy)
-			return proxy, nil
+			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: premiumTimeWebActivateOrRenew failed: %v", tgID, err)
+			return nil, err
 		}
-
-		if uc.isLegacyPremiumActive(existing) && uc.dockerMgr != nil {
-			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: path=legacy ensurePremiumContainer", tgID)
-			if err := uc.ensurePremiumContainer(tgID, user); err != nil {
-				log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: ensurePremiumContainer failed: %v", tgID, err)
-				return nil, err
-			}
-			return existing, nil
+		if proxy == nil {
+			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: success but proxy is nil", tgID)
+			return nil, errors.New("premium proxy missing after provision")
 		}
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: no applicable path (need TimeWeb token or legacy+docker)", tgID)
-		return nil, errors.New("настройте TimeWeb (TIMEWEB_API_TOKEN) для создания Premium")
+		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: OK proxy_id=%d ip=%s fip_id=%q", tgID, proxy.ID, proxy.IP, proxy.TimewebFloatingIPID)
+		return proxy, nil
 	}
 
 	if uc.proxyRepo == nil {
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: provisioner nil and proxyRepo nil", tgID)
+		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: no TimeWeb and proxyRepo nil", tgID)
 		return nil, errors.New("premium proxy repo is nil")
 	}
 	existing, errEx := uc.proxyRepo.GetByOwnerID(user.ID)
 	if errEx != nil {
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: GetByOwnerID err=%v (no provisioner)", tgID, user.ID, errEx)
+		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: GetByOwnerID err=%v (no TimeWeb)", tgID, user.ID, errEx)
 		return nil, fmt.Errorf("get premium proxy row: %w", errEx)
 	}
-	if existing != nil && uc.isLegacyPremiumActive(existing) && uc.dockerMgr != nil {
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: path=legacy ensurePremiumContainer (no provisioner)", tgID)
+	if existing != nil && existing.Type != domain.ProxyTypePremium {
+		existing = nil
+	}
+	if existing == nil {
+		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: no proxy row (need row or TIMEWEB_API_TOKEN)", tgID, user.ID)
+		return nil, errors.New("premium proxy not found")
+	}
+	if uc.isLegacyPremiumRecord(existing) && uc.dockerMgr != nil {
+		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: legacy docker fallback port=%d status=%s", tgID, existing.Port, existing.Status)
 		if err := uc.ensurePremiumContainer(tgID, user); err != nil {
 			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: ensurePremiumContainer failed: %v", tgID, err)
 			return nil, err
 		}
 		return existing, nil
 	}
-	if existing == nil {
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d user_id=%d: no proxy row and TimeWeb not configured", tgID, user.ID)
-	} else {
-		log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: not legacy active or dockerMgr nil (legacy=%v docker=%v)", tgID, uc.isLegacyPremiumRecord(existing), uc.dockerMgr != nil)
-	}
+	log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: no path (legacy=%v dockerMgr=%v) — set TIMEWEB_API_TOKEN",
+		tgID, uc.isLegacyPremiumRecord(existing), uc.dockerMgr != nil)
 	return nil, errors.New("настройте TimeWeb (TIMEWEB_API_TOKEN) для создания Premium")
 }
 
@@ -444,16 +479,19 @@ func (uc *userUseCase) CheckExpiredPremiums() error {
 		return err
 	}
 
+	log.Printf("[Premium] CheckExpiredPremiums: scanning %d premium users", len(users))
 	now := time.Now().UTC()
 	for _, user := range users {
 		if user.PremiumUntil != nil && user.PremiumUntil.Before(now) {
+			log.Printf("[Premium] CheckExpiredPremiums: tg_id=%d user_id=%d expired_at=%s — deprovisioning",
+				user.TGID, user.ID, user.PremiumUntil.Format(time.RFC3339))
 			var proxy *domain.ProxyNode
 			if uc.proxyRepo != nil {
 				proxy, _ = uc.proxyRepo.GetByOwnerID(user.ID)
 			}
 
 			legacy := proxy != nil && uc.isLegacyPremiumRecord(proxy)
-			if proxy != nil && !legacy && uc.premiumProvisioner != nil {
+			if proxy != nil && !legacy && uc.hasPremiumTimeWeb() {
 				depCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				if err := uc.premiumProvisioner.DeprovisionForUser(depCtx, user, proxy); err != nil {
 					log.Printf("[Premium] DeprovisionForUser user_id=%d: %v", user.ID, err)
@@ -485,8 +523,10 @@ func (uc *userUseCase) CheckExpiredPremiums() error {
 			user.IsPremium = false
 			if err := uc.userRepo.Update(user); err != nil {
 				// Логируем ошибку, но продолжаем обработку других пользователей
+				log.Printf("[Premium] CheckExpiredPremiums: tg_id=%d DB update failed: %v", user.TGID, err)
 				continue
 			}
+			log.Printf("[Premium] CheckExpiredPremiums: tg_id=%d deprovision + DB OK", user.TGID)
 		}
 	}
 
@@ -521,7 +561,7 @@ func (uc *userUseCase) CleanupExpiredProxies(graceDays int) error {
 			}
 
 			if !uc.isLegacyPremiumRecord(proxy) {
-				if uc.premiumProvisioner != nil {
+				if uc.hasPremiumTimeWeb() {
 					depCtx, depCancel := context.WithTimeout(context.Background(), 30*time.Second)
 					_ = uc.premiumProvisioner.DeprovisionForUser(depCtx, u, proxy)
 					depCancel()

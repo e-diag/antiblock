@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -84,8 +85,10 @@ func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	log.Printf("[SSH] connecting to %s:%d user=%s (cmd_len=%d)", s.host, s.port, s.user, len(cmd))
 	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", s.host, s.port), cfg)
 	if err != nil {
+		log.Printf("[SSH] dial %s:%d failed: %v", s.host, s.port, err)
 		return "", fmt.Errorf("ssh dial %s: %w", s.host, err)
 	}
 	defer client.Close()
@@ -97,6 +100,11 @@ func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) 
 	defer session.Close()
 
 	out, err := session.CombinedOutput(cmd)
+	if err != nil {
+		log.Printf("[SSH] %s:%d → command failed err=%v output_len=%d", s.host, s.port, err, len(out))
+	} else {
+		log.Printf("[SSH] %s:%d → command ok output_len=%d", s.host, s.port, len(out))
+	}
 	return string(out), err
 }
 
@@ -123,6 +131,7 @@ func (s *SSHClient) WaitSSHReady(ctx context.Context) error {
 
 // SetupDocker устанавливает Docker на чистый Ubuntu-сервер.
 func (s *SSHClient) SetupDocker(ctx context.Context) error {
+	log.Printf("[SSH] SetupDocker host=%s:%d — install via get.docker.com", s.host, s.port)
 	if _, err := s.RunCommand(ctx, "curl -fsSL https://get.docker.com | sh"); err != nil {
 		return fmt.Errorf("install docker: %w", err)
 	}
@@ -132,6 +141,7 @@ func (s *SSHClient) SetupDocker(ctx context.Context) error {
 
 // GenerateEESecret генерирует ee-секрет на сервере.
 func (s *SSHClient) GenerateEESecret(ctx context.Context) (string, error) {
+	log.Printf("[SSH] GenerateEESecret host=%s:%d", s.host, s.port)
 	out, err := s.RunCommand(ctx,
 		"docker run --rm nineseconds/mtg:2 generate-secret --hex vk.com 2>/dev/null")
 	if err != nil {
@@ -152,6 +162,9 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 	if floatingIP == "" || secretDD == "" || secretEE == "" {
 		return fmt.Errorf("StartPremiumContainers: empty params")
 	}
+
+	log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s dd_secret_prefix=%.8s… ee_secret_prefix=%.8s…",
+		tgID, s.host, floatingIP, secretDD, secretEE)
 
 	nameEE := fmt.Sprintf("mtg-user-%d-ee", tgID)
 	nameDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
@@ -185,5 +198,6 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
 	nameEE := fmt.Sprintf("mtg-user-%d-ee", tgID)
 	nameDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
+	log.Printf("[SSH] StopPremiumContainers tg_id=%d host=%s names=%s %s", tgID, s.host, nameDD, nameEE)
 	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s 2>/dev/null || true", nameEE, nameDD))
 }
