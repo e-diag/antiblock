@@ -55,6 +55,38 @@ func sameUTCDay(a, b time.Time) bool {
 	return utcDayStart(a).Equal(utcDayStart(b))
 }
 
+// proEEPorts — пул портов для ee (fake-TLS) контейнеров Pro-групп.
+// Индекс = dayOfMonth - 1 (день 1 -> 443, день 2 -> 80, ...).
+var proEEPorts = []int{
+	443, 80, 8085, 8443, 2053, 2083, 2087, 2096,
+	9443, 1194, 3128, 4443, 5228, 5443, 6443,
+	7443, 8880, 8888, 9000, 9080, 9090, 9100,
+	9200, 9300, 10443, 11443, 12443, 13443, 14443,
+	15443, 16443,
+}
+
+// proDDPorts — отдельный пул портов для dd контейнеров Pro-групп.
+// Не пересекается с proEEPorts и с диапазоном legacy Premium 20000-29999.
+var proDDPorts = []int{
+	8080, 8081, 8082, 8088, 8181, 8282, 8383, 8484,
+	8585, 8686, 8787, 8899, 8989, 9010, 9060, 9110,
+	9160, 9210, 9260, 9310, 9360, 9410, 9460, 9510,
+	9560, 9610, 9660, 9710, 9760, 9810, 9860, 9910,
+}
+
+// proPortForDay возвращает детерминированный порт Pro-контейнера по дате.
+func proPortForDay(date time.Time, ports []int) int {
+	idx := (date.Day() - 1) % len(ports)
+	return ports[idx]
+}
+
+func secretPreview(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
+}
+
 func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, dockerMgr *docker.Manager, cycleDays int) (*domain.ProGroup, error) {
 	if cycleDays <= 0 {
 		cycleDays = 30
@@ -77,14 +109,10 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 		return nil, fmt.Errorf("generate ee secret: %w", err)
 	}
 
-	portDD, err := uc.findFreeProPort(30001, 39999)
-	if err != nil {
-		return nil, fmt.Errorf("find free port for Pro dd: %w", err)
-	}
-	portEE := portDD + 10000
-
 	now := time.Now().UTC()
 	dayStart = utcDayStart(dayStart)
+	portDD := proPortForDay(dayStart, proDDPorts)
+	portEE := proPortForDay(dayStart, proEEPorts)
 	infraUntil := now.AddDate(0, 0, cycleDays)
 
 	group := &domain.ProGroup{
@@ -101,20 +129,22 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 	if err := uc.groupRepo.Create(group); err != nil {
 		return nil, err
 	}
-	group.ContainerDD = fmt.Sprintf("mtg-pro-%d-dd", group.ID)
-	group.ContainerEE = fmt.Sprintf("mtg-pro-%d-ee", group.ID)
+	group.ContainerDD = fmt.Sprintf(docker.ProContainerNameDD, group.ID)
+	group.ContainerEE = fmt.Sprintf(docker.ProContainerNameEE, group.ID)
 	if err := uc.groupRepo.Update(group); err != nil {
 		return nil, err
 	}
 
+	log.Printf("[Pro] createGroupForDay date=%s portDD=%d portEE=%d secretDD=%s... secretEE=%s...",
+		dayStart.Format("2006-01-02"), portDD, portEE, secretPreview(secretDD), secretPreview(secretEE))
+
 	if err := dockerMgr.CreateProContainerDD(group); err != nil {
-		return nil, fmt.Errorf("create Pro dd container: %w", err)
+		log.Printf("[Pro] CreateProContainerDD failed date=%s: %v", dayStart.Format("2006-01-02"), err)
+		return nil, fmt.Errorf("create dd container: %w", err)
 	}
 	if err := dockerMgr.CreateProContainerEE(group); err != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = dockerMgr.RemoveUserContainer(ctx, group.ContainerDD)
-		cancel()
-		return nil, fmt.Errorf("create Pro ee container: %w", err)
+		log.Printf("[Pro] CreateProContainerEE failed date=%s: %v", dayStart.Format("2006-01-02"), err)
+		return nil, fmt.Errorf("create ee container: %w", err)
 	}
 
 	return group, nil
@@ -141,15 +171,14 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 	if err != nil {
 		return nil, err
 	}
-	portDD, err := uc.findFreeProPort(30001, 39999)
-	if err != nil {
-		return nil, err
-	}
+	dayStart := utcDayStart(g.Date)
+	portDD := proPortForDay(dayStart, proDDPorts)
+	portEE := proPortForDay(dayStart, proEEPorts)
 
 	g.SecretDD = secretDD
 	g.SecretEE = secretEE
 	g.PortDD = portDD
-	g.PortEE = portDD + 10000
+	g.PortEE = portEE
 	g.ServerIP = serverIP
 	g.InfrastructureExpiresAt = time.Now().UTC().AddDate(0, 0, cycleDays)
 	g.Status = domain.ProxyStatusActive
@@ -162,9 +191,6 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 		return nil, fmt.Errorf("rotate Pro dd: %w", err)
 	}
 	if err := dockerMgr.CreateProContainerEE(g); err != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = dockerMgr.RemoveUserContainer(ctx, g.ContainerDD)
-		cancel()
 		return nil, fmt.Errorf("rotate Pro ee: %w", err)
 	}
 

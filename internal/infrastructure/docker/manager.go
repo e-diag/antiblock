@@ -22,6 +22,8 @@ const (
 	imageNameEE         = "nineseconds/mtg:2"
 	UserContainerNameDD = "mtg-user-%d-dd"
 	UserContainerNameEE = "mtg-user-%d-ee"
+	ProContainerNameDD  = "mtg-pro-%d-dd"
+	ProContainerNameEE  = "mtg-pro-%d-ee"
 	// Старое имя оставляем для обратной совместимости (используется в старых записях/командах).
 	UserContainerName = "mtg-user-%d"
 )
@@ -112,6 +114,7 @@ func (m *Manager) GenerateEESecretViaDocker(ctx context.Context) (string, error)
 	// Быстрый парсер: ищем строку с префиксом "ee" длиной >= 34.
 	for _, line := range strings.Split(clean, "\n") {
 		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "/")
 		if strings.HasPrefix(line, "ee") && len(line) >= 34 {
 			return line, nil
 		}
