@@ -207,10 +207,14 @@ func main() {
 			return
 		}
 		var msg string
-		if errors.Is(err, usecase.ErrFloatingIPDailyLimit) ||
-			errors.Is(err, usecase.ErrProvisionerNotConfigured) {
+		switch {
+		case errors.Is(err, usecase.ErrNoActivePremiumServer):
+			msg = "⏳ Создаём персональный сервер для вашего Premium proxy.\n\n" +
+				"Это занимает несколько минут — мы пришлём уведомление как только всё будет готово."
+		case errors.Is(err, usecase.ErrFloatingIPDailyLimit),
+			errors.Is(err, usecase.ErrProvisionerNotConfigured):
 			msg = "⏳ Ваш персональный прокси будет создан в ближайшее время — мы уведомим вас, как только он будет готов."
-		} else {
+		default:
 			msg = "⚠️ Премиум активирован, но создание прокси не удалось. Нажмите «Получить Premium proxy» в меню для повторной попытки."
 		}
 		_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
@@ -219,12 +223,22 @@ func main() {
 	})
 
 	// Если исчерпан лимит floating IP — уведомляем всех админов кнопкой создания нового Premium VPS.
-	usecase.SetOnPremiumVPSRequested(userUC, func(req *domain.VPSProvisionRequest) {
+	usecase.SetOnPremiumVPSRequested(userUC, func(req *domain.VPSProvisionRequest, reason usecase.PremiumVPSQueueReason) {
 		if req == nil || req.ID == 0 {
 			return
 		}
 		var tgIDs []int64
 		_ = json.Unmarshal([]byte(req.PendingUserIDs), &tgIDs)
+
+		var headline string
+		switch reason {
+		case usecase.PremiumQueueReasonNoActiveServer:
+			headline = "нет активного Premium-сервера в БД — нужен VPS или активация сервера."
+		case usecase.PremiumQueueReasonNeedSetup:
+			headline = "требуется настройка TimeWeb / Premium (пользователь без применимого пути к прокси)."
+		default:
+			headline = "исчерпан лимит floating IP или очередь на новый VPS."
+		}
 
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -232,8 +246,8 @@ func main() {
 			},
 		}
 		msg := fmt.Sprintf(
-			"💎 TimeWeb Premium: исчерпан лимит floating IP.\nВ очереди: <b>%d</b> пользователей.\n\nНажмите кнопку, чтобы создать новый VPS (request ID: <code>%d</code>).",
-			len(tgIDs), req.ID,
+			"💎 TimeWeb Premium: %s\nВ очереди: <b>%d</b> пользователей.\n\nНажмите кнопку, чтобы создать новый VPS (request ID: <code>%d</code>).",
+			headline, len(tgIDs), req.ID,
 		)
 
 		for _, adminID := range cfg.Telegram.GetAdminIDs() {

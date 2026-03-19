@@ -20,6 +20,16 @@ var ErrPremiumProxyCreationFailed = errors.New("premium proxy creation failed af
 // ErrProvisionerNotConfigured — TimeWeb API не настроен, новый Premium невозможен.
 var ErrProvisionerNotConfigured = errors.New("provisioner not configured")
 
+// PremiumVPSQueueReason — зачем пользователь попал в очередь (текст уведомления админам).
+type PremiumVPSQueueReason string
+
+const (
+	PremiumQueueReasonFloatingIPLimit PremiumVPSQueueReason = "floating_ip_limit"
+	PremiumQueueReasonNoActiveServer  PremiumVPSQueueReason = "no_active_server"
+	// PremiumQueueReasonNeedSetup — нет применимого пути без VPS (например TimeWeb выключен).
+	PremiumQueueReasonNeedSetup PremiumVPSQueueReason = "need_setup"
+)
+
 // UserUseCase определяет бизнес-логику для работы с пользователями
 type UserUseCase interface {
 	GetOrCreateUser(tgID int64, username string) (*domain.User, error)
@@ -44,7 +54,7 @@ type userUseCase struct {
 	appCtx                context.Context
 	onPremiumProxyReady   func(tgID int64, proxy *domain.ProxyNode) // при успешном создании контейнера
 	onPremiumProxyFailed  func(tgID int64, err error)               // при неудаче после всех попыток
-	onPremiumVPSRequested func(req *domain.VPSProvisionRequest)     // уведомить админов о необходимости нового Premium VPS
+	onPremiumVPSRequested func(req *domain.VPSProvisionRequest, reason PremiumVPSQueueReason) // уведомить админов о необходимости нового Premium VPS
 }
 
 // NewUserUseCase создает новый use case для пользователей.
@@ -89,7 +99,7 @@ func SetOnPremiumProxyFailed(uc UserUseCase, f func(tgID int64, err error)) {
 }
 
 // SetOnPremiumVPSRequested уведомляет админов о необходимости создания нового Premium VPS.
-func SetOnPremiumVPSRequested(uc UserUseCase, f func(req *domain.VPSProvisionRequest)) {
+func SetOnPremiumVPSRequested(uc UserUseCase, f func(req *domain.VPSProvisionRequest, reason PremiumVPSQueueReason)) {
 	if u, ok := uc.(*userUseCase); ok {
 		u.onPremiumVPSRequested = f
 	}
@@ -253,6 +263,13 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=ProvisionExistingProxy proxy_id=%d", tgID, existing.ID)
 		proxy, provErr := uc.premiumProvisioner.ProvisionExistingProxyForUser(ctx, user, existing)
 		if provErr != nil {
+			if errors.Is(provErr, ErrNoActivePremiumServer) {
+				log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: no active premium server at ProvisionExistingProxy — enqueueing user", tgID)
+				if enqErr := uc.enqueueUserForNewServer(tgID, PremiumQueueReasonNoActiveServer); enqErr != nil {
+					log.Printf("[Premium] enqueueUserForNewServer tg_id=%d: %v", tgID, enqErr)
+				}
+				return nil, ErrNoActivePremiumServer
+			}
 			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ProvisionExistingProxy FAILED: %v", tgID, provErr)
 			return proxy, provErr
 		}
@@ -272,6 +289,13 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 	}
 	proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD)
 	if err != nil {
+		if errors.Is(err, ErrNoActivePremiumServer) {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: no active premium server at ProvisionForUser — enqueueing user", tgID)
+			if enqErr := uc.enqueueUserForNewServer(tgID, PremiumQueueReasonNoActiveServer); enqErr != nil {
+				log.Printf("[Premium] enqueueUserForNewServer tg_id=%d: %v", tgID, enqErr)
+			}
+			return nil, ErrNoActivePremiumServer
+		}
 		if proxy != nil {
 			if errUp := uc.upsertPremiumProxy(proxy); errUp != nil {
 				log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: save placeholder after error: %v", tgID, errUp)
@@ -302,7 +326,7 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 		proxy, err := uc.premiumTimeWebActivateOrRenew(ctx, tgID, user)
 		if err != nil {
 			if errors.Is(err, ErrFloatingIPDailyLimit) {
-				_ = uc.enqueueUserForNewServer(tgID)
+				_ = uc.enqueueUserForNewServer(tgID, PremiumQueueReasonFloatingIPLimit)
 			}
 			log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: premiumTimeWebActivateOrRenew err=%v", tgID, err)
 			if uc.onPremiumProxyFailed != nil {
@@ -344,7 +368,7 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 	}
 
 	log.Printf("[Premium] activatePremiumContainerAsync tg_id=%d: no TimeWeb and no applicable legacy path — enqueue admin", tgID)
-	_ = uc.enqueueUserForNewServer(tgID)
+	_ = uc.enqueueUserForNewServer(tgID, PremiumQueueReasonNeedSetup)
 	if uc.onPremiumProxyFailed != nil {
 		uc.onPremiumProxyFailed(tgID, ErrProvisionerNotConfigured)
 	}
@@ -428,7 +452,7 @@ func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode,
 		proxy, err := uc.premiumTimeWebActivateOrRenew(ctx, tgID, user)
 		if err != nil {
 			if errors.Is(err, ErrFloatingIPDailyLimit) {
-				_ = uc.enqueueUserForNewServer(tgID)
+				_ = uc.enqueueUserForNewServer(tgID, PremiumQueueReasonFloatingIPLimit)
 				if uc.onPremiumProxyFailed != nil {
 					uc.onPremiumProxyFailed(tgID, ErrFloatingIPDailyLimit)
 				}
@@ -648,18 +672,21 @@ func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) err
 	return nil
 }
 
-func (uc *userUseCase) enqueueUserForNewServer(tgID int64) error {
+func (uc *userUseCase) enqueueUserForNewServer(tgID int64, reason PremiumVPSQueueReason) error {
 	if uc.premiumProvisioner == nil || uc.premiumProvisioner.provisionReqRepo == nil {
+		log.Printf("[Premium] enqueueUserForNewServer tg_id=%d reason=%s: skipped (no provisioner or repo)", tgID, reason)
 		return nil
 	}
 	reqID, isNew, err := uc.premiumProvisioner.provisionReqRepo.AppendPendingUserID(tgID)
 	if err != nil {
+		log.Printf("[Premium] enqueueUserForNewServer tg_id=%d reason=%s: AppendPendingUserID err=%v", tgID, reason, err)
 		return err
 	}
+	log.Printf("[Premium] enqueueUserForNewServer tg_id=%d reason=%s: reqID=%d isNew=%v", tgID, reason, reqID, isNew)
 	if isNew && uc.onPremiumVPSRequested != nil {
 		req, err := uc.premiumProvisioner.provisionReqRepo.GetByID(reqID)
 		if err == nil && req != nil {
-			uc.onPremiumVPSRequested(req)
+			uc.onPremiumVPSRequested(req, reason)
 		}
 	}
 	return nil
