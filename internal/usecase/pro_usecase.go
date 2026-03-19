@@ -58,13 +58,20 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 	if cycleDays <= 0 {
 		cycleDays = 30
 	}
+
+	genCtx, genCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer genCancel()
+
 	secretDD, err := generatePremiumSecret()
 	if err != nil {
 		return nil, fmt.Errorf("generate dd secret: %w", err)
 	}
-	secretEE, err := generateEESecret()
+	if dockerMgr == nil {
+		return nil, fmt.Errorf("dockerMgr is required to generate ee secret for Pro group")
+	}
+	secretEE, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
 	if err != nil {
-		return nil, fmt.Errorf("generate ee secret: %w", err)
+		return nil, fmt.Errorf("generate ee secret via docker: %w", err)
 	}
 
 	portDD, err := uc.findFreeProPort(30001, 39999)
@@ -97,16 +104,14 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 		return nil, err
 	}
 
-	if dockerMgr != nil {
-		if err := dockerMgr.CreateProContainerDD(group); err != nil {
-			return nil, fmt.Errorf("create Pro dd container: %w", err)
-		}
-		if err := dockerMgr.CreateProContainerEE(group); err != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = dockerMgr.RemoveUserContainer(ctx, group.ContainerDD)
-			cancel()
-			return nil, fmt.Errorf("create Pro ee container: %w", err)
-		}
+	if err := dockerMgr.CreateProContainerDD(group); err != nil {
+		return nil, fmt.Errorf("create Pro dd container: %w", err)
+	}
+	if err := dockerMgr.CreateProContainerEE(group); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = dockerMgr.RemoveUserContainer(ctx, group.ContainerDD)
+		cancel()
+		return nil, fmt.Errorf("create Pro ee container: %w", err)
 	}
 
 	return group, nil
@@ -119,11 +124,17 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 	}
 	uc.teardownGroupContainers(dockerMgr, g)
 
+	genCtx, genCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer genCancel()
+
 	secretDD, err := generatePremiumSecret()
 	if err != nil {
 		return nil, err
 	}
-	secretEE, err := generateEESecret()
+	if dockerMgr == nil {
+		return nil, fmt.Errorf("dockerMgr is required to generate ee secret for Pro group")
+	}
+	secretEE, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -144,16 +155,14 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 		return nil, err
 	}
 
-	if dockerMgr != nil {
-		if err := dockerMgr.CreateProContainerDD(g); err != nil {
-			return nil, fmt.Errorf("rotate Pro dd: %w", err)
-		}
-		if err := dockerMgr.CreateProContainerEE(g); err != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = dockerMgr.RemoveUserContainer(ctx, g.ContainerDD)
-			cancel()
-			return nil, fmt.Errorf("rotate Pro ee: %w", err)
-		}
+	if err := dockerMgr.CreateProContainerDD(g); err != nil {
+		return nil, fmt.Errorf("rotate Pro dd: %w", err)
+	}
+	if err := dockerMgr.CreateProContainerEE(g); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = dockerMgr.RemoveUserContainer(ctx, g.ContainerDD)
+		cancel()
+		return nil, fmt.Errorf("rotate Pro ee: %w", err)
 	}
 
 	subs, _ := uc.subRepo.GetActiveByGroupID(g.ID)

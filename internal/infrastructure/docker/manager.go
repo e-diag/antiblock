@@ -1,11 +1,13 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -27,6 +29,91 @@ const (
 // Manager инкапсулирует работу с Docker для mtg-контейнеров.
 type Manager struct {
 	cli *client.Client
+}
+
+// GenerateEESecretViaDocker генерирует ee-секрет на удалённом Docker (по TLS),
+// запуская ephemeral-контейнер nineseconds/mtg:2.
+// Это нужно для Pro-групп: контейнер бота не имеет доступа к локальному Docker daemon.
+func (m *Manager) GenerateEESecretViaDocker(ctx context.Context) (string, error) {
+	if m == nil || m.cli == nil {
+		return "", fmt.Errorf("docker manager is nil")
+	}
+
+	cfg := &container.Config{
+		Image: imageNameEE,
+		Cmd:   []string{"generate-secret", "--hex", "vk.com"},
+	}
+
+	hostCfg := &container.HostConfig{}
+	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
+	if err != nil {
+		return "", fmt.Errorf("create ee gen container: %w", err)
+	}
+	containerID := resp.ID
+
+	// На всякий случай: если контекст тайм-аутнулся, try-best-effort очистим контейнер.
+	defer func() {
+		_ = m.cli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{
+			Force:         true,
+			RemoveVolumes: true,
+		})
+	}()
+
+	if err := m.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("start ee gen container: %w", err)
+	}
+
+	waitCh, errCh := m.cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return "", fmt.Errorf("wait ee gen container: %w", err)
+		}
+	case <-waitCh:
+	}
+
+	logs, err := m.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: false,
+		Timestamps: false,
+		Follow:     false,
+	})
+	if err != nil {
+		return "", fmt.Errorf("logs ee gen container: %w", err)
+	}
+	defer logs.Close()
+
+	raw, err := io.ReadAll(logs)
+	if err != nil {
+		return "", fmt.Errorf("read ee gen logs: %w", err)
+	}
+
+	// Docker logs могут содержать мультиплекс/непечатаемые байты — фильтруем их.
+	clean := strings.Map(func(r rune) rune {
+		if r >= 32 && r <= 126 {
+			return r
+		}
+		// Сохраняем переносы строк, чтобы можно было построчно искать.
+		if r == '\n' || r == '\r' {
+			return r
+		}
+		return -1
+	}, string(raw))
+
+	// Быстрый парсер: ищем строку с префиксом "ee" длиной >= 34.
+	for _, line := range strings.Split(clean, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ee") && len(line) >= 34 {
+			return line, nil
+		}
+	}
+
+	// Для диагностики — покажем первые символы, но без логов целиком.
+	snippet := bytes.NewBufferString(clean).String()
+	if len(snippet) > 200 {
+		snippet = snippet[:200] + "..."
+	}
+	return "", fmt.Errorf("ee secret not found in container output: %q", snippet)
 }
 
 // NewManager создает новый Docker‑менеджер, используя переменные окружения Docker (локальный демон).

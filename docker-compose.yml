@@ -54,6 +54,12 @@ services:
 
       # CryptoBot (устарело, можно не заполнять)
       CRYPTOBOT_API_TOKEN: ${CRYPTOBOT_API_TOKEN:-}
+
+      # TimeWeb — новые Premium (floating IP). Без токена новые покупки ставятся в очередь до настройки.
+      TIMEWEB_API_TOKEN: ${TIMEWEB_API_TOKEN:-}
+      TIMEWEB_AVAILABILITY_ZONE: ${TIMEWEB_AVAILABILITY_ZONE:-spb-3}
+      TIMEWEB_SSH_USER: ${TIMEWEB_SSH_USER:-root}
+      TIMEWEB_SSH_PASSWORD: ${TIMEWEB_SSH_PASSWORD:-}
     ports:
       - "127.0.0.1:8081:8081"  # Webhook xRocket (доступен только localhost; туннель cloudflared/ngrok проксирует снаружи)
       - "127.0.0.1:9090:9090"  # Prometheus metrics

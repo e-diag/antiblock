@@ -1978,15 +1978,33 @@ func (h *BotHandler) HandleAdminInfo(ctx context.Context, b *bot.Bot, update *mo
 		return
 	}
 
-	name := fmt.Sprintf(docker.UserContainerName, tgID)
-	containerStatus := "неизвестен"
+	fip := strings.TrimSpace(proxy.TimewebFloatingIPID)
+	isLegacy := (fip == "" || fip == "0") && (proxy.PremiumServerID == nil || *proxy.PremiumServerID == 0)
+
+	ddPort := proxy.Port
+	// Для legacy ee-секрет используется на порту ddPort + 10000,
+	// для TimeWeb — фиксированные порты домена (8443/443).
+	if !isLegacy {
+		ddPort = domain.PremiumPortDD
+	}
+
+	nameDD := fmt.Sprintf(docker.UserContainerNameDD, tgID)
+	nameEE := fmt.Sprintf(docker.UserContainerNameEE, tgID)
+	ddStatus := "⚪ неизвестен"
+	eeStatus := "⚪ неизвестен"
 	if h.proDockerMgr != nil {
-		running, err := h.proDockerMgr.IsContainerRunning(ctx, name)
-		if err == nil {
+		if running, err := h.proDockerMgr.IsContainerRunning(ctx, nameDD); err == nil {
 			if running {
-				containerStatus = "🟢 запущен"
+				ddStatus = "🟢 запущен"
 			} else {
-				containerStatus = "🔴 остановлен"
+				ddStatus = "🔴 остановлен"
+			}
+		}
+		if running, err := h.proDockerMgr.IsContainerRunning(ctx, nameEE); err == nil {
+			if running {
+				eeStatus = "🟢 запущен"
+			} else {
+				eeStatus = "🔴 остановлен"
 			}
 		}
 	}
@@ -1999,11 +2017,11 @@ func (h *BotHandler) HandleAdminInfo(ctx context.Context, b *bot.Bot, update *mo
 	msg := fmt.Sprintf(
 		"👤 <b>Пользователь %d</b>\n\n"+
 			"💎 Премиум до: %s\n"+
-			"🌐 Порт: <code>%d</code>\n"+
-			"🔑 Secret: <code>%s</code>\n"+
-			"📦 Контейнер: <code>%s</code>\n"+
-			"⚙️ Статус контейнера: %s\n",
-		tgID, until, proxy.Port, proxy.Secret, name, containerStatus,
+			"🔌 Порт dd: <code>%d</code>\n"+
+			"🔑 Secret dd: <code>%s</code>\n"+
+			"📦 <code>%s</code> — %s\n"+
+			"📦 <code>%s</code> — %s\n",
+		tgID, until, ddPort, proxy.Secret, nameDD, ddStatus, nameEE, eeStatus,
 	)
 	h.sendText(ctx, b, update, msg)
 }
@@ -2041,17 +2059,29 @@ func (h *BotHandler) HandleAdminRebuild(ctx context.Context, b *bot.Bot, update 
 		return
 	}
 
-	name := fmt.Sprintf(docker.UserContainerName, tgID)
-	if err := h.proDockerMgr.RemoveUserContainer(ctx, name); err != nil {
+	nameDD := fmt.Sprintf(docker.UserContainerNameDD, tgID)
+	nameEE := fmt.Sprintf(docker.UserContainerNameEE, tgID)
+
+	if err := h.proDockerMgr.RemoveUserContainer(ctx, nameDD); err != nil {
 		h.sendText(ctx, b, update, "❌ Ошибка удаления контейнера")
 		return
 	}
+
+	// ee контейнер — best-effort (его может не быть, если SecretEE пустой).
+	_ = h.proDockerMgr.RemoveUserContainer(ctx, nameEE)
+
 	if err := h.proDockerMgr.CreateUserContainer(ctx, tgID, proxy); err != nil {
 		h.sendText(ctx, b, update, "❌ Ошибка создания контейнера")
 		return
 	}
 
-	h.sendText(ctx, b, update, "✅ Контейнер пересоздан")
+	if proxy.SecretEE != "" {
+		if err := h.proDockerMgr.CreateUserContainerEE(ctx, tgID, proxy); err != nil {
+			log.Printf("[AdminRebuild] CreateUserContainerEE tg_id=%d: %v (non-fatal)", tgID, err)
+		}
+	}
+
+	h.sendText(ctx, b, update, "✅ Контейнеры пересозданы (dd + ee)")
 }
 
 // HandleBroadcast обрабатывает команду /broadcast (только для админов): выбор аудитории, затем сообщение
