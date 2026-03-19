@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -23,6 +24,7 @@ type AdRePinWorker struct {
 	adPinRepo repository.AdPinRepository
 	config   config.WorkerConfig
 	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 // NewAdRePinWorker создаёт воркер повторного закрепления объявлений.
@@ -64,7 +66,7 @@ func (w *AdRePinWorker) Start() {
 
 // Stop останавливает воркер.
 func (w *AdRePinWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 func (w *AdRePinWorker) repin() {

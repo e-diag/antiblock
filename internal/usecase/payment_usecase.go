@@ -19,9 +19,15 @@ type PaymentUseCase interface {
 	CreateInvoice(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error)
 	CheckInvoiceStatus(invoiceID string) (bool, error)
 	GetUserIDByInvoiceID(invoiceID int64) (int64, bool)
+	// SetInvoiceMeta сохраняет тип продукта и количество дней для инвойса.
+	SetInvoiceMeta(invoiceID int64, kind string, daysGranted int) error
+	// GetInvoice возвращает сохранённый инвойс по invoiceID платёжной системы.
+	GetInvoice(invoiceID int64) (*domain.Invoice, error)
 	SetInvoiceMessage(invoiceID int64, chatID int64, messageID int64) error
 	GetInvoiceMessageInfo(invoiceID int64) (chatID int64, messageID int64, ok bool)
 	MarkInvoicePaid(invoiceID int64) error
+	// CancelInvoice отменяет/удаляет инвойс в платёжной системе (если поддерживается) и помечает его отменённым в БД.
+	CancelInvoice(invoiceID int64) error
 	RecordStarPayment(tgID int64, amountTotal int64, currency string, daysGranted int, telegramPaymentChargeID string) error
 }
 
@@ -163,6 +169,8 @@ func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, descrip
 	inv := &domain.Invoice{
 		InvoiceID: invoiceResp.Result.InvoiceID,
 		UserID:    userID,
+		Kind:      "premium",
+		DaysGranted: 0,
 		Status:    "pending",
 		Amount:    amount,
 		Currency:  asset,
@@ -236,6 +244,8 @@ func (uc *paymentUseCase) createInvoiceXRocket(amount float64, currency string, 
 	inv := &domain.Invoice{
 		InvoiceID: parsedID,
 		UserID:    userID,
+		Kind:      "premium",
+		DaysGranted: 0,
 		Status:    "pending",
 		Amount:    amount,
 		Currency:  coin,
@@ -262,6 +272,26 @@ func (uc *paymentUseCase) GetUserIDByInvoiceID(invoiceID int64) (int64, bool) {
 		return 0, false
 	}
 	return inv.UserID, true
+}
+
+func (uc *paymentUseCase) GetInvoice(invoiceID int64) (*domain.Invoice, error) {
+	return uc.invRepo.GetByInvoiceID(invoiceID)
+}
+
+func (uc *paymentUseCase) SetInvoiceMeta(invoiceID int64, kind string, daysGranted int) error {
+	inv, err := uc.invRepo.GetByInvoiceID(invoiceID)
+	if err != nil || inv == nil {
+		return fmt.Errorf("invoice not found")
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		kind = "premium"
+	}
+	inv.Kind = kind
+	if daysGranted > 0 {
+		inv.DaysGranted = daysGranted
+	}
+	return uc.invRepo.Update(inv)
 }
 
 func (uc *paymentUseCase) SetInvoiceMessage(invoiceID int64, chatID int64, messageID int64) error {
@@ -291,6 +321,50 @@ func (uc *paymentUseCase) MarkInvoicePaid(invoiceID int64) error {
 	now := time.Now()
 	inv.PaidAt = &now
 	return uc.invRepo.Update(inv)
+}
+
+func (uc *paymentUseCase) CancelInvoice(invoiceID int64) error {
+	// Сначала помечаем в БД (если есть), чтобы инвойс не считался актуальным даже при проблемах с API.
+	inv, err := uc.invRepo.GetByInvoiceID(invoiceID)
+	if err != nil {
+		return err
+	}
+	if inv != nil && inv.Status != "paid" {
+		inv.Status = "cancelled"
+		if err := uc.invRepo.Update(inv); err != nil {
+			return err
+		}
+	}
+
+	// Для xRocket есть DELETE /tg-invoices/{id}. Для старого CryptoPay отмены нет — просто оставляем cancelled в БД.
+	if !strings.Contains(strings.ToLower(uc.apiURL), "xrocket") && !strings.Contains(strings.ToLower(uc.apiURL), "pay.xrocket") && !strings.Contains(strings.ToLower(uc.apiURL), "xrocket.tg") {
+		return nil
+	}
+	return uc.cancelInvoiceXRocket(invoiceID)
+}
+
+func (uc *paymentUseCase) cancelInvoiceXRocket(invoiceID int64) error {
+	base := strings.TrimRight(uc.apiURL, "/")
+	// В конфиге по умолчанию base = https://pay.xrocket.tg, а эндпоинты начинаются с /tg-invoices
+	url := fmt.Sprintf("%s/tg-invoices/%d", base, invoiceID)
+
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create xRocket cancel request: %w", err)
+	}
+	req.Header.Set("Rocket-Pay-Key", uc.apiToken)
+
+	resp, err := uc.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send xRocket cancel request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("xrocket cancel invoice failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 func (uc *paymentUseCase) CheckInvoiceStatus(invoiceID string) (bool, error) {

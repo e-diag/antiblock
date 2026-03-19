@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -12,8 +13,8 @@ import (
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
+	"github.com/yourusername/antiblock/internal/infrastructure/docker"
 	"github.com/yourusername/antiblock/internal/repository"
-	"gorm.io/gorm"
 )
 
 // ProxyUseCase определяет бизнес-логику для работы с прокси
@@ -36,7 +37,7 @@ type ProxyUseCase interface {
 	CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bool, err error)
 	// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
 	// выбирает свободный порт 20000-30000, создаёт/обновляет запись в proxy_nodes с serverIP.
-	EnsurePremiumProxyForUser(user *domain.User, serverIP string) (*domain.ProxyNode, error)
+	EnsurePremiumProxyForUser(user *domain.User, serverIP string, dockerMgr *docker.Manager) (*domain.ProxyNode, error)
 	// GetAllFreeProxies возвращает все free-прокси (активные и неактивные) для мониторинга.
 	GetAllFreeProxies() ([]*domain.ProxyNode, error)
 	// CheckFreeProxy проверяет TCP-доступность free-прокси, обновляет статус и RTT в БД. Возвращает (reachable, rttMs).
@@ -44,16 +45,16 @@ type ProxyUseCase interface {
 }
 
 type ProxyStats struct {
-	TotalProxies          int64
-	ActiveProxies         int64
-	FreeProxies           int64
-	PremiumProxies        int64 // только активные премиум
+	TotalProxies            int64
+	ActiveProxies           int64
+	FreeProxies             int64
+	PremiumProxies          int64 // только активные премиум
 	UnreachablePremiumCount int64
 }
 
 type proxyUseCase struct {
-	proxyRepo      repository.ProxyRepository
-	userProxyRepo  repository.UserProxyRepository
+	proxyRepo     repository.ProxyRepository
+	userProxyRepo repository.UserProxyRepository
 }
 
 // ErrNoMoreFreeProxiesForUser возвращается, когда пользователь уже получил все доступные бесплатные прокси.
@@ -69,11 +70,16 @@ func validateSecret(secret string) error {
 	// Формат MTProto v2: строго строчный префикс "dd" + 32+ hex-символов.
 	if strings.HasPrefix(secret, "dd") {
 		hexPart := secret[2:]
-		if len(hexPart) < 32 {
-			return errors.New("invalid secret: hex part too short (min 32 chars after dd prefix)")
+		if len(hexPart) < 32 || !secretRegexpHex.MatchString(hexPart) {
+			return errors.New("invalid dd secret: need 32+ hex chars after 'dd'")
 		}
-		if !secretRegexpHex.MatchString(hexPart) {
-			return errors.New("invalid secret: hex part contains non-hex characters")
+		return nil
+	}
+	// ee-формат: generate-secret --hex возвращает "ee" + hex.
+	if strings.HasPrefix(secret, "ee") {
+		hexPart := secret[2:]
+		if len(hexPart) < 32 {
+			return errors.New("invalid ee secret: too short")
 		}
 		return nil
 	}
@@ -81,18 +87,6 @@ func validateSecret(secret string) error {
 		return errors.New("invalid secret format (allowed: A-Za-z0-9+/=_-, length 16-255)")
 	}
 	return nil
-}
-
-// isDuplicateKeyError определяет, является ли ошибка нарушением уникального ограничения (дубликат).
-func isDuplicateKeyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return true
-	}
-	s := err.Error()
-	return strings.Contains(s, "23505") || strings.Contains(s, "duplicate key")
 }
 
 // NewProxyUseCase создает новый use case для прокси. userProxyRepo опционален: если задан, при выдаче free-прокси исключаются уже выданные этому пользователю.
@@ -131,19 +125,46 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*do
 		issued, errIssued := uc.userProxyRepo.ListByUserID(user.ID)
 		if errIssued == nil {
 			issuedSet := make(map[string]struct{})
+			issuedFreeCount := 0
 			for _, up := range issued {
 				if up.ProxyType == domain.ProxyTypeFree {
+					issuedFreeCount++
 					issuedSet[fmt.Sprintf("%s:%d", up.IP, up.Port)] = struct{}{}
 				}
 			}
+
+			// Чередование выдачи free dd/ee:
+			// - 1-й free (issuedFreeCount=0) => dd
+			// - 2-й free (issuedFreeCount=1) => ee
+			needVariant := "dd"
+			if issuedFreeCount%2 == 1 {
+				needVariant = "ee"
+			}
+
 			var filtered []*domain.ProxyNode
 			for _, p := range proxies {
-				if _, ok := issuedSet[fmt.Sprintf("%s:%d", p.IP, p.Port)]; !ok {
-					filtered = append(filtered, p)
+				// Не выдаём повторно прокси (по ip:port).
+				if _, ok := issuedSet[fmt.Sprintf("%s:%d", p.IP, p.Port)]; ok {
+					continue
 				}
+
+				// Выбираем прокси нужного типа ключа (по префиксу секрета).
+				switch needVariant {
+				case "dd":
+					if !strings.HasPrefix(p.Secret, "dd") {
+						continue
+					}
+				case "ee":
+					if !strings.HasPrefix(p.Secret, "ee") {
+						continue
+					}
+				}
+
+				filtered = append(filtered, p)
 			}
 			proxies = filtered
 			if len(proxies) == 0 {
+				// Если нужного типа ключей больше нет — считаем, что для пользователя бесплатные прокси закончились.
 				return nil, ErrNoMoreFreeProxiesForUser
 			}
 		}
@@ -282,10 +303,10 @@ func (uc *proxyUseCase) GetStats() (ProxyStats, error) {
 		}
 	}
 	return ProxyStats{
-		TotalProxies:           total,
-		ActiveProxies:          active,
-		FreeProxies:            freeCount,
-		PremiumProxies:         activePremium,
+		TotalProxies:            total,
+		ActiveProxies:           active,
+		FreeProxies:             freeCount,
+		PremiumProxies:          activePremium,
 		UnreachablePremiumCount: unreachablePremium,
 	}, nil
 }
@@ -347,9 +368,11 @@ func generatePremiumSecret() (string, error) {
 	return "dd" + hex.EncodeToString(b), nil
 }
 
+// generateEESecret запускает docker команду для генерации ee-секрета с доменом vk.com.
+// Возвращает строку вида "ee...".
 // EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
 // выбирает свободный порт в [20000, 30000], создаёт или обновляет запись в proxy_nodes с serverIP.
-func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP string) (*domain.ProxyNode, error) {
+func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP string, dockerMgr *docker.Manager) (*domain.ProxyNode, error) {
 	if user == nil {
 		return nil, errors.New("user is nil")
 	}
@@ -367,15 +390,38 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		existing.Type = domain.ProxyTypePremium
 		existing.Status = domain.ProxyStatusActive
 		existing.IP = serverIP
+		// Backfill ee secret при старых записях.
+		if existing.SecretEE == "" {
+			if dockerMgr == nil {
+				return nil, errors.New("dockerMgr is required to generate ee secret")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			secretEE, errEE := dockerMgr.GenerateEESecretViaDocker(ctx)
+			if errEE == nil && strings.TrimSpace(secretEE) != "" {
+				existing.SecretEE = secretEE
+			}
+		}
 		if err := uc.proxyRepo.Update(existing); err != nil {
 			return nil, err
 		}
 		return existing, nil
 	}
 
-	secret, err := generatePremiumSecret()
+	secretDD, err := generatePremiumSecret()
 	if err != nil {
-		return nil, fmt.Errorf("generate secret: %w", err)
+		return nil, fmt.Errorf("generate dd secret: %w", err)
+	}
+	if dockerMgr == nil {
+		return nil, errors.New("dockerMgr is required to generate ee secret")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	secretEE, err := dockerMgr.GenerateEESecretViaDocker(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("generate ee secret via docker: %w", err)
 	}
 
 	const (
@@ -394,13 +440,14 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		}
 
 		proxy := &domain.ProxyNode{
-			IP:      serverIP,
-			Port:    port,
-			Secret:  secret,
-			Type:    domain.ProxyTypePremium,
-			Status:  domain.ProxyStatusActive,
-			Load:    0,
-			OwnerID: &ownerID,
+			IP:       serverIP,
+			Port:     port,
+			Secret:   secretDD,
+			SecretEE: secretEE,
+			Type:     domain.ProxyTypePremium,
+			Status:   domain.ProxyStatusActive,
+			Load:     0,
+			OwnerID:  &ownerID,
 		}
 
 		if err := uc.proxyRepo.Create(proxy); err != nil {

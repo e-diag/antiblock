@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -20,6 +21,7 @@ type PremiumHealthCheckWorker struct {
 	adminIDs []int64
 	cfg      config.PremiumHealthCheckConfig
 	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 func NewPremiumHealthCheckWorker(b *bot.Bot, proxyUC usecase.ProxyUseCase, adminIDs []int64, cfg config.PremiumHealthCheckConfig) *PremiumHealthCheckWorker {
@@ -122,5 +124,5 @@ func (w *PremiumHealthCheckWorker) notifyAdmins(ctx context.Context, text string
 }
 
 func (w *PremiumHealthCheckWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }

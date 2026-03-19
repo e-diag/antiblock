@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-telegram/bot"
 
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
+	"github.com/yourusername/antiblock/internal/infrastructure/docker"
 )
 
 // DockerMonitorWorker следит за использованием памяти контейнерами mtg-user-{tg_id}
@@ -24,14 +26,26 @@ type DockerMonitorWorker struct {
 	adminIDs []int64
 	cfg      config.WorkerConfig
 	stop     chan struct{}
+	stopOnce sync.Once
+	cli      *client.Client
 }
 
-func NewDockerMonitorWorker(b *bot.Bot, adminIDs []int64, cfg config.WorkerConfig) *DockerMonitorWorker {
+func NewDockerMonitorWorker(
+	b *bot.Bot,
+	adminIDs []int64,
+	cfg config.WorkerConfig,
+	dockerMgr *docker.Manager,
+) *DockerMonitorWorker {
+	var cli *client.Client
+	if dockerMgr != nil {
+		cli = dockerMgr.GetClient()
+	}
 	return &DockerMonitorWorker{
 		bot:      b,
 		adminIDs: adminIDs,
 		cfg:      cfg,
 		stop:     make(chan struct{}),
+		cli:      cli,
 	}
 }
 
@@ -66,10 +80,15 @@ func (w *DockerMonitorWorker) Start() {
 }
 
 func (w *DockerMonitorWorker) Stop() {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 }
 
 func (w *DockerMonitorWorker) checkOnce() {
+	if w.cli == nil {
+		log.Printf("docker monitor: Docker client not configured, skipping")
+		return
+	}
+
 	timeout := w.cfg.Timeout()
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -77,21 +96,10 @@ func (w *DockerMonitorWorker) checkOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		log.Printf("docker monitor: new client error: %v", err)
-		w.notifyAdmins(ctx, fmt.Sprintf("❗ Ошибка подключения к Docker: %v", err))
-		return
-	}
-	defer cli.Close()
-
 	args := filters.NewArgs()
 	args.Add("name", "mtg-user-")
 
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
+	containers, err := w.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: args,
 	})
@@ -118,7 +126,7 @@ func (w *DockerMonitorWorker) checkOnce() {
 			continue
 		}
 
-		statsResp, err := cli.ContainerStats(ctx, c.ID, false)
+		statsResp, err := w.cli.ContainerStats(ctx, c.ID, false)
 		if err != nil {
 			log.Printf("docker monitor: stats error for %s: %v", name, err)
 			continue
@@ -166,4 +174,3 @@ func (w *DockerMonitorWorker) notifyAdmins(ctx context.Context, text string) {
 		})
 	}
 }
-

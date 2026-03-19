@@ -58,6 +58,11 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.Invoice{},
 		&domain.StarPayment{},
 		&domain.AppSetting{},
+		&domain.ProGroup{},
+		&domain.ProSubscription{},
+		&domain.PremiumServer{},
+		&domain.VPSProvisionRequest{},
+		&domain.MaintenanceWaitUser{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
@@ -98,6 +103,73 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	// Защита от дубликатов в «Мои прокси» (user_proxies): уникальна комбинация (user_id, ip, port, secret).
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_user_proxies_unique
+		ON user_proxies (user_id, ip, port, secret)
+	`).Error; err != nil {
+		return err
+	}
+
+	// Уникальный порт для Pro-групп (dd). Порт ee вычисляется как PortDD+10000.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_groups_port_dd_unique
+		ON pro_groups (port_dd)
+	`).Error; err != nil {
+		return err
+	}
+
+	// Pro: инфраструктура по сроку; не более одной active-группы на календарный день (date = 00:00 UTC).
+	if err := db.Exec(`
+		ALTER TABLE pro_groups ADD COLUMN IF NOT EXISTS infrastructure_expires_at TIMESTAMPTZ
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		UPDATE pro_groups SET infrastructure_expires_at = created_at + interval '30 days'
+		WHERE infrastructure_expires_at IS NULL
+	`).Error; err != nil {
+		return err
+	}
+	_ = db.Exec(`ALTER TABLE pro_groups ALTER COLUMN infrastructure_expires_at SET NOT NULL`).Error
+	_ = db.Exec(`DROP INDEX IF EXISTS idx_pro_groups_date`)
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_pro_groups_date ON pro_groups (date)`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_pro_groups_infra_exp ON pro_groups (infrastructure_expires_at)`).Error; err != nil {
+		return err
+	}
+	_ = db.Exec(`DROP INDEX IF EXISTS idx_pro_groups_one_active_per_date`)
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_groups_one_active_per_date
+		ON pro_groups (date) WHERE status = 'active'
+	`).Error; err != nil {
+		return err
+	}
+
+	// TimeWeb Premium: индексы для поиска по floating IP и server_id.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_proxy_nodes_timeweb_floating_ip_id
+		ON proxy_nodes (timeweb_floating_ip_id)
+		WHERE timeweb_floating_ip_id <> ''
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_proxy_nodes_premium_server_id
+		ON proxy_nodes (premium_server_id)
+		WHERE premium_server_id IS NOT NULL
+	`).Error; err != nil {
+		return err
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_vps_provision_requests_status_created_at
+		ON vps_provision_requests (status, created_at)
+	`).Error; err != nil {
+		return err
+	}
+
 	if err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS op_channel_clicks (
 			id         BIGSERIAL PRIMARY KEY,
@@ -127,6 +199,9 @@ func seedAppSettings(db *gorm.DB) error {
 		"premium_days": "30",
 		"premium_usdt": "10", // сумма в TON (ключ оставлен для совместимости)
 		"premium_stars": "100",
+		"pro_days":        "30",
+		"pro_price_usdt":  "3",
+		"pro_price_stars": "50",
 		"instruction_text": "📖 <b>Инструкция по использованию прокси</b>\n\n<b>1. Получите несколько прокси</b>\nНажмите «Получить прокси» 2-3 раза — вы получите разные прокси-серверы.\n\n<b>2. Добавьте все прокси в Telegram</b>\nНажмите «Подключиться» под каждым прокси и включите его.\n\n<b>3. Включите автопереключение</b>\nНастройки → Конфиденциальность и безопасность → Тип подключения → выберите все прокси.\n\nTelegram автоматически переключится на рабочий прокси при сбое!",
 		"instruction_photo_id": "",
 	}

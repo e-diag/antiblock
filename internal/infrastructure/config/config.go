@@ -12,23 +12,33 @@ import (
 
 // Config представляет конфигурацию приложения
 type Config struct {
-	App           AppConfig           `yaml:"app"`
-	Telegram      TelegramConfig      `yaml:"telegram"`
-	Database      DatabaseConfig      `yaml:"database"`
-	CryptoBot     CryptoBotConfig     `yaml:"cryptobot"` // устаревший блок (CryptoPay), можно не заполнять
-	XRocket       XRocketConfig       `yaml:"xrocket"`
-	RateLimit     RateLimitConfig     `yaml:"rate_limit"`
-	Workers       WorkersConfig       `yaml:"workers"`
-	Proxy         ProxyConfig         `yaml:"proxy"`
-	PremiumDocker PremiumDockerConfig `yaml:"premium_docker"`
+	App       AppConfig       `yaml:"app"`
+	Telegram  TelegramConfig  `yaml:"telegram"`
+	Database  DatabaseConfig  `yaml:"database"`
+	CryptoBot CryptoBotConfig `yaml:"cryptobot"` // устаревший блок (CryptoPay), можно не заполнять
+	XRocket   XRocketConfig   `yaml:"xrocket"`
+	Timeweb   TimewebConfig   `yaml:"timeweb"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	Workers   WorkersConfig   `yaml:"workers"`
+	Proxy     ProxyConfig     `yaml:"proxy"`
+	ProDocker ProDockerConfig `yaml:"pro_docker"`
 }
 
-// PremiumDockerConfig — подключение к премиум-серверу по TLS для создания персональных mtg-контейнеров.
-type PremiumDockerConfig struct {
+// ProDockerConfig — Pro-сервер (Free + Pro-группы + legacy Premium cleanup) по Docker TLS.
+type ProDockerConfig struct {
 	Host     string `yaml:"host"`      // хост премиум-сервера (Docker daemon)
 	Port     int    `yaml:"port"`      // порт TLS, обычно 2376
 	CertPath string `yaml:"cert_path"` // путь к сертификатам, например /antiblock/docker-certs/
 	ServerIP string `yaml:"server_ip"` // IP сервера для записи в proxy_nodes (выдача пользователю)
+}
+
+// TimewebConfig — настройки TimeWeb Cloud API для Premium provisioning.
+type TimewebConfig struct {
+	APIToken         string `yaml:"api_token"`
+	AvailabilityZone string `yaml:"availability_zone"`
+	SSHUser          string `yaml:"ssh_user"`
+	SSHKeyID         int    `yaml:"ssh_key_id"`
+	SSHKeyPath       string `yaml:"ssh_key_path"`
 }
 
 type AppConfig struct {
@@ -80,7 +90,7 @@ type CryptoBotConfig struct {
 
 // XRocketConfig — настройки интеграции с xRocket Pay API (TON).
 type XRocketConfig struct {
-	APIToken      string `yaml:"api_token"`       // API key из @xrocket_bot / @xrocket_testnet_bot
+	APIToken      string `yaml:"api_token"`      // API key из @xrocket_bot / @xrocket_testnet_bot
 	APIURL        string `yaml:"api_url"`        // базовый URL API, по умолчанию https://pay.xrocket.tg/api
 	WebhookPort   string `yaml:"webhook_port"`   // порт HTTP-сервера для приёма webhook xRocket (например 8081)
 	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи webhook (если включено в xRocket)
@@ -92,12 +102,13 @@ type RateLimitConfig struct {
 }
 
 type WorkersConfig struct {
-	HealthCheck         WorkerConfig              `yaml:"health_check"`
-	SubscriptionChecker WorkerConfig              `yaml:"subscription_checker"`
-	DockerMonitor       WorkerConfig              `yaml:"docker_monitor"`
-	PremiumReminder     WorkerConfig              `yaml:"premium_reminder"`
-	AdRePin             WorkerConfig              `yaml:"ad_repin"`
-	PremiumHealthCheck  PremiumHealthCheckConfig  `yaml:"premium_health_check"`
+	HealthCheck         WorkerConfig             `yaml:"health_check"`
+	SubscriptionChecker WorkerConfig             `yaml:"subscription_checker"`
+	DockerMonitor       WorkerConfig             `yaml:"docker_monitor"`
+	PremiumReminder     WorkerConfig             `yaml:"premium_reminder"`
+	AdRePin             WorkerConfig             `yaml:"ad_repin"`
+	InvoiceCleanup      WorkerConfig             `yaml:"invoice_cleanup"`
+	PremiumHealthCheck  PremiumHealthCheckConfig `yaml:"premium_health_check"`
 }
 
 // PremiumHealthCheckConfig — интервалы проверки премиум-прокси: полная проверка и перепроверка недоступных.
@@ -169,6 +180,27 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.XRocket.WebhookSecret == "" {
 		cfg.XRocket.WebhookSecret = getEnv("XROCKET_WEBHOOK_SECRET", "")
+	}
+
+	// TimeWeb Premium (условно включаем по TIMEWEB_API_TOKEN).
+	if cfg.Timeweb.APIToken == "" {
+		cfg.Timeweb.APIToken = getEnv("TIMEWEB_API_TOKEN", "")
+	}
+	if cfg.Timeweb.AvailabilityZone == "" {
+		cfg.Timeweb.AvailabilityZone = getEnv("TIMEWEB_AVAILABILITY_ZONE", "spb-3")
+	}
+	if cfg.Timeweb.SSHUser == "" {
+		cfg.Timeweb.SSHUser = getEnv("TIMEWEB_SSH_USER", "root")
+	}
+	if cfg.Timeweb.SSHKeyID == 0 {
+		if v := getEnv("TIMEWEB_SSH_KEY_ID", ""); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Timeweb.SSHKeyID = n
+			}
+		}
+	}
+	if cfg.Timeweb.SSHKeyPath == "" {
+		cfg.Timeweb.SSHKeyPath = getEnv("TIMEWEB_SSH_KEY_PATH", "/antiblock/premium-keys/premium_bot_key")
 	}
 
 	return &cfg, nil

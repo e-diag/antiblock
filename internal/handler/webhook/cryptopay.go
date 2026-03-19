@@ -33,17 +33,18 @@ func CryptoPayWebhook(userUC usecase.UserUseCase, paymentUC usecase.PaymentUseCa
 		defer r.Body.Close()
 
 		if secret == "" {
-			log.Printf("[webhook] cryptopay WARNING: webhook secret is empty, signature verification disabled")
-		} else {
-			sig := r.Header.Get("crypto-pay-api-signature")
-			if sig == "" {
-				sig = r.Header.Get("X-Api-Signature")
-			}
-			if !verifyCryptoPaySignature(body, sig, secret) {
-				log.Printf("[webhook] cryptopay invalid signature")
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
+			log.Printf("[webhook] cryptopay FATAL: webhook secret not configured — all requests rejected")
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		sig := r.Header.Get("crypto-pay-api-signature")
+		if sig == "" {
+			sig = r.Header.Get("X-Api-Signature")
+		}
+		if !verifyCryptoPaySignature(body, sig, secret) {
+			log.Printf("[webhook] cryptopay invalid signature")
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
 		}
 
 		// Crypto Pay присылает { "update_type": "invoice_paid", "payload": { "invoice_id", "status", ... } }
