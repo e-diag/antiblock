@@ -267,6 +267,9 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpricing", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPricing))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_usdt", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceUSDT))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_stars", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceStars))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpro_days", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetProDays))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpro_price_usdt", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetProPriceUSDT))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpro_price_stars", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetProPriceStars))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_text", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionText))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_photo", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionPhoto))
 

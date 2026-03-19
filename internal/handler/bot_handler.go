@@ -76,6 +76,56 @@ func formatProxyLine(p *domain.ProxyNode, withBullet bool) string {
 // buildManagerProxiesPage возвращает текст и клавиатуру для страницы списка прокси.
 // proxyType: "free", "premium", "pro", "all"
 func (h *BotHandler) buildManagerProxiesPage(proxyType string, page int) (string, *models.InlineKeyboardMarkup, error) {
+	if proxyType == "pro" {
+		if h.proUC == nil {
+			return "⚡ <b>Pro-прокси</b>\n\nPro не настроен.", &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{
+						{Text: markActive("🆓", false), CallbackData: "mgr_proxies_free_0"},
+						{Text: markActive("⚡ Pro", true), CallbackData: "mgr_proxies_pro_0"},
+						{Text: markActive("💎", false), CallbackData: "mgr_proxies_premium_0"},
+						{Text: markActive("Все", false), CallbackData: "mgr_proxies_all_0"},
+					},
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+				},
+			}, nil
+		}
+		groups, err := h.proUC.GetActiveGroups()
+		if err != nil {
+			return "", nil, err
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("⚡ <b>Pro-прокси</b> (активных групп: %d)\n\n", len(groups)))
+		if len(groups) == 0 {
+			sb.WriteString("Активных Pro-групп пока нет.\n")
+		} else {
+			for _, g := range groups {
+				sb.WriteString(fmt.Sprintf(
+					"• group <code>%d</code> (%s)\n  DD: <code>%s:%d</code>\n  EE: <code>%s:%d</code>\n",
+					g.ID,
+					g.Date.UTC().Format("2006-01-02"),
+					g.ServerIP, g.PortDD,
+					g.ServerIP, g.PortEE,
+				))
+			}
+		}
+		kb := &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{
+					{Text: markActive("🆓", false), CallbackData: "mgr_proxies_free_0"},
+					{Text: markActive("⚡ Pro", true), CallbackData: "mgr_proxies_pro_0"},
+					{Text: markActive("💎", false), CallbackData: "mgr_proxies_premium_0"},
+					{Text: markActive("Все", false), CallbackData: "mgr_proxies_all_0"},
+				},
+				{
+					{Text: "🔄 Обновить", CallbackData: "mgr_proxies_pro_0"},
+					{Text: "◀️ Назад", CallbackData: "mgr_back"},
+				},
+			},
+		}
+		return sb.String(), kb, nil
+	}
+
 	proxies, err := h.proxyUC.GetAll()
 	if err != nil {
 		return "", nil, err
@@ -1254,6 +1304,11 @@ func (h *BotHandler) buildManagerStatsMessage() (string, error) {
 		"🌐 <b>Прокси</b>\n🆓 Free: %d (активных: см. список)\n💎 Активных премиум: %d (Legacy: %d, New: %d)",
 		stats.FreeProxies, stats.PremiumProxies, legacyPremium, newPremium,
 	)
+	if h.proUC != nil {
+		if groups, err := h.proUC.GetActiveGroups(); err == nil {
+			msg += fmt.Sprintf("\n⚡ Активных Pro-групп: %d (прокси-эндпоинтов: %d)", len(groups), len(groups)*2)
+		}
+	}
 	if stats.UnreachablePremiumCount > 0 {
 		msg += fmt.Sprintf(" <b>(!%d не работают)</b>", stats.UnreachablePremiumCount)
 	}
@@ -1615,7 +1670,41 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		h.runMaintenanceResumeBroadcast(chatID, ids)
 
 	case "mgr_pro_groups":
-		send("⚡ <b>Pro-группы</b>\n\nФункция в разработке.")
+		if h.proUC == nil {
+			send("⚡ <b>Pro-группы</b>\n\nPro не настроен.")
+			return
+		}
+		groups, err := h.proUC.GetActiveGroups()
+		if err != nil {
+			send("❌ Не удалось загрузить Pro-группы.")
+			return
+		}
+		msg := "⚡ <b>Pro-группы</b>\n\n"
+		if len(groups) == 0 {
+			msg += "Активных групп пока нет."
+		} else {
+			msg += fmt.Sprintf("Активных групп: <b>%d</b>\n\n", len(groups))
+			for _, g := range groups {
+				msg += fmt.Sprintf(
+					"• ID <code>%d</code> | дата: <code>%s</code>\n  DD: <code>%s:%d</code>\n  EE: <code>%s:%d</code>\n  infra до: <code>%s</code>\n\n",
+					g.ID,
+					g.Date.UTC().Format("2006-01-02"),
+					g.ServerIP, g.PortDD,
+					g.ServerIP, g.PortEE,
+					g.InfrastructureExpiresAt.UTC().Format("2006-01-02 15:04"),
+				)
+			}
+		}
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      msg,
+			ParseMode: models.ParseModeHTML,
+			ReplyMarkup: &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+				},
+			},
+		})
 
 	case "mgr_instruction":
 		instrText := "(не задан)"
@@ -2938,6 +3027,84 @@ func (h *BotHandler) HandleSetPriceStars(ctx context.Context, b *bot.Bot, update
 		return
 	}
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена премиума: %d Stars (XTR).", n))
+}
+
+// HandleSetProDays обновляет количество дней Pro: /setpro_days <дней>
+func (h *BotHandler) HandleSetProDays(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.settingsRepo == nil {
+		h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) != 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /setpro_days <дней>\nНапример: /setpro_days 30")
+		return
+	}
+	days, err := strconv.Atoi(args[1])
+	if err != nil || days < 1 || days > 365 {
+		h.sendText(ctx, b, update, "❌ Неверное значение дней (1–365).")
+		return
+	}
+	if err := h.settingsRepo.Set("pro_days", fmt.Sprintf("%d", days)); err != nil {
+		h.sendText(ctx, b, update, "❌ Не удалось сохранить настройки.")
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Pro: %d дней за платёж.", days))
+}
+
+// HandleSetProPriceUSDT обновляет цену Pro в TON: /setpro_price_usdt <сумма>
+func (h *BotHandler) HandleSetProPriceUSDT(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.settingsRepo == nil {
+		h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) != 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /setpro_price_usdt <сумма>\nНапример: /setpro_price_usdt 3")
+		return
+	}
+	f, err := strconv.ParseFloat(strings.ReplaceAll(args[1], ",", "."), 64)
+	if err != nil || f < 0.01 {
+		h.sendText(ctx, b, update, "❌ Введите сумму не менее 0.01 TON.")
+		return
+	}
+	if err := h.settingsRepo.Set("pro_price_usdt", fmt.Sprintf("%.2f", f)); err != nil {
+		h.sendText(ctx, b, update, "❌ Не удалось сохранить.")
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена Pro: %.2f TON.", f))
+}
+
+// HandleSetProPriceStars обновляет цену Pro в Stars: /setpro_price_stars <звёзды>
+func (h *BotHandler) HandleSetProPriceStars(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.settingsRepo == nil {
+		h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) != 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /setpro_price_stars <звёзды>\nНапример: /setpro_price_stars 50")
+		return
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil || n < 1 {
+		h.sendText(ctx, b, update, "❌ Введите число звёзд не менее 1.")
+		return
+	}
+	if err := h.settingsRepo.Set("pro_price_stars", fmt.Sprintf("%d", n)); err != nil {
+		h.sendText(ctx, b, update, "❌ Не удалось сохранить.")
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена Pro: %d Stars.", n))
 }
 
 // HandleSendAd открывает меню объявлений (Добавить/Редактировать/Снять). Рассылка выполняется автоматически при сохранении объявления.
