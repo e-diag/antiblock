@@ -12,6 +12,10 @@ type InvoiceRepository interface {
 	Update(inv *domain.Invoice) error
 	// ListPendingOlderThan возвращает pending-инвойсы, созданные раньше cutoff (CreatedAt < cutoff).
 	ListPendingOlderThan(cutoff time.Time) ([]*domain.Invoice, error)
+	// ListPending возвращает все pending-инвойсы.
+	ListPending() ([]*domain.Invoice, error)
+	// DeleteByInvoiceID удаляет инвойс по invoice_id в платёжной системе.
+	DeleteByInvoiceID(invoiceID int64) error
 }
 
 type invoiceRepository struct {
@@ -51,4 +55,19 @@ func (r *invoiceRepository) ListPendingOlderThan(cutoff time.Time) ([]*domain.In
 		return nil, err
 	}
 	return invs, nil
+}
+
+func (r *invoiceRepository) ListPending() ([]*domain.Invoice, error) {
+	var invs []*domain.Invoice
+	if err := r.db.
+		Where("status = ?", "pending").
+		Order("created_at asc").
+		Find(&invs).Error; err != nil {
+		return nil, err
+	}
+	return invs, nil
+}
+
+func (r *invoiceRepository) DeleteByInvoiceID(invoiceID int64) error {
+	return r.db.Where("invoice_id = ?", invoiceID).Delete(&domain.Invoice{}).Error
 }

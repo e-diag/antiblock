@@ -198,6 +198,9 @@ net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.ip_nonlocal_bind = 0
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sysctl --system >/dev/null 2>&1 || true
 

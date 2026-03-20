@@ -192,12 +192,15 @@ func main() {
 
 	// Сразу после оплаты/активации Premium — короткое уведомление, пока идёт TimeWeb (долгий первый запуск).
 	usecase.SetOnPremiumProvisioningStarted(userUC, func(tgID int64) {
-		_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
+		msg, _ := b.SendMessage(context.Background(), &bot.SendMessageParams{
 			ChatID:    tgID,
 			ParseMode: models.ParseModeHTML,
 			Text: "⏳ <b>Настраиваем ваш Premium proxy</b>\n\n" +
 				"Это может занять несколько минут. Ключи dd + ee пришлю сюда, как только будет готово.",
 		})
+		if msg != nil {
+			botHandler.RegisterWaitingMessage(tgID, msg.ID)
+		}
 	})
 
 	// После успешного асинхронного создания премиум-прокси отправляем dd+ee (через общий helper в handler).
@@ -288,6 +291,8 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/subs", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSubs))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/grantpremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleGrantPremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePremium))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/grantpro", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleGrantPro))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepro", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePro))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/premium_info", bot.MatchTypePrefix, adminMiddleware(botHandler.HandlePremiumInfo))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/replace_ip", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleReplaceIP))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setup_ssh_key", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetupSSHKey))

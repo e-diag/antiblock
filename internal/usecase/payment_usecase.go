@@ -44,6 +44,9 @@ type InvoiceRepository interface {
 	Create(inv *domain.Invoice) error
 	GetByInvoiceID(invoiceID int64) (*domain.Invoice, error)
 	Update(inv *domain.Invoice) error
+	ListPendingOlderThan(cutoff time.Time) ([]*domain.Invoice, error)
+	ListPending() ([]*domain.Invoice, error)
+	DeleteByInvoiceID(invoiceID int64) error
 }
 
 // StarPaymentRepository — сохранение оплат Telegram Stars

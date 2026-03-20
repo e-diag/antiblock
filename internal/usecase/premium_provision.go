@@ -247,10 +247,40 @@ func (p *PremiumProvisioner) sshPreparePremiumHost(ctx context.Context, sshClien
 
 // sshStartPremiumContainers назначает FIP на NIC (ip + netplan), затем docker bind на этот адрес.
 func (p *PremiumProvisioner) sshStartPremiumContainers(ctx context.Context, sshClient *timeweb.SSHClient, tgID int64, bindIP, secretDD, secretEE string) error {
-	if err := sshClient.EnsureHostLocalFloatingIP(ctx, bindIP); err != nil {
-		return fmt.Errorf("floating ip on host: %w", err)
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := sshClient.EnsureHostLocalFloatingIP(ctx, bindIP); err != nil {
+			lastErr = fmt.Errorf("floating ip on host: %w", err)
+		} else if err := sshClient.StartPremiumContainers(ctx, tgID, bindIP, secretDD, secretEE); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+
+		if !isTransientSSHErr(lastErr) || attempt == maxAttempts {
+			return lastErr
+		}
+		log.Printf("[Premium] sshStartPremiumContainers tg_id=%d bind_ip=%s: transient SSH error (attempt %d/%d): %v",
+			tgID, bindIP, attempt, maxAttempts, lastErr)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("sshStartPremiumContainers canceled: %w", ctx.Err())
+		case <-time.After(5 * time.Second):
+		}
 	}
-	return sshClient.StartPremiumContainers(ctx, tgID, bindIP, secretDD, secretEE)
+	return lastErr
+}
+
+func isTransientSSHErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "ssh dial") ||
+		strings.Contains(s, "handshake failed") ||
+		strings.Contains(s, "connection reset by peer") ||
+		strings.Contains(s, "i/o timeout")
 }
 
 // ProvisionForUser создаёт floating IP и запускает контейнеры для нового Premium-юзера.

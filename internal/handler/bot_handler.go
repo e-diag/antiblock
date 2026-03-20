@@ -277,6 +277,8 @@ type BotHandler struct {
 	broadcastMediaGroup *BroadcastMediaGroupBuffer
 	adComposeState      *AdComposeState
 	msgState            *MessageState
+	waitingMsgMu        sync.Mutex
+	waitingMsgIDs       map[int64][]int
 	opAwaiting          map[int64]bool // админ вводит новый канал ОП
 	opMu                sync.Mutex
 	instrAwaitingText   map[int64]bool
@@ -338,6 +340,7 @@ func NewBotHandler(
 		broadcastMediaGroup: broadcastMediaGroup,
 		adComposeState:      adComposeState,
 		msgState:            NewMessageState(),
+		waitingMsgIDs:       make(map[int64][]int),
 		opAwaiting:          make(map[int64]bool),
 		instrAwaitingText:   make(map[int64]bool),
 		instrAwaitingPhoto:  make(map[int64]bool),
@@ -606,6 +609,30 @@ func (h *BotHandler) sendText(ctx context.Context, b *bot.Bot, update *models.Up
 	h.send(ctx, b, update, text, nil)
 }
 
+func (h *BotHandler) trackWaitingMessage(chatID int64, msgID int) {
+	if msgID == 0 {
+		return
+	}
+	h.waitingMsgMu.Lock()
+	defer h.waitingMsgMu.Unlock()
+	h.waitingMsgIDs[chatID] = append(h.waitingMsgIDs[chatID], msgID)
+}
+
+func (h *BotHandler) clearWaitingMessages(ctx context.Context, b *bot.Bot, chatID int64) {
+	h.waitingMsgMu.Lock()
+	ids := h.waitingMsgIDs[chatID]
+	delete(h.waitingMsgIDs, chatID)
+	h.waitingMsgMu.Unlock()
+	for _, id := range ids {
+		_, _ = b.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: id})
+	}
+}
+
+// RegisterWaitingMessage сохраняет сообщение ожидания, чтобы удалить его после успешной выдачи прокси.
+func (h *BotHandler) RegisterWaitingMessage(chatID int64, msgID int) {
+	h.trackWaitingMessage(chatID, msgID)
+}
+
 // mainMenuContent возвращает текст и клавиатуру главного меню пользователя (для /start и кнопки «Назад»).
 func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *models.InlineKeyboardMarkup) {
 	welcomeMsg = "👋 <b>Добро пожаловать в eDiag Proxy Bot!</b>\n\n"
@@ -636,11 +663,7 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	welcomeMsg += "Выберите действие:"
 
 	days := h.getPremiumDays()
-	usdt := h.getPremiumUSDT()
-	stars := h.getPremiumStars()
 	proDays := h.getProDays()
-	proUSDT := h.getProUSDT()
-	proStars := h.getProStars()
 
 	var rows [][]models.InlineKeyboardButton
 
@@ -661,25 +684,19 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	}
 
 	if !hasPro {
-		btnPro := fmt.Sprintf("⚡ Купить Pro на %d дн. (%.2f TON / %d ⭐)", proDays, proUSDT, proStars)
-		if len(btnPro) > 64 {
-			btnPro = fmt.Sprintf("⚡ Купить Pro на %d дн.", proDays)
-		}
+		btnPro := fmt.Sprintf("⚡ Купить Pro на %d дн.", proDays)
 		rows = append(rows, []models.InlineKeyboardButton{{Text: btnPro, CallbackData: "buy_pro"}})
 	}
 	if !hasPremium {
-		btnPremium := fmt.Sprintf("💎 Купить Premium на %d дн. (%.2f TON / %d ⭐)", days, usdt, stars)
-		if len(btnPremium) > 64 {
-			btnPremium = fmt.Sprintf("💎 Купить Premium на %d дн.", days)
-		}
+		btnPremium := fmt.Sprintf("💎 Купить Premium на %d дн.", days)
 		rows = append(rows, []models.InlineKeyboardButton{{Text: btnPremium, CallbackData: "buy_premium"}})
 	}
 
 	if hasPro {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "⚡ Получить Pro proxy (dd + ee)", CallbackData: "get_pro_proxy"}})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "⚡ Получить Pro proxy", CallbackData: "get_pro_proxy"}})
 	}
 	if hasPremium {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy (dd + ee)", CallbackData: "get_premium_proxy"}})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
 	}
 
 	if hasPro {
@@ -910,6 +927,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 	if proxy.Status != domain.ProxyStatusActive {
 		return
 	}
+	h.clearWaitingMessages(ctx, b, chatID)
 
 	// Для legacy-юзера TimewebFloatingIPID = "" (и PremiumServerID обычно nil).
 	isTimeweb := proxy.TimewebFloatingIPID != ""
@@ -1273,12 +1291,16 @@ func (h *BotHandler) managerPanelContent() (msg string, kb *models.InlineKeyboar
 				{Text: "📖 Инструкция", CallbackData: "mgr_instruction"},
 			},
 			{
-				{Text: "💎 Подписки", CallbackData: "mgr_subs"},
-				{Text: "⚙️ Настройки подписки", CallbackData: "mgr_pricing"},
+				{Text: "💎 Premium", CallbackData: "mgr_subs"},
+				{Text: "⚙️ Цена Premium", CallbackData: "mgr_pricing"},
 			},
 			{
 				{Text: "✅ Выдать премиум", CallbackData: "mgr_grant"},
 				{Text: "❌ Отозвать премиум", CallbackData: "mgr_revoke"},
+			},
+			{
+				{Text: "✅ Выдать Pro", CallbackData: "mgr_grant_pro"},
+				{Text: "❌ Отозвать Pro", CallbackData: "mgr_revoke_pro"},
 			},
 		},
 	}
@@ -1628,6 +1650,10 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 
 	case "mgr_revoke":
 		send("❌ <b>Отозвать премиум</b>\n\nОтправьте:\n<code>/revokepremium &lt;tg_id&gt;</code>")
+	case "mgr_grant_pro":
+		send("✅ <b>Выдать Pro</b>\n\nОтправьте:\n<code>/grantpro &lt;tg_id&gt; &lt;дней&gt;</code>")
+	case "mgr_revoke_pro":
+		send("❌ <b>Отозвать Pro</b>\n\nОтправьте:\n<code>/revokepro &lt;tg_id&gt;</code>")
 
 	case "mgr_forcedsub":
 		channels := h.getForcedSubChannels()
@@ -3025,6 +3051,71 @@ func (h *BotHandler) HandleRevokePremium(ctx context.Context, b *bot.Bot, update
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум отозван у %d", tgID))
 }
 
+// HandleGrantPro выдать Pro вручную (админ)
+func (h *BotHandler) HandleGrantPro(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.proUC == nil || h.userRepo == nil {
+		h.sendText(ctx, b, update, "❌ Pro не настроен.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) < 3 {
+		h.sendText(ctx, b, update, "❌ Использование: /grantpro <tg_id> <дней>")
+		return
+	}
+	tgID, err1 := strconv.ParseInt(args[1], 10, 64)
+	days, err2 := strconv.Atoi(args[2])
+	if err1 != nil || err2 != nil || days < 1 {
+		h.sendText(ctx, b, update, "❌ Неверные аргументы")
+		return
+	}
+	user, err := h.userRepo.GetByTGID(tgID)
+	if err != nil || user == nil {
+		h.sendText(ctx, b, update, "❌ Пользователь не найден")
+		return
+	}
+	cycle := h.getProDays()
+	group, _, err := h.proUC.ActivateProSubscription(user, days, h.proServerIP, h.proDockerMgr, cycle)
+	if err != nil {
+		h.sendText(ctx, b, update, "❌ "+err.Error())
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Pro выдан пользователю %d на %d дн. (группа %d)", tgID, days, group.ID))
+}
+
+// HandleRevokePro отозвать Pro вручную (админ)
+func (h *BotHandler) HandleRevokePro(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.proUC == nil || h.userRepo == nil {
+		h.sendText(ctx, b, update, "❌ Pro не настроен.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) < 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /revokepro <tg_id>")
+		return
+	}
+	tgID, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		h.sendText(ctx, b, update, "❌ Неверный tg_id")
+		return
+	}
+	user, err := h.userRepo.GetByTGID(tgID)
+	if err != nil || user == nil {
+		h.sendText(ctx, b, update, "❌ Пользователь не найден")
+		return
+	}
+	if err := h.proUC.RevokeProSubscription(user); err != nil {
+		h.sendText(ctx, b, update, "❌ "+err.Error())
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Pro отозван у %d", tgID))
+}
+
 // HandleSetPricing обновляет количество дней премиума: /setpricing <дней>
 func (h *BotHandler) HandleSetPricing(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
@@ -3638,14 +3729,15 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		user, errMy := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
 		if errMy != nil || user == nil || h.userProxyRepo == nil {
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
+			h.sendOrEdit(ctx, b, chatID, "❌ Ошибка. Попробуйте позже.", nil)
 			return
 		}
 		list, errList := h.userProxyRepo.ListByUserID(user.ID)
 		if errList != nil || len(list) == 0 {
-			b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: chatID, Text: "У вас пока нет сохранённых прокси. Получите прокси через «Получить proxy».", ParseMode: models.ParseModeHTML,
-			})
+			kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "◀️ Назад", CallbackData: "back_to_main"}},
+			}}
+			h.sendOrEdit(ctx, b, chatID, "У вас пока нет сохранённых прокси. Получите прокси через «Получить proxy».", kb)
 			return
 		}
 		text := "📋 <b>Ваши прокси</b> (нажмите для подключения):"
@@ -3666,10 +3758,8 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			}
 			rows = append(rows, []models.InlineKeyboardButton{{Text: label, CallbackData: "my_proxy_" + strconv.FormatUint(uint64(up.ID), 10)}})
 		}
-		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML,
-			ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: rows},
-		})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "back_to_main"}})
+		h.sendOrEdit(ctx, b, chatID, text, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 	case "get_premium_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 			CallbackQueryID: cqID,
@@ -3680,12 +3770,14 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Доступно только для премиум-пользователей.", ParseMode: models.ParseModeHTML})
 			return
 		}
-		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+		if msg, errWait := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
 			ParseMode: models.ParseModeHTML,
 			Text: "⏳ <b>Подождите</b>\n\nНастраиваем персональный Premium proxy. " +
 				"Первый запуск часто занимает <b>1–3 минуты</b> — ключи придут в этот чат.",
-		})
+		}); errWait == nil && msg != nil {
+			h.trackWaitingMessage(chatID, msg.ID)
+		}
 		proxy, err := h.userUC.RetryPremiumProxyCreation(chatID)
 		if err != nil {
 			log.Printf("[Premium] get_premium_proxy tg_id=%d user_id=%d err=%v", chatID, user.ID, err)
@@ -3851,7 +3943,9 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 						kb := &models.InlineKeyboardMarkup{
 							InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться", URL: proxyURL}}},
 						}
-						b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
+						rows := kb.InlineKeyboard
+						rows = append(rows, []models.InlineKeyboardButton{{Text: "📋 Мои прокси", CallbackData: "my_proxies"}, {Text: "◀️ Назад", CallbackData: "back_to_main"}})
+						h.sendOrEdit(ctx, b, chatID, msg, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 						return
 					}
 				}

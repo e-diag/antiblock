@@ -8,13 +8,16 @@ import (
 
 	"github.com/go-telegram/bot"
 
+	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/repository"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
 
-// InvoiceCleanupWorker отменяет зависшие pending-инвойсы (xRocket) и чистит сообщения с оплатой.
-// Логика: раз в interval находим invoices со статусом pending и CreatedAt < now-1h, отменяем в xRocket и ставим status=cancelled в БД.
+// InvoiceCleanupWorker удаляет pending-инвойсы (xRocket) и чистит сообщения с оплатой.
+// Логика:
+// - при старте: удаляет все накопленные pending из БД (с попыткой cancel в xRocket),
+// - далее по interval: удаляет pending старше 1 часа.
 type InvoiceCleanupWorker struct {
 	bot        *bot.Bot
 	invoiceRepo repository.InvoiceRepository
@@ -48,6 +51,7 @@ func (w *InvoiceCleanupWorker) Start() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	w.cleanupAllPending()
 	w.cleanup()
 	for {
 		select {
@@ -66,6 +70,17 @@ func (w *InvoiceCleanupWorker) Stop() {
 
 const invoicePendingMaxAge = 1 * time.Hour
 
+func (w *InvoiceCleanupWorker) cleanupAllPending() {
+	if w.invoiceRepo == nil || w.paymentUC == nil {
+		return
+	}
+	invs, err := w.invoiceRepo.ListPending()
+	if err != nil || len(invs) == 0 {
+		return
+	}
+	w.cleanupInvoices(invs)
+}
+
 func (w *InvoiceCleanupWorker) cleanup() {
 	if w.invoiceRepo == nil || w.paymentUC == nil {
 		return
@@ -76,14 +91,17 @@ func (w *InvoiceCleanupWorker) cleanup() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	w.cleanupInvoices(invs)
+}
 
+func (w *InvoiceCleanupWorker) cleanupInvoices(invs []*domain.Invoice) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
 	for _, inv := range invs {
 		if inv == nil {
 			continue
 		}
-		// 1) Отменяем в платёжке (если поддерживается) + ставим cancelled в БД (внутри CancelInvoice).
+		// 1) Отменяем в платёжке (если поддерживается).
 		if err := w.paymentUC.CancelInvoice(inv.InvoiceID); err != nil {
 			log.Printf("invoice_cleanup: cancel invoice %d error: %v", inv.InvoiceID, err)
 		}
@@ -94,6 +112,10 @@ func (w *InvoiceCleanupWorker) cleanup() {
 				ChatID:    inv.ChatID,
 				MessageID: int(inv.MessageID),
 			})
+		}
+		// 3) Удаляем pending-инвойс из БД (оставляем только оплаченные).
+		if err := w.invoiceRepo.DeleteByInvoiceID(inv.InvoiceID); err != nil {
+			log.Printf("invoice_cleanup: delete invoice %d error: %v", inv.InvoiceID, err)
 		}
 
 		time.Sleep(50 * time.Millisecond)

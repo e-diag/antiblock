@@ -13,6 +13,7 @@ import (
 
 type ProUseCase interface {
 	ActivateProSubscription(user *domain.User, days int, serverIP string, dockerMgr *docker.Manager, groupCycleDays int) (*domain.ProGroup, bool, error)
+	RevokeProSubscription(user *domain.User) error
 	GetActiveSubscription(userID uint) (*domain.ProSubscription, error)
 	CleanupExpiredGroups(dockerMgr *docker.Manager, cycleDays int) error
 	GetActiveGroups() ([]*domain.ProGroup, error)
@@ -45,6 +46,16 @@ func NewProUseCase(
 
 func (uc *proUseCase) SetOnProRotated(fn func(tgID int64, group *domain.ProGroup)) {
 	uc.onRotated = fn
+}
+
+func (uc *proUseCase) RevokeProSubscription(user *domain.User) error {
+	if user == nil {
+		return fmt.Errorf("user is nil")
+	}
+	if err := uc.subRepo.ExpireByUserID(user.ID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func utcDayStart(t time.Time) time.Time {
