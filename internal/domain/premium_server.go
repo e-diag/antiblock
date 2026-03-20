@@ -31,6 +31,8 @@ type PremiumServer struct {
 	DockerPort int `gorm:"default:2376" json:"docker_port"`
 	// SSHHostKey — base64 публичного ключа SSH-сервера (для верификации host key).
 	SSHHostKey string `gorm:"type:text" json:"ssh_host_key,omitempty"`
+	// SSHPassword — root-пароль, полученный из Timeweb API (используется для SSH password auth).
+	SSHPassword string `gorm:"type:text" json:"-"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

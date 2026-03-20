@@ -74,6 +74,9 @@ func (p *PremiumProvisioner) IsConfigured() bool {
 // Для нового сервера host key будет сохранён при первом успешном подключении.
 func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb.SSHClient {
 	client := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshKeyPath)
+	if strings.TrimSpace(server.SSHPassword) != "" {
+		client = client.WithPassword(server.SSHPassword)
+	}
 	if strings.TrimSpace(server.SSHHostKey) != "" {
 		return client.WithKnownHostKey(server.SSHHostKey, nil)
 	}
@@ -448,9 +451,7 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	} else if id := strings.TrimSpace(req.OSImageID); id != "" {
 		createReq.ImageID = id
 	}
-	if p.sshKeyID > 0 {
-		createReq.SSHKeysIDs = []int{p.sshKeyID}
-	}
+	// Переходим на password auth: не передаём SSHKeysIDs в create-server.
 
 	var twID int
 	if req.TimewebServerID > 0 {
@@ -512,10 +513,11 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	}
 	if premiumServer == nil {
 		premiumServer = &domain.PremiumServer{
-			Name:      req.Name,
-			IP:        mainIP,
-			TimewebID: twID,
-			IsActive:  true,
+			Name:        req.Name,
+			IP:          mainIP,
+			TimewebID:   twID,
+			IsActive:    true,
+			SSHPassword: strings.TrimSpace(srv.RootPass),
 		}
 		if err := p.serverRepo.Create(premiumServer); err != nil {
 			return nil, fmt.Errorf("save premium server: %w", err)
@@ -524,8 +526,11 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	} else {
 		if mainIP != "" && premiumServer.IP != mainIP {
 			premiumServer.IP = mainIP
-			_ = p.serverRepo.Update(premiumServer)
 		}
+		if pass := strings.TrimSpace(srv.RootPass); pass != "" && premiumServer.SSHPassword == "" {
+			premiumServer.SSHPassword = pass
+		}
+		_ = p.serverRepo.Update(premiumServer)
 		log.Printf("[Premium] CreateVPSFromRequest: reuse premium_servers id=%d ip=%s", premiumServer.ID, premiumServer.IP)
 	}
 

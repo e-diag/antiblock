@@ -199,6 +199,7 @@ type Server struct {
 	ID               int             `json:"id"`
 	Name             string          `json:"name,omitempty"`
 	Status           string          `json:"status,omitempty"`
+	RootPass         string          `json:"root_pass,omitempty"`
 	AvailabilityZone string          `json:"availability_zone,omitempty"`
 	Networks         []ServerNetwork `json:"networks,omitempty"`
 }

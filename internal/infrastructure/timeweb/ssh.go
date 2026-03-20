@@ -19,12 +19,18 @@ type SSHClient struct {
 	port          int
 	user          string
 	keyPath       string
+	password      string
 	knownHostKey  string
 	onHostKeySeen func(hostKey string)
 }
 
 func NewSSHClient(host string, port int, user, keyPath string) *SSHClient {
 	return &SSHClient{host: host, port: port, user: user, keyPath: keyPath}
+}
+
+func (s *SSHClient) WithPassword(password string) *SSHClient {
+	s.password = strings.TrimSpace(password)
+	return s
 }
 
 // WithKnownHostKey задаёт известный host key для верификации.
@@ -64,18 +70,34 @@ func (s *SSHClient) buildHostKeyCallback() ssh.HostKeyCallback {
 }
 
 func (s *SSHClient) newConfig() (*ssh.ClientConfig, error) {
-	key, err := os.ReadFile(s.keyPath)
-	if err != nil {
-		return nil, fmt.Errorf("read ssh key %s: %w", s.keyPath, err)
+	auth := make([]ssh.AuthMethod, 0, 2)
+	if s.password != "" {
+		auth = append(auth, ssh.Password(s.password))
 	}
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return nil, fmt.Errorf("parse ssh key: %w", err)
+	if strings.TrimSpace(s.keyPath) != "" {
+		key, err := os.ReadFile(s.keyPath)
+		if err != nil {
+			if s.password == "" {
+				return nil, fmt.Errorf("read ssh key %s: %w", s.keyPath, err)
+			}
+		} else {
+			signer, err := ssh.ParsePrivateKey(key)
+			if err != nil {
+				if s.password == "" {
+					return nil, fmt.Errorf("parse ssh key: %w", err)
+				}
+			} else {
+				auth = append(auth, ssh.PublicKeys(signer))
+			}
+		}
+	}
+	if len(auth) == 0 {
+		return nil, fmt.Errorf("ssh auth is not configured: empty password and key")
 	}
 
 	return &ssh.ClientConfig{
 		User:            s.user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            auth,
 		HostKeyCallback: s.buildHostKeyCallback(),
 		Timeout:         30 * time.Second,
 	}, nil
