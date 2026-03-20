@@ -34,11 +34,12 @@ type ProDockerConfig struct {
 
 // TimewebConfig — настройки TimeWeb Cloud API для Premium provisioning.
 type TimewebConfig struct {
-	APIToken         string `yaml:"api_token"`
-	AvailabilityZone string `yaml:"availability_zone"`
-	SSHUser          string `yaml:"ssh_user"`
-	SSHKeyID         int    `yaml:"ssh_key_id"`
-	SSHKeyPath       string `yaml:"ssh_key_path"`
+	APIToken          string `yaml:"api_token"`
+	AvailabilityZone  string `yaml:"availability_zone"`
+	SSHUser           string `yaml:"ssh_user"`
+	SSHKeyID          int    `yaml:"ssh_key_id"`
+	SSHKeyPath        string `yaml:"ssh_key_path"`
+	PremiumServerOSID int    `yaml:"premium_server_os_id"` // 0 = авто Ubuntu 24.04 из /os/servers
 }
 
 type AppConfig struct {
@@ -201,6 +202,13 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Timeweb.SSHKeyPath == "" {
 		cfg.Timeweb.SSHKeyPath = getEnv("TIMEWEB_SSH_KEY_PATH", "/antiblock/premium-keys/premium_bot_key")
+	}
+	if cfg.Timeweb.PremiumServerOSID == 0 {
+		if v := getEnv("TIMEWEB_PREMIUM_OS_ID", ""); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				cfg.Timeweb.PremiumServerOSID = n
+			}
+		}
 	}
 	cfg.Telegram.AdminIDs = mergeAdminIDs(cfg.Telegram.AdminIDs)
 

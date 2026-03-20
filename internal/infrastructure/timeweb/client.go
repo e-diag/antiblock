@@ -377,6 +377,51 @@ func (c *Client) GetServerOSList(ctx context.Context) ([]ServerOS, error) {
 	return parseServersOSListBody(respBody)
 }
 
+// ResolveUbuntu2404OSID возвращает os_id для Ubuntu 24.04 LTS из GET /os/servers.
+// Сопоставление: family/name содержит «ubuntu», version 24.04 или codename noble.
+func (c *Client) ResolveUbuntu2404OSID(ctx context.Context) (int, error) {
+	list, err := c.GetServerOSList(ctx)
+	if err != nil {
+		return 0, err
+	}
+	isUbuntu := func(o ServerOS) bool {
+		n := strings.ToLower(strings.TrimSpace(o.Name))
+		f := strings.ToLower(strings.TrimSpace(o.Family))
+		return strings.Contains(n, "ubuntu") || f == "ubuntu" || strings.Contains(f, "ubuntu")
+	}
+	is2404 := func(o ServerOS) bool {
+		v := strings.TrimSpace(o.Version)
+		cod := strings.ToLower(strings.TrimSpace(o.VersionCodename))
+		if cod == "noble" {
+			return true
+		}
+		if v == "24.04" || strings.HasPrefix(v, "24.04 ") {
+			return true
+		}
+		return strings.Contains(v, "24.04")
+	}
+	var nobleID, otherID int
+	for _, o := range list {
+		if !isUbuntu(o) || !is2404(o) {
+			continue
+		}
+		cod := strings.ToLower(strings.TrimSpace(o.VersionCodename))
+		if cod == "noble" && nobleID == 0 {
+			nobleID = o.ID
+		}
+		if otherID == 0 {
+			otherID = o.ID
+		}
+	}
+	if nobleID != 0 {
+		return nobleID, nil
+	}
+	if otherID != 0 {
+		return otherID, nil
+	}
+	return 0, fmt.Errorf("timeweb: ubuntu 24.04 not found in /os/servers response")
+}
+
 // Configuration соответствует схеме `servers-preset`.
 type Configuration struct {
 	ID               int     `json:"id"`

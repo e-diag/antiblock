@@ -35,7 +35,6 @@ const (
 	VPSSetupIdle VPSSetupStep = iota
 	VPSSetupName
 	VPSSetupRegion
-	VPSSetupOS
 	VPSSetupConfig
 	VPSSetupConfirm
 )
@@ -268,6 +267,7 @@ type BotHandler struct {
 	vpsReqRepo         repository.VPSProvisionRequestRepository
 	premiumServerRepo  repository.PremiumServerRepository
 	sshKeyPath         string
+	premiumServerOSID  int // 0 = авто Ubuntu 24.04 из TimeWeb /os/servers
 
 	proDockerMgr *docker.Manager
 	proServerIP  string
@@ -315,6 +315,7 @@ func NewBotHandler(
 	vpsReqRepo repository.VPSProvisionRequestRepository,
 	premiumServerRepo repository.PremiumServerRepository,
 	sshKeyPath string,
+	premiumServerOSID int,
 	adminIDs []int64,
 ) *BotHandler {
 	return &BotHandler{
@@ -345,6 +346,7 @@ func NewBotHandler(
 		vpsReqRepo:          vpsReqRepo,
 		premiumServerRepo:   premiumServerRepo,
 		sshKeyPath:          sshKeyPath,
+		premiumServerOSID:   premiumServerOSID,
 		vpsSetupSteps:       make(map[int64]*VPSSetupData),
 		adminIDs:            adminIDs,
 		broadcastSem:        make(chan struct{}, 1),
@@ -1759,7 +1761,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		send("📢 Введите <b>@username</b> канала или ссылку (например <code>https://t.me/channel</code>).\nОтмена: /cancel")
 
 	default:
-		// Диалог создания Premium VPS (TimeWeb): mgr_vps_create_<reqID>, затем region/os/config и подтверждение.
+		// Диалог создания Premium VPS (TimeWeb): mgr_vps_create_<reqID>, затем region → конфиг (ОС всегда Ubuntu 24.04).
 		if strings.HasPrefix(data, "mgr_vps_create_") {
 			reqStr := strings.TrimPrefix(data, "mgr_vps_create_")
 			reqID, err := strconv.ParseUint(reqStr, 10, 32)
@@ -1785,85 +1787,49 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 				return
 			}
 			st.Region = region
-			st.Step = VPSSetupOS
 			h.vpsSetupMu.Unlock()
 
 			if h.twClient == nil {
 				send("❌ TimeWeb не настроен.")
 				return
 			}
-			// Список ОС для VPS: GET /api/v1/os/servers (см. Timeweb API getOsList), не GET /images.
-			serversOS, err := h.twClient.GetServerOSList(ctx)
-			if err != nil {
-				send("❌ Ошибка получения списка ОС (GET /api/v1/os/servers).")
-				return
-			}
-			if len(serversOS) == 0 {
-				send("❌ TimeWeb не вернул доступных ОС для серверов.")
-				return
-			}
-			sort.Slice(serversOS, func(i, j int) bool {
-				a, b := serversOS[i], serversOS[j]
-				if a.Name != b.Name {
-					return a.Name < b.Name
+			osID := h.premiumServerOSID
+			if osID <= 0 {
+				var err error
+				osID, err = h.twClient.ResolveUbuntu2404OSID(ctx)
+				if err != nil {
+					send("❌ Не удалось определить Ubuntu 24.04 в TimeWeb (<code>/api/v1/os/servers</code>). Задайте <code>TIMEWEB_PREMIUM_OS_ID</code> в конфиге.")
+					return
 				}
-				return a.Version < b.Version
-			})
-			if len(serversOS) > 10 {
-				serversOS = serversOS[:10]
-			}
-			kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
-			for i, o := range serversOS {
-				label := strings.TrimSpace(o.Name + " " + o.Version)
-				if o.VersionCodename != "" {
-					label = strings.TrimSpace(label + " (" + o.VersionCodename + ")")
-				}
-				if label == "" {
-					label = fmt.Sprintf("os_id=%d", o.ID)
-				}
-				if len(label) > 28 {
-					label = label[:28] + "..."
-				}
-				btn := models.InlineKeyboardButton{Text: label, CallbackData: fmt.Sprintf("mgr_vps_os_%d", o.ID)}
-				rowIdx := i / 2
-				if rowIdx >= len(kb.InlineKeyboard) {
-					kb.InlineKeyboard = append(kb.InlineKeyboard, []models.InlineKeyboardButton{btn})
-				} else {
-					kb.InlineKeyboard[rowIdx] = append(kb.InlineKeyboard[rowIdx], btn)
-				}
-			}
-			send(fmt.Sprintf("🐧 Регион: <code>%s</code>\n\nВыберите ОС (данные из <code>/api/v1/os/servers</code>):", region))
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: " ", ReplyMarkup: kb})
-			return
-		}
-
-		if strings.HasPrefix(data, "mgr_vps_os_") {
-			osIDStr := strings.TrimPrefix(data, "mgr_vps_os_")
-			if _, err := strconv.Atoi(strings.TrimSpace(osIDStr)); err != nil {
-				send("❌ Некорректный ID ОС.")
-				return
 			}
 			h.vpsSetupMu.Lock()
-			st := h.vpsSetupSteps[chatID]
-			if st == nil || st.Step != VPSSetupOS {
+			st = h.vpsSetupSteps[chatID]
+			if st == nil || st.Step != VPSSetupRegion {
 				h.vpsSetupMu.Unlock()
-				send("❌ Сначала выберите регион и ОС.")
 				return
 			}
-			st.OSImageID = strings.TrimSpace(osIDStr)
+			st.OSImageID = strconv.Itoa(osID)
 			st.Step = VPSSetupConfig
 			h.vpsSetupMu.Unlock()
 
-			if h.twClient == nil {
-				send("❌ TimeWeb не настроен.")
-				return
-			}
 			configs, err := h.twClient.GetConfigurations(ctx)
 			if err != nil {
+				h.vpsSetupMu.Lock()
+				if st2 := h.vpsSetupSteps[chatID]; st2 != nil {
+					st2.Step = VPSSetupRegion
+					st2.OSImageID = ""
+				}
+				h.vpsSetupMu.Unlock()
 				send("❌ Ошибка получения configurations.")
 				return
 			}
 			if len(configs) == 0 {
+				h.vpsSetupMu.Lock()
+				if st2 := h.vpsSetupSteps[chatID]; st2 != nil {
+					st2.Step = VPSSetupRegion
+					st2.OSImageID = ""
+				}
+				h.vpsSetupMu.Unlock()
 				send("❌ Нет доступных configurations.")
 				return
 			}
@@ -1881,8 +1847,16 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 					kb.InlineKeyboard[rowIdx] = append(kb.InlineKeyboard[rowIdx], btn)
 				}
 			}
-			send("⚙️ Выберите конфигурацию:")
+			send(fmt.Sprintf(
+				"🐧 Регион: <code>%s</code>\nОС: <b>Ubuntu 24.04</b> (os_id=<code>%d</code>)\n\n⚙️ Выберите конфигурацию:",
+				region, osID,
+			))
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: " ", ReplyMarkup: kb})
+			return
+		}
+
+		if strings.HasPrefix(data, "mgr_vps_os_") {
+			send("ℹ️ Выбор ОС отключён: для Premium VPS всегда используется <b>Ubuntu 24.04</b>. Начните создание VPS заново из заявки.")
 			return
 		}
 
@@ -1897,7 +1871,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			st := h.vpsSetupSteps[chatID]
 			if st == nil || st.Step != VPSSetupConfig {
 				h.vpsSetupMu.Unlock()
-				send("❌ Сначала выберите ОС.")
+				send("❌ Сначала выберите регион и конфигурацию.")
 				return
 			}
 			st.ConfigID = cfgID
@@ -1908,7 +1882,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			h.vpsSetupMu.Unlock()
 
 			summary := fmt.Sprintf(
-				"🧾 <b>Подтверждение создания VPS</b>\n\nИмя: <code>%s</code>\nРегион: <code>%s</code>\nОС (os_id): <code>%s</code>\nConfigID: <code>%d</code>\n\nПодтвердите:",
+				"🧾 <b>Подтверждение создания VPS</b>\n\nИмя: <code>%s</code>\nРегион: <code>%s</code>\nОС: <b>Ubuntu 24.04</b> (os_id=<code>%s</code>)\nConfigID: <code>%d</code>\n\nПодтвердите:",
 				name, region, osImgID, cfgID,
 			)
 			kb := &models.InlineKeyboardMarkup{

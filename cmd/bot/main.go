@@ -157,6 +157,7 @@ func main() {
 		vpsReqRepo,
 		premiumServerRepo,
 		cfg.Timeweb.SSHKeyPath,
+		cfg.Timeweb.PremiumServerOSID,
 		cfg.Telegram.GetAdminIDs(),
 	)
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
