@@ -231,8 +231,8 @@ func main() {
 			errors.Is(err, usecase.ErrProvisionerNotConfigured):
 			msg = "⏳ Ваш персональный прокси будет создан в ближайшее время — мы уведомим вас, как только он будет готов."
 		case errors.Is(err, usecase.ErrFloatingIPNoBalanceForMonth):
-			msg = "⏳ Premium временно недоступен: на стороне TimeWeb недостаточно средств для создания floating IP.\n\n" +
-				"Это нужно решить администратору. Через некоторое время вы сможете запросить Premium proxy повторно."
+			// Важно: пользователю не показываем внутренние причины/детали (например требуемые балансы).
+			msg = "⚠️ Premium временно недоступен. Попробуйте получить Premium proxy позже — как только будет возможность, мы сразу всё настроим."
 			for _, adminID := range cfg.Telegram.GetAdminIDs() {
 				_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
 					ChatID: adminID,
