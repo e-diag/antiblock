@@ -18,6 +18,7 @@ type PremiumServerRepository interface {
 	Update(s *domain.PremiumServer) error
 	Delete(id uint) error
 	UpdateSSHHostKey(id uint, hostKey string) error
+	UpdateSSHPassword(id uint, password string) error
 	// IncrementFIPCount атомарно увеличивает счётчик FIP за текущие сутки UTC; при смене даты сбрасывает в 1.
 	IncrementFIPCount(serverID uint) error
 }
@@ -102,6 +103,12 @@ func (r *premiumServerRepository) UpdateSSHHostKey(id uint, hostKey string) erro
 	return r.db.Model(&domain.PremiumServer{}).
 		Where("id = ?", id).
 		Update("ssh_host_key", hostKey).Error
+}
+
+func (r *premiumServerRepository) UpdateSSHPassword(id uint, password string) error {
+	return r.db.Model(&domain.PremiumServer{}).
+		Where("id = ?", id).
+		Update("ssh_password", password).Error
 }
 
 func (r *premiumServerRepository) IncrementFIPCount(serverID uint) error {

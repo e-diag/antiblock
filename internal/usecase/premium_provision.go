@@ -72,8 +72,13 @@ func (p *PremiumProvisioner) IsConfigured() bool {
 
 // newSSHClient создаёт SSH клиент с верификацией host key.
 // Для нового сервера host key будет сохранён при первом успешном подключении.
+// При непустом пароле файл SSH-ключа не используется (не требуется mount premium-keys в Docker).
 func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb.SSHClient {
-	client := timeweb.NewSSHClient(server.IP, 22, p.sshUser, p.sshKeyPath)
+	keyPath := p.sshKeyPath
+	if strings.TrimSpace(server.SSHPassword) != "" {
+		keyPath = ""
+	}
+	client := timeweb.NewSSHClient(server.IP, 22, p.sshUser, keyPath)
 	if strings.TrimSpace(server.SSHPassword) != "" {
 		client = client.WithPassword(server.SSHPassword)
 	}
@@ -89,6 +94,77 @@ func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb
 			log.Printf("[SSH] host key saved for server %s (id=%d)", serverIP, serverID)
 		}
 	})
+}
+
+// ensureSSHRootPassword подгружает root_pass из Timeweb GET /servers/{id}, при пустом — reset_password и опрос API.
+// Обновляет server.SSHPassword в памяти и колонку ssh_password в БД.
+func (p *PremiumProvisioner) ensureSSHRootPassword(ctx context.Context, server *domain.PremiumServer) error {
+	if server == nil {
+		return errors.New("ensureSSHRootPassword: server is nil")
+	}
+	if strings.TrimSpace(server.SSHPassword) != "" {
+		return nil
+	}
+	if server.TimewebID <= 0 {
+		return fmt.Errorf("premium server id=%d: пустой ssh_password и timeweb_id=0 — задайте пароль в БД или привяжите VPS к Timeweb", server.ID)
+	}
+	if p.twClient == nil || !p.twClient.IsConfigured() {
+		return fmt.Errorf("premium server id=%d: пустой ssh_password, Timeweb API не настроен", server.ID)
+	}
+
+	savePass := func(pass string) error {
+		pass = strings.TrimSpace(pass)
+		if pass == "" {
+			return nil
+		}
+		server.SSHPassword = pass
+		if err := p.serverRepo.UpdateSSHPassword(server.ID, pass); err != nil {
+			return fmt.Errorf("save ssh_password: %w", err)
+		}
+		log.Printf("[Premium] server id=%d timeweb_id=%d: root password получен из API и сохранён в БД", server.ID, server.TimewebID)
+		return nil
+	}
+
+	srv, err := p.twClient.GetServer(ctx, server.TimewebID)
+	if err != nil {
+		return fmt.Errorf("get server (root_pass): %w", err)
+	}
+	if err := savePass(srv.RootPass); err != nil {
+		return err
+	}
+	if strings.TrimSpace(server.SSHPassword) != "" {
+		return nil
+	}
+
+	log.Printf("[Premium] server id=%d timeweb_id=%d: root_pass пуст в GET — вызываем reset_password", server.ID, server.TimewebID)
+	if err := p.twClient.PerformServerAction(ctx, server.TimewebID, "reset_password"); err != nil {
+		return fmt.Errorf("timeweb reset_password: %w", err)
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-pollCtx.Done():
+				return fmt.Errorf("таймаут ожидания root_pass после reset_password (timeweb_id=%d): %w", server.TimewebID, pollCtx.Err())
+			case <-time.After(5 * time.Second):
+			}
+		}
+		srv, err := p.twClient.GetServer(pollCtx, server.TimewebID)
+		if err != nil {
+			if errors.Is(err, timeweb.ErrServerNotFound) {
+				return err
+			}
+			continue
+		}
+		if err := savePass(srv.RootPass); err != nil {
+			return err
+		}
+		if strings.TrimSpace(server.SSHPassword) != "" {
+			return nil
+		}
+	}
 }
 
 func (p *PremiumProvisioner) logPremiumPool(ctxTag string) {
@@ -166,6 +242,11 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 		return nil, err
 	}
 	log.Printf("[Premium] ProvisionForUser tg_id=%d: selected server_id=%d ip=%s timeweb_id=%d", tgID, server.ID, server.IP, server.TimewebID)
+
+	if err := p.ensureSSHRootPassword(ctx, server); err != nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: ensureSSHRootPassword FAILED: %v", tgID, err)
+		return nil, fmt.Errorf("ensure ssh root password: %w", err)
+	}
 
 	ownerID := user.ID
 	sshClient := p.newSSHClient(server)
@@ -257,6 +338,11 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 	}
 	proxy.PremiumServerID = &server.ID
 
+	if err := p.ensureSSHRootPassword(ctx, server); err != nil {
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: ensureSSHRootPassword FAILED: %v", tgID, err)
+		return nil, fmt.Errorf("ensure ssh root password: %w", err)
+	}
+
 	sshClient := p.newSSHClient(server)
 
 	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: CreateFloatingIP zone=%s", tgID, p.zone)
@@ -341,6 +427,10 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 		return "", "", ErrFloatingIPDailyLimit
 	}
 
+	if err := p.ensureSSHRootPassword(ctx, server); err != nil {
+		return "", "", fmt.Errorf("ensure ssh root password: %w", err)
+	}
+
 	sshClient := p.newSSHClient(server)
 
 	// Создаем новый floating IP сначала.
@@ -383,8 +473,12 @@ func (p *PremiumProvisioner) DeprovisionForUser(ctx context.Context, user *domai
 		server, err := p.serverRepo.GetByID(*proxy.PremiumServerID)
 		if err == nil && server != nil {
 			log.Printf("[Premium] DeprovisionForUser tg_id=%d: stopping containers on server %s", tgID, server.IP)
-			sshClient := p.newSSHClient(server)
-			sshClient.StopPremiumContainers(ctx, user.TGID)
+			if err := p.ensureSSHRootPassword(ctx, server); err != nil {
+				log.Printf("[Premium] DeprovisionForUser tg_id=%d: ensureSSHRootPassword failed, skip SSH stop: %v", tgID, err)
+			} else {
+				sshClient := p.newSSHClient(server)
+				sshClient.StopPremiumContainers(ctx, user.TGID)
+			}
 		} else {
 			log.Printf("[Premium] DeprovisionForUser tg_id=%d: skip SSH stop (server lookup err=%v)", tgID, err)
 		}
@@ -538,6 +632,10 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		log.Printf("[Premium] CreateVPSFromRequest: pool size log err=%v", errAct)
 	} else {
 		log.Printf("[Premium] CreateVPSFromRequest: active premium_servers in pool=%d", len(active))
+	}
+
+	if err := p.ensureSSHRootPassword(ctx, premiumServer); err != nil {
+		return nil, fmt.Errorf("ensure ssh root password: %w", err)
 	}
 
 	sshClient := p.newSSHClient(premiumServer)

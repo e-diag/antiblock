@@ -372,6 +372,26 @@ func (c *Client) GetServer(ctx context.Context, serverID int) (*Server, error) {
 	return &out.Server, nil
 }
 
+// PerformServerAction вызывает POST /servers/{id}/action (например action=reset_password для нового root_pass).
+func (c *Client) PerformServerAction(ctx context.Context, serverID int, action string) error {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return errors.New("timeweb: empty server action")
+	}
+	body := map[string]string{"action": action}
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/servers/%d/action", serverID), body)
+	if err != nil {
+		return err
+	}
+	if code == http.StatusNotFound {
+		return ErrServerNotFound
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("timeweb server action %q: http %d: %s", action, code, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 // WaitServerReady polling каждые 10 сек, таймаут 10 мин.
 func (c *Client) WaitServerReady(ctx context.Context, serverID int) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
