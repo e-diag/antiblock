@@ -58,6 +58,34 @@ type userUseCase struct {
 	onPremiumVPSRequested        func(req *domain.VPSProvisionRequest, reason PremiumVPSQueueReason) // уведомить админов о необходимости нового Premium VPS
 }
 
+// clearTimewebFloatingStateAfterDeprovision очищает stale-привязку FIP в proxy_nodes,
+// чтобы при следующей активации Premium создавался новый floating IP, а не делался Restart на удалённом.
+func (uc *userUseCase) clearTimewebFloatingStateAfterDeprovision(proxy *domain.ProxyNode) {
+	if uc == nil || uc.proxyRepo == nil || proxy == nil {
+		return
+	}
+	changed := false
+	if strings.TrimSpace(proxy.TimewebFloatingIPID) != "" {
+		proxy.TimewebFloatingIPID = ""
+		changed = true
+	}
+	if strings.TrimSpace(proxy.FloatingIP) != "" {
+		proxy.FloatingIP = ""
+		changed = true
+	}
+	// IP для TimeWeb Premium должен быть только персональный FIP, после удаления FIP очищаем.
+	if strings.TrimSpace(proxy.IP) != "" {
+		proxy.IP = ""
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := uc.proxyRepo.Update(proxy); err != nil {
+		log.Printf("[Premium] clearTimewebFloatingStateAfterDeprovision proxy_id=%d: %v", proxy.ID, err)
+	}
+}
+
 // NewUserUseCase создает новый use case для пользователей.
 // premiumServerIP — IP сервера для персональных премиум-прокси (если пусто, создание прокси/контейнеров не выполняется).
 func NewUserUseCase(
@@ -447,6 +475,8 @@ func (uc *userUseCase) RevokePremium(tgID int64) error {
 		depCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		if err := uc.premiumProvisioner.DeprovisionForUser(depCtx, user, proxy); err != nil {
 			log.Printf("[Premium] DeprovisionForUser user_id=%d: %v", user.ID, err)
+		} else {
+			uc.clearTimewebFloatingStateAfterDeprovision(proxy)
 		}
 		cancel()
 	} else if legacy && uc.dockerMgr != nil {
@@ -585,6 +615,8 @@ func (uc *userUseCase) CheckExpiredPremiums() error {
 				depCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				if err := uc.premiumProvisioner.DeprovisionForUser(depCtx, user, proxy); err != nil {
 					log.Printf("[Premium] DeprovisionForUser user_id=%d: %v", user.ID, err)
+				} else {
+					uc.clearTimewebFloatingStateAfterDeprovision(proxy)
 				}
 				cancel()
 			} else if legacy && uc.dockerMgr != nil {
