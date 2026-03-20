@@ -3,6 +3,7 @@ package timeweb
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -199,6 +200,60 @@ func (s *SSHClient) PullPremiumMtgImages(ctx context.Context) error {
 		if _, err := s.RunCommand(ctx, "docker pull "+img); err != nil {
 			return fmt.Errorf("docker pull %s: %w", img, err)
 		}
+	}
+	return nil
+}
+
+// shellSingleQuote оборачивает строку в одинарные кавычки для безопасного bash (аргумент -ec).
+func shellSingleQuote(s string) string {
+	return `'` + strings.ReplaceAll(s, `'`, `'\''`) + `'`
+}
+
+// EnsureHostLocalFloatingIP добавляет IPv4 плавающий адрес на интерфейс с default route (DHCP не трогаем)
+// и фиксирует список в /etc/netplan/90-antiblock-floating.yaml + netplan apply.
+// Нужно для docker -p <FIP>:443:443 — без локального адреса Docker отвечает 125.
+func (s *SSHClient) EnsureHostLocalFloatingIP(ctx context.Context, floatingIP string) error {
+	floatingIP = strings.TrimSpace(floatingIP)
+	if floatingIP == "" {
+		return errors.New("EnsureHostLocalFloatingIP: empty IP")
+	}
+	if ip := net.ParseIP(floatingIP); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("EnsureHostLocalFloatingIP: ожидается IPv4, получено %q", floatingIP)
+	}
+
+	// Скрипт: FIP передаётся через окружение (после проверки — только цифры и точки).
+	inner := `set -e
+STATE=/var/lib/antiblock-floating-v4.conf
+NETPLAN=/etc/netplan/90-antiblock-floating.yaml
+mkdir -p /var/lib
+touch "$STATE"
+if ! grep -qxF "$FIP" "$STATE" 2>/dev/null; then echo "$FIP" >> "$STATE"; fi
+IFACE=$(ip -4 route show default | awk '{print $5}' | head -1)
+test -n "$IFACE"
+if ! ip -4 addr show dev "$IFACE" | grep -qF "${FIP}/"; then
+  ip addr add "${FIP}/32" dev "$IFACE" 2>/dev/null || true
+fi
+sort -u "$STATE" -o "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+TMPNP=$(mktemp)
+{
+  echo "network:"
+  echo "  version: 2"
+  echo "  ethernets:"
+  echo "    ${IFACE}:"
+  echo "      addresses:"
+  while IFS= read -r line || [ -n "$line" ]; do
+    test -z "$line" && continue
+    echo "        - ${line}/32"
+  done < "$STATE"
+} > "$TMPNP"
+mv "$TMPNP" "$NETPLAN"
+chmod 600 "$NETPLAN" 2>/dev/null || true
+netplan apply
+`
+	cmd := "FIP=" + shellSingleQuote(floatingIP) + " bash -ec " + shellSingleQuote(inner)
+	log.Printf("[SSH] EnsureHostLocalFloatingIP host=%s:%d fip=%s", s.host, s.port, floatingIP)
+	if _, err := s.RunCommand(ctx, cmd); err != nil {
+		return fmt.Errorf("ensure floating ip on host: %w", err)
 	}
 	return nil
 }

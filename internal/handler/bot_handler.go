@@ -442,7 +442,7 @@ func (h *BotHandler) SendProGroupProxiesToUser(ctx context.Context, b *bot.Bot, 
 	})
 
 	eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
-	msgEE := fmt.Sprintf("🛡 <b>Ваш Pro proxy (маскировка ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Используйте если стандартный заблокирован</i>",
+	msgEE := fmt.Sprintf("🛡 <b>Ваш Pro proxy (маскировка ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Запасной вариант для обхода ограничений на dd</i>",
 		group.ServerIP, group.PortEE, group.SecretEE)
 	kbEE := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -452,6 +452,31 @@ func (h *BotHandler) SendProGroupProxiesToUser(ctx context.Context, b *bot.Bot, 
 	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: tgID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
 	})
+
+	// Сохраняем Pro-прокси в «Мои прокси».
+	if h.userProxyRepo != nil && h.userRepo != nil {
+		u, errU := h.userRepo.GetByTGID(tgID)
+		if errU == nil && u != nil {
+			if existingDD, _ := h.userProxyRepo.GetByUserIDAndProxy(u.ID, group.ServerIP, group.PortDD, group.SecretDD); existingDD == nil {
+				_ = h.userProxyRepo.Create(&domain.UserProxy{
+					UserID:    u.ID,
+					IP:        group.ServerIP,
+					Port:      group.PortDD,
+					Secret:    group.SecretDD,
+					ProxyType: domain.ProxyTypePro,
+				})
+			}
+			if existingEE, _ := h.userProxyRepo.GetByUserIDAndProxy(u.ID, group.ServerIP, group.PortEE, group.SecretEE); existingEE == nil {
+				_ = h.userProxyRepo.Create(&domain.UserProxy{
+					UserID:    u.ID,
+					IP:        group.ServerIP,
+					Port:      group.PortEE,
+					Secret:    group.SecretEE,
+					ProxyType: domain.ProxyTypePro,
+				})
+			}
+		}
+	}
 }
 
 // SetBot сохраняет ссылку на бота для асинхронной рассылки альбомов (вызывается из main после создания бота)
@@ -682,7 +707,7 @@ func (h *BotHandler) HandleStart(ctx context.Context, b *bot.Bot, update *models
 	}
 	welcomeMsg, kb := h.mainMenuContent(user)
 	h.sendOrEdit(ctx, b, userID, welcomeMsg, kb)
-	if !user.IsPremiumActive() {
+	if !h.isPaidActive(user) {
 		runCtx := context.WithoutCancel(ctx)
 		go h.sendActiveAdIfExists(runCtx, b, userID)
 	}
@@ -859,7 +884,7 @@ func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int
 			})
 		}
 	}
-	if !user.IsPremiumActive() {
+	if !h.isPaidActive(user) {
 		runCtx := context.WithoutCancel(ctx)
 		go h.sendActiveAdIfExists(runCtx, b, chatID)
 	}
@@ -927,7 +952,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 		msgEE := fmt.Sprintf(
 			"🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n"+
 				"🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n"+
-				"<i>Используйте этот прокси если стандартный заблокирован</i>",
+				"<i>Маскировка ee/fake-TLS — запасной вариант</i>",
 			clientIP, eePort, proxy.SecretEE,
 		)
 
@@ -1065,6 +1090,24 @@ func (h *BotHandler) buildAdKeyboard(ad *domain.Ad) *models.InlineKeyboardMarkup
 	}
 }
 
+func (h *BotHandler) isProActiveUser(userID uint) bool {
+	if h.proUC == nil || userID == 0 {
+		return false
+	}
+	sub, err := h.proUC.GetActiveSubscription(userID)
+	return err == nil && sub != nil
+}
+
+func (h *BotHandler) isPaidActive(user *domain.User) bool {
+	if user == nil {
+		return false
+	}
+	if user.IsPremiumActive() {
+		return true
+	}
+	return h.isProActiveUser(user.ID)
+}
+
 // sendActiveAdIfExists отправляет активное объявление пользователю (для бесплатных) один раз — если для этого объявления ещё нет записи в ad_pins. Закрепляет и сохраняет в ad_pins.
 func (h *BotHandler) sendActiveAdIfExists(ctx context.Context, b *bot.Bot, chatID int64) {
 	ad, err := h.adRepo.GetActiveOne()
@@ -1109,7 +1152,7 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 
 	// Для бесплатных пользователей проверяем обязательную подписку на все каналы ОП
 	channels := h.getForcedSubChannels()
-	if !user.IsPremiumActive() && len(channels) > 0 {
+	if !h.isPaidActive(user) && len(channels) > 0 {
 		if !h.isSubscribedToForcedChannel(ctx, b, userID) {
 			kb := h.buildForcedSubKeyboard(channels)
 			msg := "⚠️ Чтобы получить прокси, подпишитесь на каналы ниже. После подписки нажмите «Проверить подписку»."
@@ -1137,9 +1180,13 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 	days := h.getPremiumDays()
 	usdt := h.getPremiumUSDT()
 	starsCount := h.getPremiumStars()
-	msg := fmt.Sprintf("💎 <b>Premium</b> — получи персональный proxy на %d дн.\n\n"+
-		"• Без рекламы и ограничений\n"+
-		"• Высокий приоритет и стабильность\n\n"+
+	msg := fmt.Sprintf("💎 <b>Premium</b> — персональные dd+ee прокси на %d дн.\n\n"+
+		"• Минимальные риски блокировок\n"+
+		"• Индивидуальный сервер\n"+
+		"• 2 прокси: стандарт (dd) + маскировка (ee/fake-TLS)\n"+
+		"• Максимальная скорость и стабильность\n"+
+		"• Можно использовать на нескольких устройствах\n"+
+		"• Без рекламы\n\n"+
 		"💰 Стоимость: <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, usdt, starsCount)
 
 	kb := &models.InlineKeyboardMarkup{
@@ -2334,7 +2381,7 @@ func (h *BotHandler) flushBroadcastMediaGroup(adminID int64, fromChatID int64, m
 		sent, failed := 0, 0
 		var lastErr error
 		for _, u := range users {
-			if audience == BroadcastAudienceFree && u.IsPremiumActive() {
+			if h.isPaidActive(u) {
 				continue
 			}
 			_, err := botRef.CopyMessages(ctx, &bot.CopyMessagesParams{
@@ -2415,7 +2462,6 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 	}
 
 	// Копируем данные для горутины (контекст и update не должны использоваться после возврата).
-	aud := h.broadcastState.Audience(adminID)
 	fromChatID := update.Message.Chat.ID
 	messageID := update.Message.ID
 	// Entities берём строго из того поля, откуда взят text, чтобы не применить
@@ -2441,7 +2487,7 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 			return
 		}
 		for _, u := range users {
-			if aud == BroadcastAudienceFree && u.IsPremiumActive() {
+			if h.isPaidActive(u) {
 				continue
 			}
 			var sendErr error
@@ -3306,7 +3352,7 @@ func (h *BotHandler) HandleAdComposeMessage(ctx context.Context, b *bot.Bot, upd
 			sent := 0
 			kb := h.buildAdKeyboard(&adCopy)
 			for _, u := range users {
-				if u.IsPremiumActive() {
+				if h.isPaidActive(u) {
 					continue
 				}
 				msg, errSend := botRef.SendMessage(bgCtx, &bot.SendMessageParams{
@@ -3472,10 +3518,11 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		days := h.getProDays()
 		usdt := h.getProUSDT()
 		stars := h.getProStars()
-		msg := fmt.Sprintf("⚡ <b>Pro</b> — быстрый прокси без рекламы на %d дн.\n\n"+
-			"• Два прокси: стандартный (dd) + с маскировкой (ee/fake-TLS)\n"+
-			"• Без рекламы и обязательной подписки\n"+
-			"• Общий выделенный сервер (быстрый)\n\n"+
+		msg := fmt.Sprintf("⚡ <b>Pro</b> — быстрые прокси без рекламы на %d дн.\n\n"+
+			"• Максимальная скорость\n"+
+			"• Без рекламы\n"+
+			"• Два варианта: dd (стандарт) + ee/fake-TLS (маскировка)\n"+
+			"• Общий выделенный сервер (стабильно)\n\n"+
 			"💰 Стоимость: <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 			days, usdt, stars)
 		kb := &models.InlineKeyboardMarkup{
@@ -3621,12 +3668,21 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: rows},
 		})
 	case "get_premium_proxy":
-		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: cqID,
+			Text:            "Готовим ключи…",
+		})
 		user, err := h.userUC.GetOrCreateUser(chatID, h.getUsername(update))
 		if err != nil || user == nil || !user.IsPremiumActive() {
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Доступно только для премиум-пользователей.", ParseMode: models.ParseModeHTML})
 			return
 		}
+		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:    chatID,
+			ParseMode: models.ParseModeHTML,
+			Text: "⏳ <b>Подождите</b>\n\nНастраиваем персональный Premium proxy (Docker, сеть, плавающий IP). " +
+				"Первый запуск часто занимает <b>1–3 минуты</b> — ключи придут в этот чат.",
+		})
 		proxy, err := h.userUC.RetryPremiumProxyCreation(chatID)
 		if err != nil {
 			log.Printf("[Premium] get_premium_proxy tg_id=%d user_id=%d err=%v", chatID, user.ID, err)

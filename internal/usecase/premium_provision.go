@@ -242,6 +242,14 @@ func (p *PremiumProvisioner) sshPreparePremiumHost(ctx context.Context, sshClien
 	return nil
 }
 
+// sshStartPremiumContainers назначает FIP на NIC (ip + netplan), затем docker bind на этот адрес.
+func (p *PremiumProvisioner) sshStartPremiumContainers(ctx context.Context, sshClient *timeweb.SSHClient, tgID int64, bindIP, secretDD, secretEE string) error {
+	if err := sshClient.EnsureHostLocalFloatingIP(ctx, bindIP); err != nil {
+		return fmt.Errorf("floating ip on host: %w", err)
+	}
+	return sshClient.StartPremiumContainers(ctx, tgID, bindIP, secretDD, secretEE)
+}
+
 // ProvisionForUser создаёт floating IP и запускает контейнеры для нового Premium-юзера.
 // secretEE: если непустой — тот же формат, что из Pro Docker (GenerateEESecretViaDocker); иначе ee генерируется на VPS.
 // В случае ErrFloatingIPDailyLimit возвращает (placeholderProxy, ErrFloatingIPDailyLimit),
@@ -327,7 +335,7 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 
 	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=StartPremiumContainers SSH=%s bind=%s portDD=%d portEE=%d dd_secret=%.8s…",
 		tgID, server.IP, floatingIP.IP, domain.PremiumPortDD, domain.PremiumPortEE, secretDD)
-	if err := sshClient.StartPremiumContainers(ctx, user.TGID, floatingIP.IP, secretDD, secretEE); err != nil {
+	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, floatingIP.IP, secretDD, secretEE); err != nil {
 		log.Printf("[Premium] ProvisionForUser tg_id=%d: StartPremiumContainers non-fatal: %v", tgID, err)
 	}
 
@@ -398,7 +406,7 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 	}
 
 	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers ssh=%s bind=%s", tgID, server.IP, floatingIP.IP)
-	if err := sshClient.StartPremiumContainers(ctx, user.TGID, floatingIP.IP, proxy.Secret, proxy.SecretEE); err != nil {
+	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, floatingIP.IP, proxy.Secret, proxy.SecretEE); err != nil {
 		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers non-fatal: %v", tgID, err)
 	}
 
@@ -446,7 +454,7 @@ func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user 
 		return err
 	}
 	log.Printf("[Premium] RestartContainersForUser tg_id=%d: SSH=%s bind_floating_ip=%s", tgID, server.IP, bindIP)
-	if err := sshClient.StartPremiumContainers(ctx, user.TGID, bindIP, proxy.Secret, proxy.SecretEE); err != nil {
+	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, bindIP, proxy.Secret, proxy.SecretEE); err != nil {
 		log.Printf("[Premium] RestartContainersForUser tg_id=%d: FAILED: %v", tgID, err)
 		return err
 	}
@@ -492,7 +500,7 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 	}
 
 	// Перезапускаем контейнеры на новом IP.
-	if err := sshClient.StartPremiumContainers(ctx, user.TGID, newFloating.IP, proxy.Secret, proxy.SecretEE); err != nil {
+	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, newFloating.IP, proxy.Secret, proxy.SecretEE); err != nil {
 		log.Printf("[Premium ReplaceFloatingIP] StartPremiumContainers non-fatal: %v", err)
 	}
 	if err := p.serverRepo.IncrementFIPCount(server.ID); err != nil {

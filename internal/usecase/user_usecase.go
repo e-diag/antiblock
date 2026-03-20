@@ -44,17 +44,18 @@ type UserUseCase interface {
 }
 
 type userUseCase struct {
-	userRepo              repository.UserRepository
-	proxyRepo             repository.ProxyRepository
-	proxyUC               ProxyUseCase
-	dockerMgr             *docker.Manager
-	premiumServerIP       string
-	userProxyRepo         repository.UserProxyRepository
-	premiumProvisioner    *PremiumProvisioner
-	appCtx                context.Context
-	onPremiumProxyReady   func(tgID int64, proxy *domain.ProxyNode) // при успешном создании контейнера
-	onPremiumProxyFailed  func(tgID int64, err error)               // при неудаче после всех попыток
-	onPremiumVPSRequested func(req *domain.VPSProvisionRequest, reason PremiumVPSQueueReason) // уведомить админов о необходимости нового Premium VPS
+	userRepo                     repository.UserRepository
+	proxyRepo                    repository.ProxyRepository
+	proxyUC                      ProxyUseCase
+	dockerMgr                    *docker.Manager
+	premiumServerIP              string
+	userProxyRepo                repository.UserProxyRepository
+	premiumProvisioner           *PremiumProvisioner
+	appCtx                       context.Context
+	onPremiumProxyReady          func(tgID int64, proxy *domain.ProxyNode)                           // при успешном создании контейнера
+	onPremiumProxyFailed         func(tgID int64, err error)                                         // при неудаче после всех попыток
+	onPremiumProvisioningStarted func(tgID int64)                                                    // в начале долгой TimeWeb-настройки (сообщение «подождите»)
+	onPremiumVPSRequested        func(req *domain.VPSProvisionRequest, reason PremiumVPSQueueReason) // уведомить админов о необходимости нового Premium VPS
 }
 
 // NewUserUseCase создает новый use case для пользователей.
@@ -103,6 +104,35 @@ func SetOnPremiumVPSRequested(uc UserUseCase, f func(req *domain.VPSProvisionReq
 	if u, ok := uc.(*userUseCase); ok {
 		u.onPremiumVPSRequested = f
 	}
+}
+
+// SetOnPremiumProvisioningStarted вызывается в начале асинхронной выдачи TimeWeb Premium (после оплаты), чтобы пользователь сразу видел «идёт настройка».
+func SetOnPremiumProvisioningStarted(uc UserUseCase, f func(tgID int64)) {
+	if u, ok := uc.(*userUseCase); ok {
+		u.onPremiumProvisioningStarted = f
+	}
+}
+
+// premiumTimewebProxyReadyToShow true, если прокси уже полностью выдан (повторный запрос ключей без SSH/рестарта).
+func premiumTimewebProxyReadyToShow(p *domain.ProxyNode) bool {
+	if p == nil || p.Type != domain.ProxyTypePremium {
+		return false
+	}
+	fipID := strings.TrimSpace(p.TimewebFloatingIPID)
+	if fipID == "" || fipID == "0" {
+		return false
+	}
+	if p.Status != domain.ProxyStatusActive {
+		return false
+	}
+	if strings.TrimSpace(p.Secret) == "" || strings.TrimSpace(p.SecretEE) == "" {
+		return false
+	}
+	clientIP := strings.TrimSpace(p.FloatingIP)
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(p.IP)
+	}
+	return clientIP != ""
 }
 
 func (uc *userUseCase) GetOrCreateUser(tgID int64, username string) (*domain.User, error) {
@@ -237,6 +267,10 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 		tgID, user.ID, existing != nil, isLeg, fipID, psid, st)
 
 	if existing != nil && strings.TrimSpace(existing.TimewebFloatingIPID) != "" {
+		if premiumTimewebProxyReadyToShow(existing) {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=already active (same keys), skip SSH", tgID)
+			return existing, nil
+		}
 		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=RestartContainers floating_ip=%s", tgID, existing.FloatingIP)
 		if err := uc.premiumProvisioner.RestartContainersForUser(ctx, user, existing); err != nil {
 			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: RestartContainers FAILED: %v", tgID, err)
@@ -332,6 +366,9 @@ func (uc *userUseCase) activatePremiumContainerAsync(tgID int64, user *domain.Us
 	}
 
 	if uc.hasPremiumTimeWeb() {
+		if uc.onPremiumProvisioningStarted != nil {
+			uc.onPremiumProvisioningStarted(tgID)
+		}
 		ctx, cancel := context.WithTimeout(uc.appCtx, 15*time.Minute)
 		defer cancel()
 		proxy, err := uc.premiumTimeWebActivateOrRenew(ctx, tgID, user)
@@ -456,6 +493,18 @@ func (uc *userUseCase) RetryPremiumProxyCreation(tgID int64) (*domain.ProxyNode,
 		if uc.proxyRepo == nil {
 			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: proxyRepo is nil", tgID)
 			return nil, errors.New("premium proxy repo is nil")
+		}
+		existing, errEx := uc.proxyRepo.GetByOwnerID(user.ID)
+		if errEx != nil {
+			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: GetByOwnerID err=%v", tgID, errEx)
+			return nil, fmt.Errorf("get premium proxy: %w", errEx)
+		}
+		if existing != nil && existing.Type != domain.ProxyTypePremium {
+			existing = nil
+		}
+		if premiumTimewebProxyReadyToShow(existing) {
+			log.Printf("[Premium] RetryPremiumProxyCreation tg_id=%d: proxy already active — returning same keys", tgID)
+			return existing, nil
 		}
 		ctx, cancel := context.WithTimeout(uc.appCtx, 15*time.Minute)
 		defer cancel()

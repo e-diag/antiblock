@@ -179,7 +179,7 @@ func XRocketWebhook(
 					})
 
 					eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
-					msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Используйте этот прокси если стандартный заблокирован</i>",
+					msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Запасной вариант для случаев, когда dd ограничен</i>",
 						group.ServerIP, group.PortEE, group.SecretEE)
 					kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
 					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{

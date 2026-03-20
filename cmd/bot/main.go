@@ -190,6 +190,16 @@ func main() {
 		botHandler.SendProGroupProxiesToUser(bg, b, tgID, g)
 	})
 
+	// Сразу после оплаты/активации Premium — короткое уведомление, пока идёт TimeWeb (долгий первый запуск).
+	usecase.SetOnPremiumProvisioningStarted(userUC, func(tgID int64) {
+		_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
+			ChatID:    tgID,
+			ParseMode: models.ParseModeHTML,
+			Text: "⏳ <b>Настраиваем ваш Premium proxy</b>\n\n" +
+				"Это может занять несколько минут (Docker, плавающий IP на сервере). Ключи dd + ee пришлю сюда, как только будет готово.",
+		})
+	})
+
 	// После успешного асинхронного создания премиум-прокси отправляем dd+ee (через общий helper в handler).
 	usecase.SetOnPremiumProxyReady(userUC, func(tgID int64, proxy *domain.ProxyNode) {
 		if proxy == nil {

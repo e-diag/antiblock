@@ -78,6 +78,7 @@
 - [ ] Заполнить `TIMEWEB_API_TOKEN`
 - [ ] `/grantpremium <tg_id> 1` — у каждого пользователя **свой** floating IP (в т.ч. первый); в панели TimeWeb виден FIP; в `tg://proxy` только FIP, не основной IP VPS
 - [ ] В логах SSH после Docker: `docker pull nineseconds/mtg:2` и `docker pull p3terx/mtg` ([ee](https://hub.docker.com/r/nineseconds/mtg/), [dd](https://hub.docker.com/r/p3terx/mtg))
+- [ ] Перед `docker run -p <FIP>:...` в логах: `EnsureHostLocalFloatingIP` — на интерфейс с default route добавлен `/32`, `netplan apply` (файл `90-antiblock-floating.yaml`), иначе Docker даёт exit 125
 - [ ] Telegram: 443 (ee), 8443 (dd)
 - [ ] `/replace_ip` — новый IP, уведомления
 - [ ] Продление — перезапуск контейнеров, те же секреты
