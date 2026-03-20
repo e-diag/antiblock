@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -341,7 +342,7 @@ type OSImage struct {
 }
 
 // filterOSImagesByAvailabilityZone оставляет образы для указанной зоны, если в ответе API есть поле зон.
-// Если ни у одного образа зоны не заданы — возвращает images как есть (полагаемся на query availability_zone).
+// Если ни у одного образа зоны не заданы — возвращает images как есть.
 func filterOSImagesByAvailabilityZone(images []OSImage, zone string) []OSImage {
 	az := strings.TrimSpace(zone)
 	if az == "" {
@@ -369,6 +370,109 @@ func filterOSImagesByAvailabilityZone(images []OSImage, zone string) []OSImage {
 	return out
 }
 
+// osImageJSON — разбор элемента списка образов (id может быть строкой или числом).
+type osImageJSON struct {
+	ID                json.RawMessage `json:"id"`
+	Name              string          `json:"name"`
+	AvailabilityZone  string          `json:"availability_zone,omitempty"`
+	AvailabilityZones []string        `json:"availability_zones,omitempty"`
+}
+
+func normalizeOSImageID(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		_ = json.Unmarshal(raw, &s)
+		return strings.TrimSpace(s)
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	return strings.Trim(string(raw), `"`)
+}
+
+func mergeImageZones(j osImageJSON) []string {
+	if len(j.AvailabilityZones) > 0 {
+		return j.AvailabilityZones
+	}
+	if z := strings.TrimSpace(j.AvailabilityZone); z != "" {
+		return []string{z}
+	}
+	return nil
+}
+
+func osImageJSONToOSImages(jList []osImageJSON) []OSImage {
+	out := make([]OSImage, 0, len(jList))
+	for _, j := range jList {
+		id := normalizeOSImageID(j.ID)
+		if id == "" && strings.TrimSpace(j.Name) == "" {
+			continue
+		}
+		out = append(out, OSImage{
+			ID:                id,
+			Name:              j.Name,
+			AvailabilityZones: mergeImageZones(j),
+		})
+	}
+	return out
+}
+
+// parseOSImagesFromBody извлекает список образов из тела ответа GET /images (разные варианты ключей в OpenAPI).
+func parseOSImagesFromBody(respBody []byte) ([]OSImage, error) {
+	respBody = bytes.TrimSpace(respBody)
+	if len(respBody) > 0 && respBody[0] == '[' {
+		var jList []osImageJSON
+		if err := json.Unmarshal(respBody, &jList); err == nil {
+			return osImageJSONToOSImages(jList), nil
+		}
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(respBody, &top); err != nil {
+		return nil, fmt.Errorf("timeweb images: top-level json: %w", err)
+	}
+
+	tryKeys := []string{"images", "image_list", "server_images", "data"}
+	var rawList json.RawMessage
+	for _, k := range tryKeys {
+		if v, ok := top[k]; ok && len(v) > 2 && string(v) != "null" {
+			rawList = v
+			break
+		}
+	}
+	// Вложенный объект image: { "images": [...] }
+	if len(rawList) == 0 {
+		if imgWrap, ok := top["image"]; ok && len(imgWrap) > 2 && string(imgWrap) != "null" {
+			var nested map[string]json.RawMessage
+			if err := json.Unmarshal(imgWrap, &nested); err == nil {
+				for _, k := range tryKeys {
+					if v, ok := nested[k]; ok && len(v) > 2 && string(v) != "null" {
+						rawList = v
+						break
+					}
+				}
+			}
+		}
+	}
+	if len(rawList) == 0 {
+		return []OSImage{}, nil
+	}
+
+	var jList []osImageJSON
+	if err := json.Unmarshal(rawList, &jList); err != nil {
+		return nil, fmt.Errorf("timeweb images: list: %w", err)
+	}
+	return osImageJSONToOSImages(jList), nil
+}
+
 // Configuration соответствует схеме `servers-preset`.
 type Configuration struct {
 	ID               int     `json:"id"`
@@ -378,10 +482,6 @@ type Configuration struct {
 	RAM              int     `json:"ram,omitempty"`
 	Disk             int     `json:"disk,omitempty"`
 	DescriptionShort string  `json:"description_short,omitempty"`
-}
-
-type osImagesOutResponse struct {
-	Images []OSImage `json:"images"`
 }
 
 type configurationsOutResponse struct {
@@ -441,15 +541,12 @@ func (c *Client) GetRegions(ctx context.Context) ([]string, error) {
 	return regions, nil
 }
 
-// GetOSImages возвращает список доступных образов ОС.
-// availabilityZone — необязательно: передаётся в API как availability_zone и дополнительно фильтруется по полю availability_zones в JSON, если оно есть.
-func (c *Client) GetOSImages(ctx context.Context, availabilityZone string) ([]OSImage, error) {
+// fetchOSImagesAll загружает список образов одним запросом без availability_zone.
+// Параметр availability_zone в query у TimeWeb часто даёт 200 и пустой массив — не используем его для выборки.
+func (c *Client) fetchOSImagesAll(ctx context.Context) ([]OSImage, error) {
 	q := url.Values{}
 	q.Set("limit", "200")
 	q.Set("offset", "0")
-	if az := strings.TrimSpace(availabilityZone); az != "" {
-		q.Set("availability_zone", az)
-	}
 	path := "/images?" + q.Encode()
 
 	respBody, code, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -459,40 +556,55 @@ func (c *Client) GetOSImages(ctx context.Context, availabilityZone string) ([]OS
 	if code < 200 || code >= 300 {
 		return nil, fmt.Errorf("timeweb get os images: http %d: %s", code, strings.TrimSpace(string(respBody)))
 	}
-
-	var out osImagesOutResponse
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return nil, fmt.Errorf("timeweb get os images: unmarshal: %w", err)
-	}
-	images := filterOSImagesByAvailabilityZone(out.Images, availabilityZone)
-	return images, nil
+	return parseOSImagesFromBody(respBody)
 }
 
-// GetRegionsWithOSImages возвращает только те availability_zone, для которых TimeWeb отдаёт хотя бы один образ ОС.
-func (c *Client) GetRegionsWithOSImages(ctx context.Context) ([]string, error) {
-	regions, err := c.GetRegions(ctx)
+// GetOSImages возвращает список образов ОС, при необходимости отфильтрованный по зоне (по полю availability_zones в JSON).
+func (c *Client) GetOSImages(ctx context.Context, availabilityZone string) ([]OSImage, error) {
+	all, err := c.fetchOSImagesAll(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(regions))
-	for _, r := range regions {
-		r = strings.TrimSpace(r)
-		if r == "" {
-			continue
-		}
-		imgs, err := c.GetOSImages(ctx, r)
-		if err != nil {
-			continue
-		}
-		if len(imgs) > 0 {
-			out = append(out, r)
+	az := strings.TrimSpace(availabilityZone)
+	if az == "" {
+		return all, nil
+	}
+	filtered := filterOSImagesByAvailabilityZone(all, az)
+	if len(filtered) > 0 {
+		return filtered, nil
+	}
+	// В ответе нет совпадения зоны с кодом из /locations — показываем полный список (сервер всё равно привяжет образ к выбранной зоне при создании).
+	return all, nil
+}
+
+// GetRegionsWithOSImages возвращает зоны, где по данным API есть образы (поле availability_zones).
+// Если у образов зоны не указаны — fallback на все зоны из GetRegions (как раньше).
+func (c *Client) GetRegionsWithOSImages(ctx context.Context) ([]string, error) {
+	all, err := c.fetchOSImagesAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("timeweb: пустой список образов ОС")
+	}
+	set := make(map[string]struct{})
+	for _, img := range all {
+		for _, z := range img.AvailabilityZones {
+			z = strings.TrimSpace(z)
+			if z != "" {
+				set[z] = struct{}{}
+			}
 		}
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("timeweb: no availability zones with OS images")
+	if len(set) == 0 {
+		return c.GetRegions(ctx)
 	}
-	sort.Strings(out)
-	return out, nil
+	regions := make([]string, 0, len(set))
+	for z := range set {
+		regions = append(regions, z)
+	}
+	sort.Strings(regions)
+	return regions, nil
 }
 
 // GetConfigurations возвращает список доступных конфигураций VPS.
