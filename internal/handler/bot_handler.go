@@ -628,6 +628,11 @@ func (h *BotHandler) clearWaitingMessages(ctx context.Context, b *bot.Bot, chatI
 	}
 }
 
+// ClearWaitingMessages удаляет сообщения ожидания, если они были зарегистрированы.
+func (h *BotHandler) ClearWaitingMessages(ctx context.Context, b *bot.Bot, chatID int64) {
+	h.clearWaitingMessages(ctx, b, chatID)
+}
+
 // RegisterWaitingMessage сохраняет сообщение ожидания, чтобы удалить его после успешной выдачи прокси.
 func (h *BotHandler) RegisterWaitingMessage(chatID int64, msgID int) {
 	h.trackWaitingMessage(chatID, msgID)

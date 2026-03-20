@@ -220,6 +220,8 @@ func main() {
 		if err == nil {
 			return
 		}
+		// Если пользователю уже показали "настройку", удаляем ожидание, чтобы не оставалось лишних сообщений.
+		botHandler.ClearWaitingMessages(context.Background(), b, tgID)
 		var msg string
 		switch {
 		case errors.Is(err, usecase.ErrNoActivePremiumServer):
@@ -228,6 +230,19 @@ func main() {
 		case errors.Is(err, usecase.ErrFloatingIPDailyLimit),
 			errors.Is(err, usecase.ErrProvisionerNotConfigured):
 			msg = "⏳ Ваш персональный прокси будет создан в ближайшее время — мы уведомим вас, как только он будет готов."
+		case errors.Is(err, usecase.ErrFloatingIPNoBalanceForMonth):
+			msg = "⏳ Premium временно недоступен: на стороне TimeWeb недостаточно средств для создания floating IP.\n\n" +
+				"Это нужно решить администратору. Через некоторое время вы сможете запросить Premium proxy повторно."
+			for _, adminID := range cfg.Telegram.GetAdminIDs() {
+				_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
+					ChatID: adminID,
+					ParseMode: models.ParseModeHTML,
+					Text: fmt.Sprintf(
+						"💎 TimeWeb Premium: ошибка при создании floating IP (tg_id=%d).\nПричина: <code>%s</code>",
+						tgID, err.Error(),
+					),
+				})
+			}
 		default:
 			msg = "⚠️ Премиум активирован, но создание прокси не удалось. Нажмите «Получить Premium proxy» в меню для повторной попытки."
 		}

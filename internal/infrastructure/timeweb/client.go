@@ -22,6 +22,10 @@ const baseRootURL = "https://api.timeweb.cloud"
 // на создание floating IP (10/день).
 var ErrFloatingIPDailyLimit = errors.New("timeweb: daily floating IP limit reached (10/day)")
 
+// ErrFloatingIPNoBalanceForMonth возвращается, когда у TimeWeb недостаточно средств
+// для создания floating IP в текущем месяце.
+var ErrFloatingIPNoBalanceForMonth = errors.New("timeweb: no balance for month (floating IP)")
+
 // ErrServerNotFound — GET /servers/{id} вернул 404 (сервер удалён в панели Timeweb).
 var ErrServerNotFound = errors.New("timeweb: server not found")
 
@@ -131,6 +135,21 @@ func (c *Client) CreateFloatingIP(ctx context.Context, zone string) (*FloatingIP
 			return nil, ErrFloatingIPDailyLimit
 		}
 		return nil, fmt.Errorf("timeweb rate limit (429): %s", strings.TrimSpace(string(respBody)))
+	}
+	if code == http.StatusForbidden {
+		// Пример:
+		// {"status_code":403,"error_code":"no_balance_for_month","message":"No balance for month","details":{"required_balance":10246},...}
+		var apiErr struct {
+			ErrorCode string `json:"error_code"`
+			Details   struct {
+				RequiredBalance float64 `json:"required_balance"`
+			} `json:"details"`
+		}
+		if err := json.Unmarshal(respBody, &apiErr); err == nil && strings.TrimSpace(apiErr.ErrorCode) != "" {
+			if apiErr.ErrorCode == "no_balance_for_month" {
+				return nil, fmt.Errorf("%w: required_balance=%v", ErrFloatingIPNoBalanceForMonth, apiErr.Details.RequiredBalance)
+			}
+		}
 	}
 	if code < 200 || code >= 300 {
 		return nil, fmt.Errorf("timeweb create floating ip: http %d: %s", code, strings.TrimSpace(string(respBody)))

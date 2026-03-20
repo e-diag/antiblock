@@ -19,6 +19,8 @@ var (
 	// ErrFloatingIPDailyLimit — либо все активные серверы в пуле исчерпали локальный лимит 10 FIP/сутки (UTC),
 	// либо TimeWeb API вернул суточный лимит создания FIP.
 	ErrFloatingIPDailyLimit = timeweb.ErrFloatingIPDailyLimit
+	// ErrFloatingIPNoBalanceForMonth — у TimeWeb недостаточно средств для создания floating IP.
+	ErrFloatingIPNoBalanceForMonth = timeweb.ErrFloatingIPNoBalanceForMonth
 )
 
 const maxFIPPerServerPerDay = 10
