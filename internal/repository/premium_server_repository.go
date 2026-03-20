@@ -16,6 +16,7 @@ type PremiumServerRepository interface {
 	GetByID(id uint) (*domain.PremiumServer, error)
 	GetAll() ([]*domain.PremiumServer, error)
 	Update(s *domain.PremiumServer) error
+	Delete(id uint) error
 	UpdateSSHHostKey(id uint, hostKey string) error
 	// IncrementFIPCount атомарно увеличивает счётчик FIP за текущие сутки UTC; при смене даты сбрасывает в 1.
 	IncrementFIPCount(serverID uint) error
@@ -88,6 +89,13 @@ func (r *premiumServerRepository) GetAll() ([]*domain.PremiumServer, error) {
 
 func (r *premiumServerRepository) Update(s *domain.PremiumServer) error {
 	return r.db.Save(s).Error
+}
+
+func (r *premiumServerRepository) Delete(id uint) error {
+	if id == 0 {
+		return nil
+	}
+	return r.db.Delete(&domain.PremiumServer{}, id).Error
 }
 
 func (r *premiumServerRepository) UpdateSSHHostKey(id uint, hostKey string) error {

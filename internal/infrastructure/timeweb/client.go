@@ -22,6 +22,9 @@ const baseRootURL = "https://api.timeweb.cloud"
 // на создание floating IP (10/день).
 var ErrFloatingIPDailyLimit = errors.New("timeweb: daily floating IP limit reached (10/day)")
 
+// ErrServerNotFound — GET /servers/{id} вернул 404 (сервер удалён в панели Timeweb).
+var ErrServerNotFound = errors.New("timeweb: server not found")
+
 type Client struct {
 	token      string
 	httpClient *http.Client
@@ -353,6 +356,9 @@ func (c *Client) GetServer(ctx context.Context, serverID int) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if code == http.StatusNotFound {
+		return nil, ErrServerNotFound
+	}
 	if code < 200 || code >= 300 {
 		return nil, fmt.Errorf("timeweb get server: http %d: %s", code, strings.TrimSpace(string(respBody)))
 	}
@@ -380,6 +386,9 @@ func (c *Client) WaitServerReady(ctx context.Context, serverID int) error {
 		case <-ticker.C:
 			srv, err := c.GetServer(ctx, serverID)
 			if err != nil {
+				if errors.Is(err, ErrServerNotFound) {
+					return err
+				}
 				continue
 			}
 			// Swagger enum для vds.status содержит "on".

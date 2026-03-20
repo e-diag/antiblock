@@ -112,7 +112,23 @@ func (p *PremiumProvisioner) getAvailableServer() (*domain.PremiumServer, error)
 		return nil, fmt.Errorf("GetAllActive: %w", err)
 	}
 	if len(servers) == 0 {
-		log.Printf("[Premium] getAvailableServer: no active servers in pool")
+		all, errAll := p.serverRepo.GetAll()
+		if errAll != nil {
+			log.Printf("[Premium] getAvailableServer: pool empty (0 active), GetAll diagnostic err=%v", errAll)
+		} else {
+			log.Printf("[Premium] getAvailableServer: pool empty — активных серверов 0, всего строк premium_servers: %d", len(all))
+			for _, s := range all {
+				if s == nil {
+					continue
+				}
+				log.Printf("[Premium]   └ id=%d ip=%s timeweb_id=%d is_active=%v", s.ID, s.IP, s.TimewebID, s.IsActive)
+			}
+			if len(all) == 0 {
+				log.Printf("[Premium]   └ добавьте VPS: команда бота /premium_pool_add или мастер «Создать Premium VPS»")
+			} else {
+				log.Printf("[Premium]   └ если сервер есть, но is_active=false — включите в БД или добавьте новый через /premium_pool_add")
+			}
+		}
 		return nil, ErrNoActivePremiumServer
 	}
 	for _, s := range servers {
@@ -438,9 +454,29 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 
 	var twID int
 	if req.TimewebServerID > 0 {
-		twID = req.TimewebServerID
-		log.Printf("[Premium] CreateVPSFromRequest: resume existing Timeweb server_id=%d (request %d)", twID, req.ID)
-	} else {
+		storedTW := req.TimewebServerID
+		_, errProbe := p.twClient.GetServer(ctx, storedTW)
+		if errProbe != nil && errors.Is(errProbe, timeweb.ErrServerNotFound) {
+			log.Printf("[Premium] CreateVPSFromRequest: Timeweb server_id=%d не найден (удалён в облаке) — сброс timeweb_server_id и создание нового VPS", storedTW)
+			req.TimewebServerID = 0
+			if err := p.provisionReqRepo.Update(req); err != nil {
+				return nil, fmt.Errorf("clear stale timeweb_server_id: %w", err)
+			}
+			if ps, _ := p.serverRepo.GetByTimewebID(storedTW); ps != nil {
+				if delErr := p.serverRepo.Delete(ps.ID); delErr != nil {
+					log.Printf("[Premium] CreateVPSFromRequest: не удалось удалить устаревший premium_servers id=%d: %v", ps.ID, delErr)
+				} else {
+					log.Printf("[Premium] CreateVPSFromRequest: удалена устаревшая запись premium_servers id=%d (timeweb_id=%d)", ps.ID, storedTW)
+				}
+			}
+		} else if errProbe != nil {
+			return nil, fmt.Errorf("get server (проверка resume): %w", errProbe)
+		} else {
+			twID = storedTW
+			log.Printf("[Premium] CreateVPSFromRequest: resume Timeweb server_id=%d (request %d)", twID, req.ID)
+		}
+	}
+	if twID == 0 {
 		srvOut, err := p.twClient.CreateServer(ctx, createReq)
 		if err != nil {
 			return nil, fmt.Errorf("create server: %w", err)
