@@ -335,16 +335,19 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 
 	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=StartPremiumContainers SSH=%s bind=%s portDD=%d portEE=%d dd_secret=%.8s…",
 		tgID, server.IP, floatingIP.IP, domain.PremiumPortDD, domain.PremiumPortEE, secretDD)
-	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, floatingIP.IP, secretDD, secretEE); err != nil {
-		log.Printf("[Premium] ProvisionForUser tg_id=%d: StartPremiumContainers non-fatal: %v", tgID, err)
+	startErr := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, floatingIP.IP, secretDD, secretEE)
+	if startErr != nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: StartPremiumContainers FAILED: %v", tgID, startErr)
+		// Оставляем Status=inactive, чтобы пользователь не получил недоступные ключи.
+	} else {
+		placeholder.Status = domain.ProxyStatusActive
 	}
 
 	placeholder.FloatingIP = floatingIP.IP
 	placeholder.TimewebFloatingIPID = floatingIP.ID
 	placeholder.IP = floatingIP.IP // единственный адрес для tg://proxy (персональный FIP)
-	placeholder.Status = domain.ProxyStatusActive
-	log.Printf("[Premium] ProvisionForUser tg_id=%d: DONE floating_ip=%s fip_id=%s portDD=%d portEE=%d",
-		tgID, floatingIP.IP, floatingIP.ID, domain.PremiumPortDD, domain.PremiumPortEE)
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: DONE floating_ip=%s fip_id=%s portDD=%d portEE=%d status=%s",
+		tgID, floatingIP.IP, floatingIP.ID, domain.PremiumPortDD, domain.PremiumPortEE, placeholder.Status)
 	return placeholder, nil
 }
 
@@ -406,15 +409,19 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 	}
 
 	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers ssh=%s bind=%s", tgID, server.IP, floatingIP.IP)
-	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, floatingIP.IP, proxy.Secret, proxy.SecretEE); err != nil {
-		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers non-fatal: %v", tgID, err)
+	startErr := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, floatingIP.IP, proxy.Secret, proxy.SecretEE)
+	if startErr != nil {
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: StartPremiumContainers FAILED: %v", tgID, startErr)
+		proxy.Status = domain.ProxyStatusInactive
+	} else {
+		proxy.Status = domain.ProxyStatusActive
 	}
 
 	proxy.FloatingIP = floatingIP.IP
 	proxy.TimewebFloatingIPID = floatingIP.ID
 	proxy.IP = floatingIP.IP
-	proxy.Status = domain.ProxyStatusActive
-	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: DONE ip=%s fip_id=%s", tgID, proxy.IP, proxy.TimewebFloatingIPID)
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: DONE ip=%s fip_id=%s status=%s",
+		tgID, proxy.IP, proxy.TimewebFloatingIPID, proxy.Status)
 	return proxy, nil
 }
 
@@ -500,9 +507,7 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 	}
 
 	// Перезапускаем контейнеры на новом IP.
-	if err := p.sshStartPremiumContainers(ctx, sshClient, user.TGID, newFloating.IP, proxy.Secret, proxy.SecretEE); err != nil {
-		log.Printf("[Premium ReplaceFloatingIP] StartPremiumContainers non-fatal: %v", err)
-	}
+	_ = p.sshStartPremiumContainers(ctx, sshClient, user.TGID, newFloating.IP, proxy.Secret, proxy.SecretEE)
 	if err := p.serverRepo.IncrementFIPCount(server.ID); err != nil {
 		log.Printf("[Premium ReplaceFloatingIP] IncrementFIPCount server_id=%d failed: %v", server.ID, err)
 	}

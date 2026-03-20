@@ -228,27 +228,50 @@ NETPLAN=/etc/netplan/90-antiblock-floating.yaml
 mkdir -p /var/lib
 touch "$STATE"
 if ! grep -qxF "$FIP" "$STATE" 2>/dev/null; then echo "$FIP" >> "$STATE"; fi
-IFACE=$(ip -4 route show default | awk '{print $5}' | head -1)
-test -n "$IFACE"
-if ! ip -4 addr show dev "$IFACE" | grep -qF "${FIP}/"; then
-  ip addr add "${FIP}/32" dev "$IFACE" 2>/dev/null || true
+IFACE=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+if [ -z "$IFACE" ]; then
+  IFACE=$(ip -4 route show default | awk '{print $5; exit}')
 fi
+if [ -z "$IFACE" ]; then
+  echo "EnsureHostLocalFloatingIP: cannot detect interface for default route" >&2
+  exit 1
+fi
+
+# Сначала пробуем добавить адрес напрямую (для текущей сессии). DHCP не трогаем.
+ip addr add "${FIP}/32" dev "$IFACE" 2>/dev/null || true
 sort -u "$STATE" -o "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
-TMPNP=$(mktemp)
-{
-  echo "network:"
-  echo "  version: 2"
-  echo "  ethernets:"
-  echo "    ${IFACE}:"
-  echo "      addresses:"
-  while IFS= read -r line || [ -n "$line" ]; do
-    test -z "$line" && continue
-    echo "        - ${line}/32"
-  done < "$STATE"
-} > "$TMPNP"
-mv "$TMPNP" "$NETPLAN"
-chmod 600 "$NETPLAN" 2>/dev/null || true
-netplan apply
+
+# Netplan — best-effort (на текущий момент достаточно ip addr add),
+# но добавляем адреса в netplan, чтобы после перезапусков не потерять.
+if command -v netplan >/dev/null 2>&1; then
+  TMPNP=$(mktemp)
+  {
+    echo "network:"
+    echo "  version: 2"
+    echo "  ethernets:"
+    echo "    ${IFACE}:"
+    echo "      addresses:"
+    while IFS= read -r line || [ -n "$line" ]; do
+      test -z "$line" && continue
+      echo "        - ${line}/32"
+    done < "$STATE"
+  } > "$TMPNP"
+  mv "$TMPNP" "$NETPLAN"
+  chmod 600 "$NETPLAN" 2>/dev/null || true
+  netplan apply >/dev/null 2>&1 || true
+fi
+
+# Проверяем, что адрес реально появился на интерфейсе.
+i=0
+while [ $i -lt 15 ]; do
+  if ip -4 addr show dev "$IFACE" 2>/dev/null | grep -qF "${FIP}/32"; then
+    exit 0
+  fi
+  i=$((i+1))
+  sleep 2
+done
+echo "EnsureHostLocalFloatingIP: ${FIP}/32 not present on ${IFACE}" >&2
+exit 1
 `
 	cmd := "FIP=" + shellSingleQuote(floatingIP) + " bash -ec " + shellSingleQuote(inner)
 	log.Printf("[SSH] EnsureHostLocalFloatingIP host=%s:%d fip=%s", s.host, s.port, floatingIP)

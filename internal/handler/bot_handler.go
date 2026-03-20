@@ -907,6 +907,9 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 	if proxy == nil || user == nil {
 		return
 	}
+	if proxy.Status != domain.ProxyStatusActive {
+		return
+	}
 
 	// Для legacy-юзера TimewebFloatingIPID = "" (и PremiumServerID обычно nil).
 	isTimeweb := proxy.TimewebFloatingIPID != ""
@@ -3680,7 +3683,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
 			ParseMode: models.ParseModeHTML,
-			Text: "⏳ <b>Подождите</b>\n\nНастраиваем персональный Premium proxy (Docker, сеть, плавающий IP). " +
+			Text: "⏳ <b>Подождите</b>\n\nНастраиваем персональный Premium proxy. " +
 				"Первый запуск часто занимает <b>1–3 минуты</b> — ключи придут в этот чат.",
 		})
 		proxy, err := h.userUC.RetryPremiumProxyCreation(chatID)
@@ -3697,6 +3700,16 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 				msg = "❌ Не удалось создать Premium proxy. Попробуйте позже."
 			}
 			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML})
+			return
+		}
+		if proxy == nil || proxy.Status != domain.ProxyStatusActive {
+			// FIP ещё не применился на сервере или контейнеры не стартовали.
+			// Ключи не выдаём, чтобы пользователь не получил недоступный tg://proxy.
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:    chatID,
+				ParseMode: models.ParseModeHTML,
+				Text:      "⏳ <b>Ещё выполняется настройка</b>.\n\nПовторите запрос через пару минут — как только контейнеры будут готовы, мы сразу пришлём dd+ee.",
+			})
 			return
 		}
 		h.SendPremiumProxyToUser(ctx, b, chatID, user, proxy)

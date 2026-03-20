@@ -274,7 +274,13 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=RestartContainers floating_ip=%s", tgID, existing.FloatingIP)
 		if err := uc.premiumProvisioner.RestartContainersForUser(ctx, user, existing); err != nil {
 			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: RestartContainers FAILED: %v", tgID, err)
-			return nil, fmt.Errorf("restart premium containers: %w", err)
+			// Не делаем жёсткую ошибку: помечаем прокси как недоступный,
+			// чтобы пользователь снова запросил и получил ожидание/те же ключи.
+			existing.Status = domain.ProxyStatusInactive
+			if uc.proxyRepo != nil {
+				_ = uc.proxyRepo.Update(existing)
+			}
+			return existing, nil
 		}
 		return existing, nil
 	}
