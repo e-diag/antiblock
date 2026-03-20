@@ -78,17 +78,17 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
     steps:
-      - name: Deploy over SSH using docker-compose
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: 22
-          script: |
-            set -e
-            cd "${{ secrets.APP_DIR }}"
-            git pull
-            docker compose pull || docker-compose pull
-            docker compose up -d --build || docker-compose up -d --build
+          ssh-private-key: ${{ secrets.SSH_KEY }}
+
+      - name: Deploy over SSH using docker-compose
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" "set -e; cd '${APP_DIR}'; git pull; docker compose pull || docker-compose pull; docker compose up -d --build || docker-compose up -d --build"
 
