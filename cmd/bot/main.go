@@ -392,7 +392,14 @@ func main() {
 				return proUC.ActivateProSubscription(u, days, proServerIP, proDockerMgr, getProDays())
 			}
 			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(activatePremium, activatePro, paymentUC, cfg.XRocket.APIToken, getPremiumDays, getProDays, b))
-			srv := &http.Server{Addr: ":" + cfg.XRocket.WebhookPort, Handler: mux}
+			srv := &http.Server{
+				Addr:              ":" + cfg.XRocket.WebhookPort,
+				Handler:          mux,
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      15 * time.Second,
+				IdleTimeout:       60 * time.Second,
+			}
 			go func() {
 				log.Printf("xRocket webhook listening on :%s", cfg.XRocket.WebhookPort)
 				_ = srv.ListenAndServe()
@@ -486,7 +493,14 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
-		srv := &http.Server{Addr: ":9090", Handler: mux}
+		srv := &http.Server{
+			Addr:              ":9090",
+			Handler:          mux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

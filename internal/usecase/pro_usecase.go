@@ -241,13 +241,6 @@ func (uc *proUseCase) ensureTodayGroup(serverIP string, dockerMgr *docker.Manage
 	return uc.rotateGroupInPlace(g, serverIP, dockerMgr, cycleDays)
 }
 
-func (uc *proUseCase) findFreeProPort(min, max int) (int, error) {
-	if uc.proxyRepo == nil {
-		return 0, fmt.Errorf("proxyRepo is nil")
-	}
-	return uc.proxyRepo.FindFirstFreePort(min, max)
-}
-
 func (uc *proUseCase) ActivateProSubscription(user *domain.User, days int, serverIP string, dockerMgr *docker.Manager, groupCycleDays int) (*domain.ProGroup, bool, error) {
 	if user == nil {
 		return nil, false, fmt.Errorf("user is nil")

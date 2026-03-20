@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -43,8 +45,16 @@ func XRocketWebhook(
 			return
 		}
 
+		const maxWebhookBodyBytes = 1 << 20 // 1 MiB safety limit against DoS
+		r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -76,7 +86,7 @@ func XRocketWebhook(
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			log.Printf("[webhook] xRocket decode error: %v, body=%s", err, string(body))
+			log.Printf("[webhook] xRocket decode error: %v", err)
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -96,7 +106,7 @@ func XRocketWebhook(
 			idStr, statusStr = payload.Invoice.ID, payload.Invoice.Status
 		}
 		if idStr == "" {
-			log.Printf("[webhook] xRocket missing invoice id, type=%q, body=%s", payload.Type, string(body))
+			log.Printf("[webhook] xRocket missing invoice id, type=%q", payload.Type)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -107,7 +117,7 @@ func XRocketWebhook(
 
 		invoiceID, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			log.Printf("[webhook] xRocket invalid invoice id %q: %v, body=%s", idStr, err, string(body))
+			log.Printf("[webhook] xRocket invalid invoice id %q: %v", idStr, err)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -157,34 +167,41 @@ func XRocketWebhook(
 
 			if telegramBot != nil && group != nil {
 				if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
-					ctx := context.Background()
-					_, _ = telegramBot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+					tgCtx, tgCancel := context.WithTimeout(r.Context(), 5*time.Second)
+					_, _ = telegramBot.DeleteMessage(tgCtx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+					tgCancel()
 				}
 				if extendedOnly {
 					cycle := getProDays()
 					if cycle < 1 {
 						cycle = 30
 					}
-					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+					tgCtx, tgCancel := context.WithTimeout(r.Context(), 5*time.Second)
+					_, _ = telegramBot.SendMessage(tgCtx, &bot.SendMessageParams{
 						ChatID: userID, ParseMode: models.ParseModeHTML,
 						Text: fmt.Sprintf("✅ <b>Pro продлён</b> на %d дн.\n\nТекущие прокси не меняются. Раз в <b>%d</b> дн. ключи обновляются — новые данные придут в этот чат.", days, cycle),
 					})
+					tgCancel()
 				} else {
 					ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortDD, group.SecretDD)
 					msgDD := fmt.Sprintf("✅ <b>Ваш Pro proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:",
 						group.ServerIP, group.PortDD, group.SecretDD)
 					kbDD := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (dd)", URL: ddURL}}}}
-					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+					tgCtx, tgCancel := context.WithTimeout(r.Context(), 5*time.Second)
+					_, _ = telegramBot.SendMessage(tgCtx, &bot.SendMessageParams{
 						ChatID: userID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD,
 					})
+					tgCancel()
 
 					eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
 					msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Запасной вариант для случаев, когда dd ограничен</i>",
 						group.ServerIP, group.PortEE, group.SecretEE)
 					kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
-					_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+					tgCtx, tgCancel = context.WithTimeout(r.Context(), 5*time.Second)
+					_, _ = telegramBot.SendMessage(tgCtx, &bot.SendMessageParams{
 						ChatID: userID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
 					})
+					tgCancel()
 				}
 			}
 
@@ -212,14 +229,17 @@ func XRocketWebhook(
 		if telegramBot != nil {
 			confirmMsg := "✅ Оплата получена! Ваш Premium прокси будет готов в течение нескольких минут — мы уведомим вас."
 			if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
-				ctx := context.Background()
-				_, _ = telegramBot.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+				tgCtx, tgCancel := context.WithTimeout(r.Context(), 5*time.Second)
+				_, _ = telegramBot.DeleteMessage(tgCtx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: int(msgID)})
+				tgCancel()
 			}
-			_, _ = telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+			tgCtx, tgCancel := context.WithTimeout(r.Context(), 5*time.Second)
+			_, _ = telegramBot.SendMessage(tgCtx, &bot.SendMessageParams{
 				ChatID:    userID,
 				Text:      confirmMsg,
 				ParseMode: models.ParseModeHTML,
 			})
+			tgCancel()
 		}
 
 		log.Printf("[webhook] xRocket premium activated for user %d (invoice %d)", userID, invoiceID)

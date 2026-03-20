@@ -729,7 +729,7 @@ func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) err
 		return nil
 	}
 	if uc.dockerMgr == nil {
-		return errors.New("Docker manager not available")
+		return errors.New("docker manager not available")
 	}
 
 	proxy, err := uc.proxyRepo.GetByOwnerID(user.ID)

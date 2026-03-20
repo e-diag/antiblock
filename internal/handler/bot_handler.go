@@ -674,7 +674,7 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 			if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
 				for _, up := range list {
 					if up.ProxyType == domain.ProxyTypeFree {
-						btnGetProxy = "➕ Получить дополнительный прокси"
+						btnGetProxy = "➕ Получить дополнительный free прокси"
 						break
 					}
 				}
@@ -1355,15 +1355,6 @@ func refreshKeyboardStats() *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: "🔄 Обновить", CallbackData: "mgr_refresh_stats"}, {Text: "◀️ Назад", CallbackData: "mgr_back"}},
-		},
-	}
-}
-
-// refreshKeyboardProxies возвращает клавиатуру [Обновить, Назад] для экрана прокси.
-func refreshKeyboardProxies() *models.InlineKeyboardMarkup {
-	return &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔄 Обновить", CallbackData: "mgr_refresh_proxies"}, {Text: "◀️ Назад", CallbackData: "mgr_back"}},
 		},
 	}
 }

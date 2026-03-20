@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -132,7 +131,7 @@ func (w *DockerMonitorWorker) checkOnce() {
 			continue
 		}
 
-		var stats types.StatsJSON
+		var stats container.StatsResponse
 		if err := json.NewDecoder(statsResp.Body).Decode(&stats); err != nil {
 			statsResp.Body.Close()
 			log.Printf("docker monitor: stats decode error for %s: %v", name, err)

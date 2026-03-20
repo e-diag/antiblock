@@ -77,21 +77,6 @@ func (w *PremiumReminderWorker) Stop() {
 	w.stopOnce.Do(func() { close(w.stop) })
 }
 
-func (w *PremiumReminderWorker) getPremiumDays() int {
-	if w.settingsRepo == nil {
-		return 30
-	}
-	v, _ := w.settingsRepo.Get("premium_days")
-	if v == "" {
-		return 30
-	}
-	n, _ := strconv.Atoi(v)
-	if n < 1 {
-		return 30
-	}
-	return n
-}
-
 func (w *PremiumReminderWorker) getPremiumUSDT() float64 {
 	if w.settingsRepo == nil {
 		return 10

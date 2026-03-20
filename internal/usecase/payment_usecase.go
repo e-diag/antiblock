@@ -17,7 +17,6 @@ import (
 // PaymentUseCase определяет бизнес-логику для работы с платежами
 type PaymentUseCase interface {
 	CreateInvoice(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error)
-	CheckInvoiceStatus(invoiceID string) (bool, error)
 	GetUserIDByInvoiceID(invoiceID int64) (int64, bool)
 	// SetInvoiceMeta сохраняет тип продукта и количество дней для инвойса.
 	SetInvoiceMeta(invoiceID int64, kind string, daysGranted int) error
@@ -65,37 +64,6 @@ func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starP
 	}
 }
 
-// CryptoCreateInvoiceRequest для Crypto Pay API: asset (TON, USDT, ...), amount (строка), description, payload.
-// Оставлено для совместимости; для xRocket используется XRocketCreateInvoiceRequest.
-type CreateInvoiceRequest struct {
-	Asset       string `json:"asset"`                  // TON, USDT, BTC, ...
-	Amount      string `json:"amount"`                 // сумма в криптовалюте, напр. "10.5"
-	Description string `json:"description,omitempty"`
-	Payload     string `json:"payload,omitempty"`      // до 4kb, например user ID для webhook
-}
-
-type CreateInvoiceResponse struct {
-	OK     bool   `json:"ok"`
-	Result Result `json:"result"`
-}
-
-type Result struct {
-	InvoiceID       int64  `json:"invoice_id"`
-	Status          string `json:"status"`
-	PayURL          string `json:"pay_url"`           // deprecated, но может приходить
-	BotInvoiceURL   string `json:"bot_invoice_url"`   // основной URL для оплаты
-}
-
-type InvoiceStatusResponse struct {
-	OK     bool           `json:"ok"`
-	Result InvoiceResult  `json:"result"`
-}
-
-type InvoiceResult struct {
-	InvoiceID int64  `json:"invoice_id"`
-	Status    string `json:"status"`
-}
-
 // XRocketCreateInvoiceRequest — тело запроса для xRocket /tg-invoices.
 // Поля подобраны по публичной документации xRocket Pay API.
 type XRocketCreateInvoiceRequest struct {
@@ -117,76 +85,8 @@ type XRocketCreateInvoiceResponse struct {
 }
 
 func (uc *paymentUseCase) CreateInvoice(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error) {
-	// Если в apiURL указан xRocket — используем интеграцию xRocket Pay.
-	if strings.Contains(strings.ToLower(uc.apiURL), "xrocket") {
-		return uc.createInvoiceXRocket(amount, currency, description, userID)
-	}
-	// Иначе — старая интеграция CryptoPay (на случай обратной совместимости).
-	asset := "TON"
-	if currency != "" && currency != "USD" {
-		asset = currency
-	}
-	reqBody := CreateInvoiceRequest{
-		Asset:       asset,
-		Amount:      fmt.Sprintf("%.2f", amount),
-		Description: description,
-		Payload:     fmt.Sprintf("%d", userID),
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/createInvoice", uc.apiURL),
-		bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Crypto-Pay-API-Token", uc.apiToken)
-
-	resp, err := uc.client.Do(req)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	var invoiceResp CreateInvoiceResponse
-	if err := json.Unmarshal(body, &invoiceResp); err != nil {
-		log.Printf("[payment] CreateInvoice unmarshal error: %v, body: %s", err, string(body))
-		return "", 0, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	if !invoiceResp.OK {
-		log.Printf("[payment] CreateInvoice API error: status=%d, body=%s", resp.StatusCode, string(body))
-		return "", 0, fmt.Errorf("cryptopay API error (status %d, check token and request)", resp.StatusCode)
-	}
-
-	inv := &domain.Invoice{
-		InvoiceID: invoiceResp.Result.InvoiceID,
-		UserID:    userID,
-		Kind:      "premium",
-		DaysGranted: 0,
-		Status:    "pending",
-		Amount:    amount,
-		Currency:  asset,
-	}
-	if err := uc.invRepo.Create(inv); err != nil {
-		return "", 0, fmt.Errorf("failed to save invoice: %w", err)
-	}
-
-	payURL = invoiceResp.Result.BotInvoiceURL
-	if payURL == "" {
-		payURL = invoiceResp.Result.PayURL
-	}
-	return payURL, invoiceResp.Result.InvoiceID, nil
+	// В текущей сборке оплата работает через xRocket (остальные провайдеры отключены).
+	return uc.createInvoiceXRocket(amount, currency, description, userID)
 }
 
 func (uc *paymentUseCase) createInvoiceXRocket(amount float64, currency string, description string, userID int64) (payURL string, invoiceID int64, err error) {
@@ -339,7 +239,7 @@ func (uc *paymentUseCase) CancelInvoice(invoiceID int64) error {
 		}
 	}
 
-	// Для xRocket есть DELETE /tg-invoices/{id}. Для старого CryptoPay отмены нет — просто оставляем cancelled в БД.
+	// Для xRocket есть DELETE /tg-invoices/{id}.
 	if !strings.Contains(strings.ToLower(uc.apiURL), "xrocket") && !strings.Contains(strings.ToLower(uc.apiURL), "pay.xrocket") && !strings.Contains(strings.ToLower(uc.apiURL), "xrocket.tg") {
 		return nil
 	}
@@ -368,38 +268,6 @@ func (uc *paymentUseCase) cancelInvoiceXRocket(invoiceID int64) error {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("xrocket cancel invoice failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
-}
-
-func (uc *paymentUseCase) CheckInvoiceStatus(invoiceID string) (bool, error) {
-	req, err := http.NewRequest("GET", 
-		fmt.Sprintf("%s/getInvoices?invoice_ids=%s", uc.apiURL, invoiceID), nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Crypto-Pay-API-Token", uc.apiToken)
-
-	resp, err := uc.client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	var statusResp InvoiceStatusResponse
-	if err := json.Unmarshal(body, &statusResp); err != nil {
-		return false, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	if !statusResp.OK {
-		return false, fmt.Errorf("cryptobot API error")
-	}
-
-	return statusResp.Result.Status == "paid", nil
 }
 
 func (uc *paymentUseCase) RecordStarPayment(tgID int64, amountTotal int64, currency string, daysGranted int, telegramPaymentChargeID string) error {

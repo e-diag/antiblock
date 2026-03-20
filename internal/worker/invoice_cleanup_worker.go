@@ -16,7 +16,6 @@ import (
 
 // InvoiceCleanupWorker удаляет pending-инвойсы (xRocket) и чистит сообщения с оплатой.
 // Логика:
-// - при старте: удаляет все накопленные pending из БД (с попыткой cancel в xRocket),
 // - далее по interval: удаляет pending старше 1 часа.
 type InvoiceCleanupWorker struct {
 	bot        *bot.Bot
@@ -51,7 +50,6 @@ func (w *InvoiceCleanupWorker) Start() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	w.cleanupAllPending()
 	w.cleanup()
 	for {
 		select {
@@ -69,17 +67,6 @@ func (w *InvoiceCleanupWorker) Stop() {
 }
 
 const invoicePendingMaxAge = 1 * time.Hour
-
-func (w *InvoiceCleanupWorker) cleanupAllPending() {
-	if w.invoiceRepo == nil || w.paymentUC == nil {
-		return
-	}
-	invs, err := w.invoiceRepo.ListPending()
-	if err != nil || len(invs) == 0 {
-		return
-	}
-	w.cleanupInvoices(invs)
-}
 
 func (w *InvoiceCleanupWorker) cleanup() {
 	if w.invoiceRepo == nil || w.paymentUC == nil {
