@@ -183,6 +183,43 @@ func (s *SSHClient) EnsureDockerInstalled(ctx context.Context) error {
 	return s.SetupDocker(ctx)
 }
 
+// EnsurePremiumHostTuning применяет сетевые/sysctl и лимиты файлов для высокой нагрузки MTProto.
+// Выполняется идемпотентно: повторный вызов безопасен.
+func (s *SSHClient) EnsurePremiumHostTuning(ctx context.Context) error {
+	log.Printf("[SSH] EnsurePremiumHostTuning host=%s:%d", s.host, s.port)
+	inner := `set -e
+mkdir -p /etc/sysctl.d /etc/systemd/system/docker.service.d
+cat >/etc/sysctl.d/99-antiblock-premium.conf <<'EOF'
+net.core.somaxconn = 65535
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.tcp_fastopen = 3
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.ip_nonlocal_bind = 0
+EOF
+sysctl --system >/dev/null 2>&1 || true
+
+grep -q "^\* soft nofile 1000000$" /etc/security/limits.conf 2>/dev/null || echo "* soft nofile 1000000" >> /etc/security/limits.conf
+grep -q "^\* hard nofile 1000000$" /etc/security/limits.conf 2>/dev/null || echo "* hard nofile 1000000" >> /etc/security/limits.conf
+grep -q "^root soft nofile 1000000$" /etc/security/limits.conf 2>/dev/null || echo "root soft nofile 1000000" >> /etc/security/limits.conf
+grep -q "^root hard nofile 1000000$" /etc/security/limits.conf 2>/dev/null || echo "root hard nofile 1000000" >> /etc/security/limits.conf
+
+cat >/etc/systemd/system/docker.service.d/limits.conf <<'EOF'
+[Service]
+LimitNOFILE=1000000
+EOF
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl restart docker >/dev/null 2>&1 || true
+`
+	cmd := "bash -ec " + shellSingleQuote(inner)
+	if _, err := s.RunCommand(ctx, cmd); err != nil {
+		return fmt.Errorf("ensure premium host tuning: %w", err)
+	}
+	return nil
+}
+
 // EnsurePremiumFirewallPorts открывает 443/8443 в ufw, если файрвол активен (best-effort, без ошибки вверх).
 func (s *SSHClient) EnsurePremiumFirewallPorts(ctx context.Context) {
 	log.Printf("[SSH] EnsurePremiumFirewallPorts host=%s:%d (443/tcp 8443/tcp если ufw active)", s.host, s.port)

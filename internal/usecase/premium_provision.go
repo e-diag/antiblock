@@ -235,6 +235,9 @@ func (p *PremiumProvisioner) sshPreparePremiumHost(ctx context.Context, sshClien
 	if err := sshClient.EnsureDockerInstalled(waitCtx); err != nil {
 		return fmt.Errorf("ensure docker (%s): %w", logTag, err)
 	}
+	if err := sshClient.EnsurePremiumHostTuning(waitCtx); err != nil {
+		return fmt.Errorf("ensure premium host tuning (%s): %w", logTag, err)
+	}
 	if err := sshClient.PullPremiumMtgImages(waitCtx); err != nil {
 		return fmt.Errorf("pull premium mtg images (%s): %w", logTag, err)
 	}
