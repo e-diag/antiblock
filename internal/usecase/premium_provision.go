@@ -547,8 +547,10 @@ func (p *PremiumProvisioner) DeprovisionForUser(ctx context.Context, user *domai
 	}
 	if proxy.TimewebFloatingIPID != "" {
 		log.Printf("[Premium] DeprovisionForUser tg_id=%d: unbind+delete floating IP id=%s ip=%s", tgID, proxy.TimewebFloatingIPID, proxy.FloatingIP)
-		_ = p.twClient.UnbindFloatingIP(ctx, proxy.TimewebFloatingIPID)
-		if err := p.twClient.DeleteFloatingIP(ctx, proxy.TimewebFloatingIPID); err != nil {
+		if err := p.twClient.UnbindFloatingIP(ctx, proxy.TimewebFloatingIPID); err != nil && !errors.Is(err, timeweb.ErrFloatingIPNotFound) {
+			log.Printf("[Premium] DeprovisionForUser tg_id=%d: FAILED unbind floating IP: %v", tgID, err)
+		}
+		if err := p.twClient.DeleteFloatingIP(ctx, proxy.TimewebFloatingIPID); err != nil && !errors.Is(err, timeweb.ErrFloatingIPNotFound) {
 			log.Printf("[Premium] DeprovisionForUser tg_id=%d: FAILED delete floating IP: %v", tgID, err)
 			return fmt.Errorf("delete floating ip: %w", err)
 		}

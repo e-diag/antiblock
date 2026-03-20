@@ -25,6 +25,9 @@ var ErrFloatingIPDailyLimit = errors.New("timeweb: daily floating IP limit reach
 // ErrServerNotFound — GET /servers/{id} вернул 404 (сервер удалён в панели Timeweb).
 var ErrServerNotFound = errors.New("timeweb: server not found")
 
+// ErrFloatingIPNotFound — floating IP отсутствует в TimeWeb (например, уже удалён ранее).
+var ErrFloatingIPNotFound = errors.New("timeweb: floating ip not found")
+
 type Client struct {
 	token      string
 	httpClient *http.Client
@@ -173,6 +176,9 @@ func (c *Client) UnbindFloatingIP(ctx context.Context, floatingIPID string) erro
 	if err != nil {
 		return err
 	}
+	if code == http.StatusNotFound {
+		return ErrFloatingIPNotFound
+	}
 	if code < 200 || code >= 300 {
 		return fmt.Errorf("timeweb unbind floating ip: http %d: %s", code, strings.TrimSpace(string(respBody)))
 	}
@@ -184,6 +190,9 @@ func (c *Client) DeleteFloatingIP(ctx context.Context, floatingIPID string) erro
 	respBody, code, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/floating-ips/%s", floatingIPID), nil)
 	if err != nil {
 		return err
+	}
+	if code == http.StatusNotFound {
+		return ErrFloatingIPNotFound
 	}
 	// API обычно отдаёт 204 No Content
 	if code < 200 || code >= 300 {
