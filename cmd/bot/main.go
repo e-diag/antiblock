@@ -238,7 +238,7 @@ func main() {
 		case usecase.PremiumQueueReasonNeedSetup:
 			headline = "требуется настройка TimeWeb / Premium (пользователь без применимого пути к прокси)."
 		default:
-			headline = "исчерпан лимит floating IP или очередь на новый VPS."
+			headline = "у всех активных Premium VPS исчерпан дневной лимит FIP (10/сервер, UTC) или очередь на новый VPS."
 		}
 
 		kb := &models.InlineKeyboardMarkup{

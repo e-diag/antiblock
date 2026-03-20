@@ -16,8 +16,23 @@ import (
 
 var (
 	ErrNoActivePremiumServer = errors.New("no active premium server available")
-	ErrFloatingIPDailyLimit  = timeweb.ErrFloatingIPDailyLimit
+	// ErrFloatingIPDailyLimit — либо все активные серверы в пуле исчерпали локальный лимит 10 FIP/сутки (UTC),
+	// либо TimeWeb API вернул суточный лимит создания FIP.
+	ErrFloatingIPDailyLimit = timeweb.ErrFloatingIPDailyLimit
 )
+
+const maxFIPPerServerPerDay = 10
+
+func effectiveFIPToday(s *domain.PremiumServer) int {
+	if s == nil {
+		return 0
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if s.FIPCountDate == nil || s.FIPCountDate.Before(today) {
+		return 0
+	}
+	return s.FIPCountToday
+}
 
 // PremiumProvisioner управляет Premium provisioning через TimeWeb (floating IP + docker через SSH).
 type PremiumProvisioner struct {
@@ -73,6 +88,48 @@ func (p *PremiumProvisioner) newSSHClient(server *domain.PremiumServer) *timeweb
 	})
 }
 
+func (p *PremiumProvisioner) logPremiumPool(ctxTag string) {
+	servers, err := p.serverRepo.GetAllActive()
+	if err != nil {
+		log.Printf("[Premium] pool (%s): GetAllActive err=%v", ctxTag, err)
+		return
+	}
+	for _, s := range servers {
+		if s == nil {
+			continue
+		}
+		fip := effectiveFIPToday(s)
+		log.Printf("[Premium] pool: server_id=%d ip=%s fip=%d/%d active=%v (%s)",
+			s.ID, s.IP, fip, maxFIPPerServerPerDay, s.IsActive, ctxTag)
+	}
+}
+
+// getAvailableServer возвращает первый активный сервер с fip_count за сегодня (UTC) < maxFIPPerServerPerDay.
+// Нет активных — ErrNoActivePremiumServer; все исчерпали лимит — ErrFloatingIPDailyLimit.
+func (p *PremiumProvisioner) getAvailableServer() (*domain.PremiumServer, error) {
+	servers, err := p.serverRepo.GetAllActive()
+	if err != nil {
+		return nil, fmt.Errorf("GetAllActive: %w", err)
+	}
+	if len(servers) == 0 {
+		log.Printf("[Premium] getAvailableServer: no active servers in pool")
+		return nil, ErrNoActivePremiumServer
+	}
+	for _, s := range servers {
+		if s == nil {
+			continue
+		}
+		fip := effectiveFIPToday(s)
+		log.Printf("[Premium] getAvailableServer: server_id=%d ip=%s fip_today=%d/%d",
+			s.ID, s.IP, fip, maxFIPPerServerPerDay)
+		if fip < maxFIPPerServerPerDay {
+			return s, nil
+		}
+	}
+	log.Printf("[Premium] getAvailableServer: all %d active servers exhausted FIP limit today (UTC)", len(servers))
+	return nil, ErrFloatingIPDailyLimit
+}
+
 // ProvisionForUser создаёт floating IP и запускает контейнеры для нового Premium-юзера.
 // В случае ErrFloatingIPDailyLimit возвращает (placeholderProxy, ErrFloatingIPDailyLimit),
 // чтобы dd/ee секреты были сгенерированы один раз на момент первой покупки.
@@ -82,13 +139,14 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 	}
 	tgID := user.TGID
 	log.Printf("[Premium] ProvisionForUser: start tg_id=%d user_id=%d zone=%s", tgID, user.ID, p.zone)
+	p.logPremiumPool("ProvisionForUser")
 
-	server, err := p.serverRepo.GetActive()
-	if err != nil || server == nil {
-		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at GetActivePremiumServer: %v", tgID, err)
-		return nil, ErrNoActivePremiumServer
+	server, err := p.getAvailableServer()
+	if err != nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: no available server: %v", tgID, err)
+		return nil, err
 	}
-	log.Printf("[Premium] ProvisionForUser tg_id=%d: active premium server id=%d ip=%s timeweb_id=%d", tgID, server.ID, server.IP, server.TimewebID)
+	log.Printf("[Premium] ProvisionForUser tg_id=%d: selected server_id=%d ip=%s timeweb_id=%d", tgID, server.ID, server.IP, server.TimewebID)
 
 	ownerID := user.ID
 	sshClient := p.newSSHClient(server)
@@ -134,6 +192,9 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at BindFloatingIP: %v", tgID, err)
 		return nil, fmt.Errorf("bind floating ip: %w", err)
 	}
+	if err := p.serverRepo.IncrementFIPCount(server.ID); err != nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: IncrementFIPCount server_id=%d failed: %v", tgID, server.ID, err)
+	}
 
 	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=StartPremiumContainers SSH=%s bind=%s portDD=%d portEE=%d dd_secret=%.8s…",
 		tgID, server.IP, floatingIP.IP, domain.PremiumPortDD, domain.PremiumPortEE, secretDD)
@@ -163,11 +224,13 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: FAILED empty secrets", tgID)
 		return nil, errors.New("proxy secrets are empty")
 	}
-	server, err := p.serverRepo.GetActive()
-	if err != nil || server == nil {
-		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: FAILED no active server: %v", tgID, err)
-		return nil, ErrNoActivePremiumServer
+	p.logPremiumPool("ProvisionExistingProxyForUser")
+	server, err := p.getAvailableServer()
+	if err != nil {
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: no available server: %v", tgID, err)
+		return nil, err
 	}
+	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: selected server_id=%d ip=%s", tgID, server.ID, server.IP)
 
 	ownerID := user.ID
 	if proxy.OwnerID == nil {
@@ -254,6 +317,10 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 	if err != nil || server == nil {
 		return "", "", fmt.Errorf("premium server not found")
 	}
+	if effectiveFIPToday(server) >= maxFIPPerServerPerDay {
+		log.Printf("[Premium ReplaceFloatingIP] server_id=%d ip=%s: local FIP daily limit %d reached", server.ID, server.IP, maxFIPPerServerPerDay)
+		return "", "", ErrFloatingIPDailyLimit
+	}
 
 	sshClient := p.newSSHClient(server)
 
@@ -272,6 +339,9 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 	// Перезапускаем контейнеры на новом IP.
 	if err := sshClient.StartPremiumContainers(ctx, user.TGID, newFloating.IP, proxy.Secret, proxy.SecretEE); err != nil {
 		log.Printf("[Premium ReplaceFloatingIP] StartPremiumContainers non-fatal: %v", err)
+	}
+	if err := p.serverRepo.IncrementFIPCount(server.ID); err != nil {
+		log.Printf("[Premium ReplaceFloatingIP] IncrementFIPCount server_id=%d failed: %v", server.ID, err)
 	}
 
 	// Удаляем старый floating IP (best-effort).
@@ -382,17 +452,6 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		return nil, fmt.Errorf("setup docker: %w", err)
 	}
 
-	// Делаем новый сервер активным: выключаем остальные.
-	if all, errAll := p.serverRepo.GetAll(); errAll == nil {
-		for _, s := range all {
-			if s == nil {
-				continue
-			}
-			s.IsActive = false
-			_ = p.serverRepo.Update(s)
-		}
-	}
-
 	premiumServer := &domain.PremiumServer{
 		Name:       req.Name,
 		IP:         mainIP,
@@ -402,6 +461,12 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	}
 	if err := p.serverRepo.Create(premiumServer); err != nil {
 		return nil, fmt.Errorf("save premium server: %w", err)
+	}
+	active, errAct := p.serverRepo.GetAllActive()
+	if errAct != nil {
+		log.Printf("[Premium] CreateVPSFromRequest: added server_id=%d ip=%s to pool (GetAllActive for count err=%v)", premiumServer.ID, premiumServer.IP, errAct)
+	} else {
+		log.Printf("[Premium] CreateVPSFromRequest: added server_id=%d ip=%s to pool (active premium_servers=%d)", premiumServer.ID, premiumServer.IP, len(active))
 	}
 
 	req.Status = "done"

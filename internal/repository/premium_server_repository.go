@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/yourusername/antiblock/internal/domain"
 	"gorm.io/gorm"
 )
@@ -8,11 +10,14 @@ import (
 // PremiumServerRepository хранит/читает VPS для Premium-юзеров.
 type PremiumServerRepository interface {
 	Create(s *domain.PremiumServer) error
-	GetActive() (*domain.PremiumServer, error) // первый активный сервер
+	GetActive() (*domain.PremiumServer, error) // первый активный сервер (по created_at)
+	GetAllActive() ([]*domain.PremiumServer, error)
 	GetByID(id uint) (*domain.PremiumServer, error)
 	GetAll() ([]*domain.PremiumServer, error)
 	Update(s *domain.PremiumServer) error
 	UpdateSSHHostKey(id uint, hostKey string) error
+	// IncrementFIPCount атомарно увеличивает счётчик FIP за текущие сутки UTC; при смене даты сбрасывает в 1.
+	IncrementFIPCount(serverID uint) error
 }
 
 type premiumServerRepository struct {
@@ -37,6 +42,12 @@ func (r *premiumServerRepository) GetActive() (*domain.PremiumServer, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+func (r *premiumServerRepository) GetAllActive() ([]*domain.PremiumServer, error) {
+	var servers []*domain.PremiumServer
+	err := r.db.Where("is_active = ?", true).Order("created_at ASC").Find(&servers).Error
+	return servers, err
 }
 
 func (r *premiumServerRepository) GetByID(id uint) (*domain.PremiumServer, error) {
@@ -67,4 +78,18 @@ func (r *premiumServerRepository) UpdateSSHHostKey(id uint, hostKey string) erro
 	return r.db.Model(&domain.PremiumServer{}).
 		Where("id = ?", id).
 		Update("ssh_host_key", hostKey).Error
+}
+
+func (r *premiumServerRepository) IncrementFIPCount(serverID uint) error {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	return r.db.Exec(`
+		UPDATE premium_servers SET
+			fip_count_today = CASE
+				WHEN fip_count_date IS NULL OR fip_count_date < ?
+				THEN 1
+				ELSE fip_count_today + 1
+			END,
+			fip_count_date = ?
+		WHERE id = ?
+	`, today, today, serverID).Error
 }

@@ -2,8 +2,8 @@ package domain
 
 import "time"
 
-// PremiumServer — VPS для Premium-пользователей, управляемый менеджером.
-// Один сервер обслуживает нескольких Premium-юзеров через разные floating IP.
+// PremiumServer — VPS для Premium-пользователей (пул: несколько активных одновременно).
+// Каждый сервер обслуживает нескольких Premium-юзеров через разные floating IP.
 type PremiumServer struct {
 	ID uint `gorm:"primaryKey" json:"id"`
 
@@ -16,8 +16,13 @@ type PremiumServer struct {
 	// TimewebID — ID сервера в TimeWeb (0 если добавлен вручную).
 	TimewebID int `gorm:"default:0" json:"timeweb_id"`
 
-	// IsActive — принимает ли новых пользователей.
+	// IsActive — участвует ли сервер в пуле (новые FIP выдаются только на активных).
 	IsActive bool `gorm:"default:true" json:"is_active"`
+
+	// FIPCountToday — сколько раз сегодня (UTC) на этом сервере создавали floating IP (лимит 10/сервер/сутки в приложении).
+	FIPCountToday int `gorm:"default:0" json:"fip_count_today"`
+	// FIPCountDate — дата (UTC, начало суток), за которую актуален FIPCountToday; при смене даты счётчик сбрасывается в IncrementFIPCount.
+	FIPCountDate *time.Time `gorm:"column:fip_count_date" json:"fip_count_date,omitempty"`
 
 	// CertPath — путь к TLS-сертификатам (сохраняется для совместимости с legacy-дизайном).
 	CertPath string `gorm:"size:500" json:"cert_path"`

@@ -1847,11 +1847,18 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 					kb.InlineKeyboard[rowIdx] = append(kb.InlineKeyboard[rowIdx], btn)
 				}
 			}
-			send(fmt.Sprintf(
+			// Одно сообщение: текст + inline-клавиатура. Отдельное сообщение с Text " " даёт 400
+			// «message text is empty» у Telegram — кнопки не отображаются.
+			cfgMsg := fmt.Sprintf(
 				"🐧 Регион: <code>%s</code>\nОС: <b>Ubuntu 24.04</b> (os_id=<code>%d</code>)\n\n⚙️ Выберите конфигурацию:",
 				region, osID,
-			))
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: " ", ReplyMarkup: kb})
+			)
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:      chatID,
+				Text:        cfgMsg,
+				ParseMode:   models.ParseModeHTML,
+				ReplyMarkup: kb,
+			})
 			return
 		}
 
