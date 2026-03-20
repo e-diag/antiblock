@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -335,9 +336,14 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	createReq := timeweb.CreateServerRequest{
 		Name:             req.Name,
 		PresetID:         req.ConfigID,
-		ImageID:          req.OSImageID,
 		AvailabilityZone: req.RegionID,
 		IsDDOSGuard:      false,
+	}
+	// OpenAPI create-server: либо os_id (число из GET /os/servers), либо image_id (UUID из /images).
+	if osID, err := strconv.Atoi(strings.TrimSpace(req.OSImageID)); err == nil && osID > 0 {
+		createReq.OsID = osID
+	} else if id := strings.TrimSpace(req.OSImageID); id != "" {
+		createReq.ImageID = id
 	}
 	if p.sshKeyID > 0 {
 		createReq.SSHKeysIDs = []int{p.sshKeyID}
