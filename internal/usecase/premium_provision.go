@@ -225,10 +225,28 @@ func (p *PremiumProvisioner) getAvailableServer() (*domain.PremiumServer, error)
 	return nil, ErrFloatingIPDailyLimit
 }
 
+// sshPreparePremiumHost — SSH готов, Docker установлен, порты 443/8443 в ufw (если включён).
+func (p *PremiumProvisioner) sshPreparePremiumHost(ctx context.Context, sshClient *timeweb.SSHClient, logTag string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	if err := sshClient.WaitSSHReady(waitCtx); err != nil {
+		return fmt.Errorf("wait ssh (%s): %w", logTag, err)
+	}
+	if err := sshClient.EnsureDockerInstalled(waitCtx); err != nil {
+		return fmt.Errorf("ensure docker (%s): %w", logTag, err)
+	}
+	if err := sshClient.PullPremiumMtgImages(waitCtx); err != nil {
+		return fmt.Errorf("pull premium mtg images (%s): %w", logTag, err)
+	}
+	sshClient.EnsurePremiumFirewallPorts(ctx)
+	return nil
+}
+
 // ProvisionForUser создаёт floating IP и запускает контейнеры для нового Premium-юзера.
+// secretEE: если непустой — тот же формат, что из Pro Docker (GenerateEESecretViaDocker); иначе ee генерируется на VPS.
 // В случае ErrFloatingIPDailyLimit возвращает (placeholderProxy, ErrFloatingIPDailyLimit),
 // чтобы dd/ee секреты были сгенерированы один раз на момент первой покупки.
-func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.User, secretDD string) (*domain.ProxyNode, error) {
+func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.User, secretDD, secretEE string) (*domain.ProxyNode, error) {
 	if user == nil {
 		return nil, errors.New("user is nil")
 	}
@@ -251,17 +269,28 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 	ownerID := user.ID
 	sshClient := p.newSSHClient(server)
 
-	// Генерируем ee-секрет сразу (чтобы он не менялся при последующей выдаче/провижининге).
-	log.Printf("[Premium] ProvisionForUser tg_id=%d: step=GenerateEESecret via SSH %s", tgID, server.IP)
-	secretEE, err := sshClient.GenerateEESecret(ctx)
-	if err != nil {
-		log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at GenerateEESecret: %v", tgID, err)
-		return nil, fmt.Errorf("generate ee secret: %w", err)
+	if err := p.sshPreparePremiumHost(ctx, sshClient, "ProvisionForUser"); err != nil {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: sshPreparePremiumHost FAILED: %v", tgID, err)
+		return nil, err
 	}
-	log.Printf("[Premium] ProvisionForUser tg_id=%d: ee secret generated prefix=%.8s…", tgID, secretEE)
 
+	secretEE = strings.TrimSpace(secretEE)
+	if secretEE == "" {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: step=GenerateEESecret on VPS %s (нет ee от Pro Docker)", tgID, server.IP)
+		genEE, genErr := sshClient.GenerateEESecret(ctx)
+		if genErr != nil {
+			log.Printf("[Premium] ProvisionForUser tg_id=%d: FAILED at GenerateEESecret: %v", tgID, genErr)
+			return nil, fmt.Errorf("generate ee secret: %w", genErr)
+		}
+		secretEE = genEE
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: ee secret from VPS prefix=%.8s…", tgID, secretEE)
+	} else {
+		log.Printf("[Premium] ProvisionForUser tg_id=%d: ee secret from Pro Docker (как Pro тариф) prefix=%.8s…", tgID, secretEE)
+	}
+
+	// IP для клиента — только персональный floating IP; основной IP VPS в прокси не подставляем.
 	placeholder := &domain.ProxyNode{
-		IP:                  server.IP, // временно; после успешного floating IP обновим.
+		IP:                  "",
 		Port:                domain.PremiumPortDD,
 		Secret:              secretDD,
 		SecretEE:            secretEE,
@@ -304,7 +333,7 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 
 	placeholder.FloatingIP = floatingIP.IP
 	placeholder.TimewebFloatingIPID = floatingIP.ID
-	placeholder.IP = floatingIP.IP
+	placeholder.IP = floatingIP.IP // единственный адрес для tg://proxy (персональный FIP)
 	placeholder.Status = domain.ProxyStatusActive
 	log.Printf("[Premium] ProvisionForUser tg_id=%d: DONE floating_ip=%s fip_id=%s portDD=%d portEE=%d",
 		tgID, floatingIP.IP, floatingIP.ID, domain.PremiumPortDD, domain.PremiumPortEE)
@@ -344,6 +373,10 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 	}
 
 	sshClient := p.newSSHClient(server)
+	if err := p.sshPreparePremiumHost(ctx, sshClient, "ProvisionExistingProxy"); err != nil {
+		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: sshPreparePremiumHost FAILED: %v", tgID, err)
+		return nil, err
+	}
 
 	log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: CreateFloatingIP zone=%s", tgID, p.zone)
 	floatingIP, err := p.twClient.CreateFloatingIP(ctx, p.zone)
@@ -387,12 +420,13 @@ func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user 
 	if proxy.PremiumServerID == nil || *proxy.PremiumServerID == 0 {
 		return errors.New("proxy.PremiumServerID is empty")
 	}
-	if proxy.FloatingIP == "" && proxy.IP != "" {
-		// На всякий случай: используем proxy.IP если FloatingIP не заполнено.
-		proxy.FloatingIP = proxy.IP
+	// Биндим только персональный FIP (в новых строках он в FloatingIP и дублируется в IP для клиента).
+	bindIP := strings.TrimSpace(proxy.FloatingIP)
+	if bindIP == "" && strings.TrimSpace(proxy.TimewebFloatingIPID) != "" {
+		bindIP = strings.TrimSpace(proxy.IP) // legacy: FIP мог быть только в IP
 	}
-	if proxy.FloatingIP == "" {
-		return errors.New("proxy floating ip is empty")
+	if bindIP == "" {
+		return errors.New("premium proxy: пустой floating IP — нужен персональный FIP пользователя")
 	}
 
 	server, err := p.serverRepo.GetByID(*proxy.PremiumServerID)
@@ -401,9 +435,18 @@ func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user 
 		return fmt.Errorf("premium server not found")
 	}
 
+	if err := p.ensureSSHRootPassword(ctx, server); err != nil {
+		log.Printf("[Premium] RestartContainersForUser tg_id=%d: ensureSSHRootPassword FAILED: %v", tgID, err)
+		return fmt.Errorf("ensure ssh root password: %w", err)
+	}
+
 	sshClient := p.newSSHClient(server)
-	log.Printf("[Premium] RestartContainersForUser tg_id=%d: SSH=%s floating_ip=%s", tgID, server.IP, proxy.FloatingIP)
-	if err := sshClient.StartPremiumContainers(ctx, user.TGID, proxy.FloatingIP, proxy.Secret, proxy.SecretEE); err != nil {
+	if err := p.sshPreparePremiumHost(ctx, sshClient, "RestartContainers"); err != nil {
+		log.Printf("[Premium] RestartContainersForUser tg_id=%d: sshPreparePremiumHost FAILED: %v", tgID, err)
+		return err
+	}
+	log.Printf("[Premium] RestartContainersForUser tg_id=%d: SSH=%s bind_floating_ip=%s", tgID, server.IP, bindIP)
+	if err := sshClient.StartPremiumContainers(ctx, user.TGID, bindIP, proxy.Secret, proxy.SecretEE); err != nil {
 		log.Printf("[Premium] RestartContainersForUser tg_id=%d: FAILED: %v", tgID, err)
 		return err
 	}
@@ -432,6 +475,9 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 	}
 
 	sshClient := p.newSSHClient(server)
+	if err := p.sshPreparePremiumHost(ctx, sshClient, "ReplaceFloatingIP"); err != nil {
+		return "", "", err
+	}
 
 	// Создаем новый floating IP сначала.
 	newFloating, err := p.twClient.CreateFloatingIP(ctx, p.zone)
@@ -639,14 +685,8 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	}
 
 	sshClient := p.newSSHClient(premiumServer)
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
-
-	if err := sshClient.WaitSSHReady(waitCtx); err != nil {
-		return nil, fmt.Errorf("wait ssh: %w", err)
-	}
-	if err := sshClient.SetupDocker(waitCtx); err != nil {
-		return nil, fmt.Errorf("setup docker: %w", err)
+	if err := p.sshPreparePremiumHost(ctx, sshClient, "CreateVPSFromRequest"); err != nil {
+		return nil, err
 	}
 
 	req.Status = "done"

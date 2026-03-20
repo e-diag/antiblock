@@ -287,7 +287,18 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: generatePremiumSecret FAILED: %v", tgID, err)
 		return nil, err
 	}
-	proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD)
+	// EE — как в Pro: через тот же Docker API (nineseconds/mtg:2 generate-secret). Если Pro Docker выключен — ee сгенерируется на Premium VPS после EnsureDockerInstalled.
+	var secretEE string
+	if uc.dockerMgr != nil && uc.dockerMgr.GetClient() != nil {
+		ee, errEE := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+		if errEE != nil {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: GenerateEESecretViaDocker (Pro) failed, ee на VPS: %v", tgID, errEE)
+		} else {
+			secretEE = ee
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ee secret from Pro Docker (same as Pro tariff)", tgID)
+		}
+	}
+	proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD, secretEE)
 	if err != nil {
 		if errors.Is(err, ErrNoActivePremiumServer) {
 			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: no active premium server at ProvisionForUser — enqueueing user", tgID)

@@ -14,6 +14,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// Образы с Docker Hub для Premium на VPS: ee — [nineseconds/mtg], dd — [p3terx/mtg].
+const (
+	DockerImagePremiumEE = "nineseconds/mtg:2"
+	DockerImagePremiumDD = "p3terx/mtg"
+)
+
 type SSHClient struct {
 	host          string
 	port          int
@@ -167,11 +173,41 @@ func (s *SSHClient) SetupDocker(ctx context.Context) error {
 	return nil
 }
 
+// EnsureDockerInstalled ставит Docker через SetupDocker, если бинарника ещё нет (idempotent).
+func (s *SSHClient) EnsureDockerInstalled(ctx context.Context) error {
+	if _, err := s.RunCommand(ctx, "docker --version"); err == nil {
+		return nil
+	}
+	log.Printf("[SSH] EnsureDockerInstalled host=%s:%d — docker не найден, ставим", s.host, s.port)
+	return s.SetupDocker(ctx)
+}
+
+// EnsurePremiumFirewallPorts открывает 443/8443 в ufw, если файрвол активен (best-effort, без ошибки вверх).
+func (s *SSHClient) EnsurePremiumFirewallPorts(ctx context.Context) {
+	log.Printf("[SSH] EnsurePremiumFirewallPorts host=%s:%d (443/tcp 8443/tcp если ufw active)", s.host, s.port)
+	// root по SSH — без sudo; если ufw не установлен или inactive — ничего не делаем.
+	cmd := `sh -c 'if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"; then ufw allow 443/tcp || true; ufw allow 8443/tcp || true; fi'`
+	if _, err := s.RunCommand(ctx, cmd); err != nil {
+		log.Printf("[SSH] EnsurePremiumFirewallPorts host=%s:%d: %v", s.host, s.port, err)
+	}
+}
+
+// PullPremiumMtgImages подтягивает образы ee/dd на Premium VPS (после установки Docker).
+func (s *SSHClient) PullPremiumMtgImages(ctx context.Context) error {
+	for _, img := range []string{DockerImagePremiumEE, DockerImagePremiumDD} {
+		log.Printf("[SSH] docker pull %s host=%s:%d", img, s.host, s.port)
+		if _, err := s.RunCommand(ctx, "docker pull "+img); err != nil {
+			return fmt.Errorf("docker pull %s: %w", img, err)
+		}
+	}
+	return nil
+}
+
 // GenerateEESecret генерирует ee-секрет на сервере.
 func (s *SSHClient) GenerateEESecret(ctx context.Context) (string, error) {
-	log.Printf("[SSH] GenerateEESecret host=%s:%d", s.host, s.port)
+	log.Printf("[SSH] GenerateEESecret host=%s:%d image=%s", s.host, s.port, DockerImagePremiumEE)
 	out, err := s.RunCommand(ctx,
-		"docker run --rm nineseconds/mtg:2 generate-secret --hex vk.com 2>/dev/null")
+		"docker run --rm "+DockerImagePremiumEE+" generate-secret --hex vk.com 2>/dev/null")
 	if err != nil {
 		return "", fmt.Errorf("generate ee secret: %w", err)
 	}
@@ -202,8 +238,8 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 
 	// ee-контейнер: контейнер слушает 443, проброс строго на floatingIP:443.
 	cmdEE := fmt.Sprintf(
-		"docker run -d --name %s --restart unless-stopped -p %s:443:443 nineseconds/mtg:2 simple-run 0.0.0.0:443 %s",
-		nameEE, floatingIP, secretEE,
+		"docker run -d --name %s --restart unless-stopped -p %s:443:443 %s simple-run 0.0.0.0:443 %s",
+		nameEE, floatingIP, DockerImagePremiumEE, secretEE,
 	)
 	if _, err := s.RunCommand(ctx, cmdEE); err != nil {
 		return fmt.Errorf("start ee container: %w", err)
@@ -211,8 +247,8 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 
 	// dd-контейнер: проброс строго на floatingIP:8443.
 	cmdDD := fmt.Sprintf(
-		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 p3terx/mtg run %s -b 0.0.0.0:8443 -t 127.0.0.1:0",
-		nameDD, floatingIP, secretDD,
+		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s run %s -b 0.0.0.0:8443 -t 127.0.0.1:0",
+		nameDD, floatingIP, DockerImagePremiumDD, secretDD,
 	)
 	if _, err := s.RunCommand(ctx, cmdDD); err != nil {
 		// ee уже работает, dd мог не стартовать.

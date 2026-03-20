@@ -29,6 +29,7 @@ const (
 
 // ProxyNode представляет прокси-узел MTProto.
 // У бесплатных прокси порты могут совпадать (один сервер — несколько ключей); уникальна комбинация (ip, port, secret).
+// TimeWeb Premium: IP — адрес для клиента (tg://proxy), всегда персональный floating IP, не основной IP VPS.
 type ProxyNode struct {
 	ID     uint   `gorm:"primaryKey" json:"id"`
 	IP     string `gorm:"not null;uniqueIndex:idx_proxy_ip_port_secret" json:"ip"`

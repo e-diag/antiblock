@@ -865,6 +865,17 @@ func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int
 	}
 }
 
+// premiumTimewebClientIP — для tg://proxy у TimeWeb Premium только персональный floating IP (не IP VPS).
+func premiumTimewebClientIP(p *domain.ProxyNode) string {
+	if p == nil {
+		return ""
+	}
+	if ip := strings.TrimSpace(p.FloatingIP); ip != "" {
+		return ip
+	}
+	return strings.TrimSpace(p.IP)
+}
+
 // sendPremiumProxyToUser отправляет пользователю 2 сообщения: dd (8443) и ee (443) для TimeWeb Premium.
 // Для legacy Premium оставляем прежнюю схему портов: ee = ddPort + 10000.
 func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User, proxy *domain.ProxyNode) {
@@ -881,13 +892,22 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 		eePort = domain.PremiumPortEE
 	}
 
-	ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", proxy.IP, ddPort, proxy.Secret)
+	clientIP := strings.TrimSpace(proxy.IP)
+	if isTimeweb {
+		clientIP = premiumTimewebClientIP(proxy)
+		if clientIP == "" {
+			log.Printf("[Premium] SendPremiumProxyToUser: TimeWeb proxy без floating IP, сообщения не отправляем")
+			return
+		}
+	}
+
+	ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", clientIP, ddPort, proxy.Secret)
 	kbDD := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: "🔗 Подключиться (dd)", URL: ddURL}},
 		},
 	}
-	msgDD := fmt.Sprintf("✅ <b>Ваш Premium proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:", proxy.IP, ddPort, proxy.Secret)
+	msgDD := fmt.Sprintf("✅ <b>Ваш Premium proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:", clientIP, ddPort, proxy.Secret)
 
 	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
@@ -898,7 +918,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 
 	// Новый Premium: отдаём ещё и ee (всегда dd+ee для новых).
 	if isTimeweb && proxy.SecretEE != "" {
-		eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", proxy.IP, eePort, proxy.SecretEE)
+		eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", clientIP, eePort, proxy.SecretEE)
 		kbEE := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
 				{{Text: "🔗 Подключиться (ee)", URL: eeURL}},
@@ -908,7 +928,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 			"🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n"+
 				"🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n"+
 				"<i>Используйте этот прокси если стандартный заблокирован</i>",
-			proxy.IP, eePort, proxy.SecretEE,
+			clientIP, eePort, proxy.SecretEE,
 		)
 
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
@@ -923,11 +943,11 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 	if h.userProxyRepo != nil {
 		// dd
 		if ddPort > 0 && proxy.Secret != "" {
-			existingDD, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, proxy.IP, ddPort, proxy.Secret)
+			existingDD, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, ddPort, proxy.Secret)
 			if existingDD == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
 					UserID:    user.ID,
-					IP:        proxy.IP,
+					IP:        clientIP,
 					Port:      ddPort,
 					Secret:    proxy.Secret,
 					ProxyType: domain.ProxyTypePremium,
@@ -936,11 +956,11 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 		}
 		// ee
 		if eePort > 0 && proxy.SecretEE != "" {
-			existingEE, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, proxy.IP, eePort, proxy.SecretEE)
+			existingEE, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, eePort, proxy.SecretEE)
 			if existingEE == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
 					UserID:    user.ID,
-					IP:        proxy.IP,
+					IP:        clientIP,
 					Port:      eePort,
 					Secret:    proxy.SecretEE,
 					ProxyType: domain.ProxyTypePremium,
