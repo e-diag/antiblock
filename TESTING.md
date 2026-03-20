@@ -63,6 +63,13 @@
 - [ ] Статистика Legacy / New Premium (если есть в панели)
 - [ ] Двойной `mgr_vps_confirm` — один VPS в логах
 
+### Создание Premium VPS (очередь админа)
+
+- [ ] Сразу после появления IPv4 в логах: `premium_servers ... в пуле до SSH/Docker` — пользователи не должны видеть «нет активного сервера», пока идёт `WaitSSH` / `SetupDocker`.
+- [ ] При ошибке SSH/Docker заявка откатывается в `pending`, `timeweb_server_id` остаётся — повторное подтверждение продолжает с того же VPS в TimeWeb.
+
+**Если VPS уже создан в TimeWeb, а в БД строки нет** (старый бот / сбой): вручную `UPDATE vps_provision_requests SET status = 'pending', timeweb_server_id = <id из TW> WHERE id = ...` и снова подтвердить в боте, либо `INSERT` в `premium_servers` с тем же `timeweb_id` и основным IPv4.
+
 ## Блок Ж — TimeWeb (второй этап)
 
 - [ ] Заполнить `TIMEWEB_API_TOKEN`

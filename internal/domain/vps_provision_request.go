@@ -17,6 +17,9 @@ type VPSProvisionRequest struct {
 	OSImageID string `gorm:"size:64;default:''" json:"os_image_id"`
 	RegionID string `gorm:"size:50" json:"region_id"`
 
+	// TimewebServerID — ID сервера в TimeWeb после POST /servers; нужен для возобновления, если упали на SSH/Docker.
+	TimewebServerID int `gorm:"default:0" json:"timeweb_server_id"`
+
 	// Очередь пользователей, ожидающих этот сервер.
 	// Храним JSON-массив tg_id.
 	PendingUserIDs string `gorm:"type:text" json:"pending_user_ids"`

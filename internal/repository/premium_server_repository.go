@@ -12,6 +12,7 @@ type PremiumServerRepository interface {
 	Create(s *domain.PremiumServer) error
 	GetActive() (*domain.PremiumServer, error) // первый активный сервер (по created_at)
 	GetAllActive() ([]*domain.PremiumServer, error)
+	GetByTimewebID(timewebID int) (*domain.PremiumServer, error)
 	GetByID(id uint) (*domain.PremiumServer, error)
 	GetAll() ([]*domain.PremiumServer, error)
 	Update(s *domain.PremiumServer) error
@@ -48,6 +49,21 @@ func (r *premiumServerRepository) GetAllActive() ([]*domain.PremiumServer, error
 	var servers []*domain.PremiumServer
 	err := r.db.Where("is_active = ?", true).Order("created_at ASC").Find(&servers).Error
 	return servers, err
+}
+
+func (r *premiumServerRepository) GetByTimewebID(timewebID int) (*domain.PremiumServer, error) {
+	if timewebID <= 0 {
+		return nil, nil
+	}
+	var s domain.PremiumServer
+	err := r.db.Where("timeweb_id = ?", timewebID).First(&s).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 func (r *premiumServerRepository) GetByID(id uint) (*domain.PremiumServer, error) {

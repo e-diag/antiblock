@@ -383,7 +383,10 @@ func (p *PremiumProvisioner) DeprovisionForUser(ctx context.Context, user *domai
 }
 
 // CreateVPSFromRequest создаёт новый Premium VPS по подтверждённой заявке менеджера.
-// После создания устанавливает Docker и регистрирует сервер в БД.
+// Сервер попадает в пул premium_servers сразу после появления основного IPv4 (до долгого SSH/Docker),
+// чтобы пользователи не получали «нет активного сервера», пока идёт установка Docker.
+// При ошибке после перевода заявки в creating статус заявки откатывается в pending (можно подтвердить снова).
+// Если POST /servers уже прошёл, TimewebServerID на заявке сохраняется — повторный запуск продолжит с того же VPS.
 func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *domain.VPSProvisionRequest) (*domain.PremiumServer, error) {
 	if req == nil {
 		return nil, errors.New("req is nil")
@@ -391,17 +394,32 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.RegionID) == "" || strings.TrimSpace(req.OSImageID) == "" || req.ConfigID <= 0 {
 		return nil, errors.New("invalid request params")
 	}
-	if req.Status == "creating" || req.Status == "done" {
+	if req.Status == "done" {
 		return nil, fmt.Errorf("request already processed (status=%s)", req.Status)
 	}
 
-	// Меняем статус (best-effort).
-	if req.Status == "pending" {
-		req.Status = "confirmed"
+	var enteredCreating bool
+	var success bool
+	defer func() {
+		if !success && enteredCreating && req.ID != 0 {
+			req.Status = "pending"
+			if err := p.provisionReqRepo.Update(req); err != nil {
+				log.Printf("[Premium] CreateVPSFromRequest: rollback request %d to pending failed: %v", req.ID, err)
+			} else {
+				log.Printf("[Premium] CreateVPSFromRequest: request %d → pending после ошибки (повторите подтверждение; Timeweb id=%d сохранён)", req.ID, req.TimewebServerID)
+			}
+		}
+	}()
+
+	if req.Status != "creating" {
+		if req.Status == "pending" {
+			req.Status = "confirmed"
+			_ = p.provisionReqRepo.Update(req)
+		}
+		req.Status = "creating"
 		_ = p.provisionReqRepo.Update(req)
 	}
-	req.Status = "creating"
-	_ = p.provisionReqRepo.Update(req)
+	enteredCreating = true
 
 	createReq := timeweb.CreateServerRequest{
 		Name:             req.Name,
@@ -409,7 +427,6 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		AvailabilityZone: req.RegionID,
 		IsDDOSGuard:      false,
 	}
-	// OpenAPI create-server: либо os_id (число из GET /os/servers), либо image_id (UUID из /images).
 	if osID, err := strconv.Atoi(strings.TrimSpace(req.OSImageID)); err == nil && osID > 0 {
 		createReq.OsID = osID
 	} else if id := strings.TrimSpace(req.OSImageID); id != "" {
@@ -419,29 +436,66 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		createReq.SSHKeysIDs = []int{p.sshKeyID}
 	}
 
-	serverInfo, err := p.twClient.CreateServer(ctx, createReq)
-	if err != nil {
-		return nil, fmt.Errorf("create server: %w", err)
+	var twID int
+	if req.TimewebServerID > 0 {
+		twID = req.TimewebServerID
+		log.Printf("[Premium] CreateVPSFromRequest: resume existing Timeweb server_id=%d (request %d)", twID, req.ID)
+	} else {
+		srvOut, err := p.twClient.CreateServer(ctx, createReq)
+		if err != nil {
+			return nil, fmt.Errorf("create server: %w", err)
+		}
+		twID = srvOut.ID
+		req.TimewebServerID = twID
+		if err := p.provisionReqRepo.Update(req); err != nil {
+			return nil, fmt.Errorf("persist timeweb_server_id on request: %w", err)
+		}
+		log.Printf("[Premium] CreateVPSFromRequest: Timeweb POST /servers ok id=%d, saved on request %d", twID, req.ID)
 	}
-	if err := p.twClient.WaitServerReady(ctx, serverInfo.ID); err != nil {
+
+	if err := p.twClient.WaitServerReady(ctx, twID); err != nil {
 		return nil, fmt.Errorf("wait server ready: %w", err)
 	}
 
-	// Берём финальную инфу, чтобы достать основной IPv4.
-	srv, err := p.twClient.GetServer(ctx, serverInfo.ID)
+	srv, err := p.twClient.GetServer(ctx, twID)
 	if err != nil {
 		return nil, fmt.Errorf("get server after ready: %w", err)
 	}
-
 	mainIP := extractMainIPv4(srv)
 	if mainIP == "" {
 		return nil, errors.New("cannot extract server main IPv4")
 	}
 
-	hostKeySeen := ""
-	sshClient := timeweb.NewSSHClient(mainIP, 22, p.sshUser, p.sshKeyPath).WithKnownHostKey("", func(hostKey string) {
-		hostKeySeen = hostKey
-	})
+	premiumServer, err := p.serverRepo.GetByTimewebID(twID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup premium server by timeweb id: %w", err)
+	}
+	if premiumServer == nil {
+		premiumServer = &domain.PremiumServer{
+			Name:      req.Name,
+			IP:        mainIP,
+			TimewebID: twID,
+			IsActive:  true,
+		}
+		if err := p.serverRepo.Create(premiumServer); err != nil {
+			return nil, fmt.Errorf("save premium server: %w", err)
+		}
+		log.Printf("[Premium] CreateVPSFromRequest: premium_servers id=%d ip=%s — в пуле до SSH/Docker", premiumServer.ID, mainIP)
+	} else {
+		if mainIP != "" && premiumServer.IP != mainIP {
+			premiumServer.IP = mainIP
+			_ = p.serverRepo.Update(premiumServer)
+		}
+		log.Printf("[Premium] CreateVPSFromRequest: reuse premium_servers id=%d ip=%s", premiumServer.ID, premiumServer.IP)
+	}
+
+	if active, errAct := p.serverRepo.GetAllActive(); errAct != nil {
+		log.Printf("[Premium] CreateVPSFromRequest: pool size log err=%v", errAct)
+	} else {
+		log.Printf("[Premium] CreateVPSFromRequest: active premium_servers in pool=%d", len(active))
+	}
+
+	sshClient := p.newSSHClient(premiumServer)
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
@@ -452,26 +506,10 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		return nil, fmt.Errorf("setup docker: %w", err)
 	}
 
-	premiumServer := &domain.PremiumServer{
-		Name:       req.Name,
-		IP:         mainIP,
-		TimewebID:  serverInfo.ID,
-		IsActive:   true,
-		SSHHostKey: hostKeySeen,
-	}
-	if err := p.serverRepo.Create(premiumServer); err != nil {
-		return nil, fmt.Errorf("save premium server: %w", err)
-	}
-	active, errAct := p.serverRepo.GetAllActive()
-	if errAct != nil {
-		log.Printf("[Premium] CreateVPSFromRequest: added server_id=%d ip=%s to pool (GetAllActive for count err=%v)", premiumServer.ID, premiumServer.IP, errAct)
-	} else {
-		log.Printf("[Premium] CreateVPSFromRequest: added server_id=%d ip=%s to pool (active premium_servers=%d)", premiumServer.ID, premiumServer.IP, len(active))
-	}
-
 	req.Status = "done"
 	_ = p.provisionReqRepo.Update(req)
-
+	success = true
+	log.Printf("[Premium] CreateVPSFromRequest: request %d done, premium_server id=%d", req.ID, premiumServer.ID)
 	return premiumServer, nil
 }
 

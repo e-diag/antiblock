@@ -1934,10 +1934,11 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 					_, _ = b.SendMessage(runCtx, &bot.SendMessageParams{ChatID: chatID, Text: "❌ Ошибка: request не найден."})
 					return
 				}
-				if req.Status == "creating" || req.Status == "done" {
+				// "creating" не блокируем — можно возобновить после сбоя (TimewebServerID на заявке).
+				if req.Status == "done" {
 					_, _ = b.SendMessage(runCtx, &bot.SendMessageParams{
 						ChatID: chatID,
-						Text:   fmt.Sprintf("ℹ️ Заявка уже в статусе %q. Повторный запуск пропущен.", req.Status),
+						Text:   "ℹ️ Заявка уже выполнена (status=done).",
 					})
 					return
 				}
