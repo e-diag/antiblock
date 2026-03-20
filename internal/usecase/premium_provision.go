@@ -457,13 +457,17 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		return nil, fmt.Errorf("wait server ready: %w", err)
 	}
 
+	if err := p.ensurePublicIPv4ForServer(ctx, twID); err != nil {
+		return nil, err
+	}
+
 	srv, err := p.twClient.GetServer(ctx, twID)
 	if err != nil {
 		return nil, fmt.Errorf("get server after ready: %w", err)
 	}
-	mainIP := extractMainIPv4(srv)
+	mainIP := timeweb.ExtractMainIPv4(srv)
 	if mainIP == "" {
-		return nil, errors.New("cannot extract server main IPv4")
+		return nil, errors.New("нет публичного IPv4 у сервера (после AddServerIP ipv4)")
 	}
 
 	premiumServer, err := p.serverRepo.GetByTimewebID(twID)
@@ -513,26 +517,41 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 	return premiumServer, nil
 }
 
-func extractMainIPv4(srv *timeweb.Server) string {
-	if srv == nil {
-		return ""
+// ensurePublicIPv4ForServer гарантирует публичный IPv4 для SSH/Docker: при только IPv6 вызывает POST .../servers/{id}/ips.
+func (p *PremiumProvisioner) ensurePublicIPv4ForServer(ctx context.Context, twID int) error {
+	srv, err := p.twClient.GetServer(ctx, twID)
+	if err != nil {
+		return fmt.Errorf("get server: %w", err)
 	}
-	for _, n := range srv.Networks {
-		if strings.EqualFold(n.Type, "public") {
-			for _, ip := range n.Ips {
-				if ip.IsMain && strings.EqualFold(ip.Type, "ipv4") && ip.IP != "" {
-					return ip.IP
-				}
-			}
-			// fallback: главный ip без строгого типа ipv4
-			for _, ip := range n.Ips {
-				if ip.IsMain && ip.IP != "" {
-					return ip.IP
-				}
-			}
+	if timeweb.ExtractMainIPv4(srv) != "" {
+		return nil
+	}
+	log.Printf("[Premium] server timeweb_id=%d: нет публичного IPv4 в API — AddServerIP(type=ipv4)", twID)
+	assigned, err := p.twClient.AddServerIP(ctx, twID, "ipv4")
+	if err != nil {
+		return fmt.Errorf("timeweb AddServerIP ipv4: %w", err)
+	}
+	log.Printf("[Premium] server timeweb_id=%d: AddServerIP ответ ip=%q", twID, assigned)
+
+	waitCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		srv, err := p.twClient.GetServer(waitCtx, twID)
+		if err != nil {
+			return err
+		}
+		if v := timeweb.ExtractMainIPv4(srv); v != "" {
+			log.Printf("[Premium] server timeweb_id=%d: публичный IPv4 в сети: %s", twID, v)
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("таймаут ожидания публичного IPv4 на сервере %d после AddServerIP: %w", twID, waitCtx.Err())
+		case <-ticker.C:
 		}
 	}
-	return ""
 }
 
 // parsePendingUserIDs — полезно для handler/worker.

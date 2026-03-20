@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,16 +81,21 @@ func (s *SSHClient) newConfig() (*ssh.ClientConfig, error) {
 	}, nil
 }
 
+func (s *SSHClient) dialAddr() string {
+	return net.JoinHostPort(s.host, strconv.Itoa(s.port))
+}
+
 func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) {
 	cfg, err := s.newConfig()
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[SSH] connecting to %s:%d user=%s (cmd_len=%d)", s.host, s.port, s.user, len(cmd))
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", s.host, s.port), cfg)
+	addr := s.dialAddr()
+	log.Printf("[SSH] connecting to %s user=%s (cmd_len=%d)", addr, s.user, len(cmd))
+	client, err := ssh.Dial("tcp", addr, cfg)
 	if err != nil {
-		log.Printf("[SSH] dial %s:%d failed: %v", s.host, s.port, err)
-		return "", fmt.Errorf("ssh dial %s: %w", s.host, err)
+		log.Printf("[SSH] dial %s failed: %v", addr, err)
+		return "", fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
 	defer client.Close()
 
@@ -118,7 +124,7 @@ func (s *SSHClient) WaitSSHReady(ctx context.Context) error {
 	for {
 		select {
 		case <-deadline.C:
-			return fmt.Errorf("SSH timeout on %s", s.host)
+			return fmt.Errorf("SSH timeout on %s", s.dialAddr())
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:

@@ -70,6 +70,8 @@
 
 **Если VPS уже создан в TimeWeb, а в БД строки нет** (старый бот / сбой): вручную `UPDATE vps_provision_requests SET status = 'pending', timeweb_server_id = <id из TW> WHERE id = ...` и снова подтвердить в боте, либо `INSERT` в `premium_servers` с тем же `timeweb_id` и основным IPv4.
 
+- [ ] Если у нового VPS в TimeWeb только публичный IPv6, бот вызывает `POST .../servers/{id}/ips` с `type=ipv4` (платный публичный IPv4 по тарифам Timeweb), затем ждёт появления IPv4 в API и только его использует для SSH.
+
 ## Блок Ж — TimeWeb (второй этап)
 
 - [ ] Заполнить `TIMEWEB_API_TOKEN`

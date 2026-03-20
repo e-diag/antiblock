@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -208,6 +209,64 @@ type ServerIP struct {
 	Type   string `json:"type,omitempty"`
 	IP     string `json:"ip,omitempty"`
 	IsMain bool   `json:"is_main,omitempty"`
+}
+
+// ExtractMainIPv4 возвращает публичный IPv4 для SSH/API (только v4, без IPv6).
+// Сначала главный (is_main) IPv4 в public-сети, иначе любой IPv4 в public.
+func ExtractMainIPv4(srv *Server) string {
+	if srv == nil {
+		return ""
+	}
+	for _, n := range srv.Networks {
+		if !strings.EqualFold(n.Type, "public") {
+			continue
+		}
+		var anyV4 string
+		for _, ip := range n.Ips {
+			if ip.IP == "" || !parseableIPv4(ip.IP) {
+				continue
+			}
+			if ip.IsMain {
+				return ip.IP
+			}
+			if anyV4 == "" {
+				anyV4 = ip.IP
+			}
+		}
+		if anyV4 != "" {
+			return anyV4
+		}
+	}
+	return ""
+}
+
+func parseableIPv4(s string) bool {
+	ip := net.ParseIP(strings.TrimSpace(s))
+	return ip != nil && ip.To4() != nil
+}
+
+// AddServerIP добавляет IP серверу (POST /api/v1/servers/{id}/ips). Для публичного IPv4 укажите ipType "ipv4".
+func (c *Client) AddServerIP(ctx context.Context, serverID int, ipType string) (assignedIP string, err error) {
+	if ipType == "" {
+		ipType = "ipv4"
+	}
+	body := map[string]string{"type": ipType}
+	respBody, code, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/servers/%d/ips", serverID), body)
+	if err != nil {
+		return "", err
+	}
+	if code < 200 || code >= 300 {
+		return "", fmt.Errorf("timeweb add server ip: http %d: %s", code, strings.TrimSpace(string(respBody)))
+	}
+	var out struct {
+		ServerIP struct {
+			IP string `json:"ip"`
+		} `json:"server_ip"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", fmt.Errorf("timeweb add server ip: unmarshal: %w", err)
+	}
+	return strings.TrimSpace(out.ServerIP.IP), nil
 }
 
 // CreateServerRequest соответствует схеме `create-server`.
