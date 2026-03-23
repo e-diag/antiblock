@@ -37,6 +37,7 @@ type PaymentUseCase interface {
 		telegramChargeID string,
 		providerChargeID string,
 	) error
+	HasYooKassaPayment(providerChargeID string) (bool, error)
 }
 
 type paymentUseCase struct {
@@ -66,6 +67,7 @@ type StarPaymentRepository interface {
 // YooKassaPaymentRepository — сохранение оплат ЮKassa (RUB через Telegram Payments).
 type YooKassaPaymentRepository interface {
 	Create(p *domain.YooKassaPayment) error
+	ExistsByProviderPaymentChargeID(providerPaymentChargeID string) (bool, error)
 }
 
 // NewPaymentUseCase создает новый use case для платежей
@@ -320,4 +322,11 @@ func (uc *paymentUseCase) RecordYooKassaPayment(
 		ProviderPaymentChargeID:   providerChargeID,
 	}
 	return uc.yooKassaPaymentRepo.Create(p)
+}
+
+func (uc *paymentUseCase) HasYooKassaPayment(providerChargeID string) (bool, error) {
+	if uc.yooKassaPaymentRepo == nil {
+		return false, nil
+	}
+	return uc.yooKassaPaymentRepo.ExistsByProviderPaymentChargeID(providerChargeID)
 }

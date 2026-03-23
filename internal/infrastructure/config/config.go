@@ -90,9 +90,13 @@ type CryptoBotConfig struct {
 	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи CryptoPay webhook
 }
 
-// YooKassaConfig — Telegram Payments API (провайдер ЮKassa).
+// YooKassaConfig — настройки API ЮКассы (Smart Payment + webhook) и Telegram Payments.
 type YooKassaConfig struct {
 	ProviderToken string `yaml:"provider_token"`
+	ShopID        string `yaml:"shop_id"`
+	SecretKey     string `yaml:"secret_key"`
+	ReturnURL     string `yaml:"return_url"`
+	WebhookPort   string `yaml:"webhook_port"`
 }
 
 // XRocketConfig — настройки интеграции с xRocket Pay API (TON).
@@ -191,6 +195,18 @@ func Load(path string) (*Config, error) {
 
 	if cfg.YooKassa.ProviderToken == "" {
 		cfg.YooKassa.ProviderToken = getEnv("YOOKASSA_PROVIDER_TOKEN", "")
+	}
+	if cfg.YooKassa.ShopID == "" {
+		cfg.YooKassa.ShopID = getEnv("YOOKASSA_SHOP_ID", "")
+	}
+	if cfg.YooKassa.SecretKey == "" {
+		cfg.YooKassa.SecretKey = getEnv("YOOKASSA_SECRET_KEY", "")
+	}
+	if cfg.YooKassa.ReturnURL == "" {
+		cfg.YooKassa.ReturnURL = getEnv("YOOKASSA_RETURN_URL", "")
+	}
+	if cfg.YooKassa.WebhookPort == "" {
+		cfg.YooKassa.WebhookPort = getEnv("YOOKASSA_WEBHOOK_PORT", "8082")
 	}
 
 	// TimeWeb Premium (условно включаем по TIMEWEB_API_TOKEN).

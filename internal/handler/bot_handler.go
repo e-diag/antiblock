@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -289,6 +293,9 @@ type BotHandler struct {
 	broadcastSem        chan struct{}
 
 	yooKassaProviderToken string // токен провайдера Telegram Payments (ЮKassa)
+	yooKassaShopID        string
+	yooKassaSecretKey     string
+	yooKassaReturnURL     string
 
 	vpsSetupSteps map[int64]*VPSSetupData
 	vpsSetupMu    sync.Mutex
@@ -322,6 +329,9 @@ func NewBotHandler(
 	premiumServerOSID int,
 	adminIDs []int64,
 	yooKassaProviderToken string,
+	yooKassaShopID string,
+	yooKassaSecretKey string,
+	yooKassaReturnURL string,
 ) *BotHandler {
 	return &BotHandler{
 		userUC:                userUC,
@@ -357,6 +367,9 @@ func NewBotHandler(
 		adminIDs:              adminIDs,
 		broadcastSem:          make(chan struct{}, 1),
 		yooKassaProviderToken: yooKassaProviderToken,
+		yooKassaShopID:        yooKassaShopID,
+		yooKassaSecretKey:     yooKassaSecretKey,
+		yooKassaReturnURL:     yooKassaReturnURL,
 	}
 }
 
@@ -1103,6 +1116,11 @@ func (h *BotHandler) getPremiumStars() int {
 	return n
 }
 
+func (h *BotHandler) isYooKassaConfigured() bool {
+	// RUB-сценарий (Smart Payment) скрываем, если не заполнены обязательные поля.
+	return h.yooKassaShopID != "" && h.yooKassaSecretKey != "" && h.yooKassaReturnURL != ""
+}
+
 // getProPriceRub возвращает цену Pro в рублях из настроек.
 func (h *BotHandler) getProPriceRub() int {
 	if h.settingsRepo == nil {
@@ -1254,9 +1272,11 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 		days, premiumPriceRub, usdt, starsCount)
 
 	var rows [][]models.InlineKeyboardButton
-	rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
+	if h.isYooKassaConfigured() {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
+	}
 	rows = append(rows,
-		[]models.InlineKeyboardButton{{Text: "💵 TON (xRocket)", CallbackData: "buy_premium_usdt"}},
+		[]models.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_premium_usdt"}},
 		[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", starsCount), CallbackData: "buy_stars"}},
 		[]models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
 	)
@@ -1674,26 +1694,36 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		priceRubPremium := h.getPremiumPriceRub()
 		premiumTON := h.getPremiumUSDT()
 		premiumStars := h.getPremiumStars()
+		yooEnabled := h.isYooKassaConfigured()
+		proRubLine := ""
+		premiumRubLine := ""
+		rubCommands := ""
+		if yooEnabled {
+			proRubLine = fmt.Sprintf("💳 Pro (ЮКасса): <b>%d ₽</b>\n", priceRubPro)
+			premiumRubLine = fmt.Sprintf("💳 Premium (ЮКасса): <b>%d ₽</b>\n", priceRubPremium)
+			rubCommands = "<code>/setprice_rub_pro &lt;₽&gt;</code>\n" +
+				"<code>/setprice_rub_premium &lt;₽&gt;</code>\n"
+		}
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, ParseMode: models.ParseModeHTML,
 			Text: fmt.Sprintf(
 				"⚙️ <b>Настройки подписки</b>\n\n"+
 					"📅 Pro дней: <b>%d</b>\n"+
-					"💳 Pro (ЮКасса): <b>%d ₽</b>\n"+
+					"%s"+
 					"⭐ Pro Stars: <b>%d</b>\n\n"+
 					"📅 Premium дней: <b>%d</b>\n"+
-					"💳 Premium (ЮКасса): <b>%d ₽</b>\n"+
+					"%s"+
 					"💵 Premium TON: <b>%.2f</b>\n"+
 					"⭐ Premium Stars: <b>%d</b>\n\n"+
 					"Изменить:\n"+
-					"<code>/setprice_rub_pro &lt;₽&gt;</code>\n"+
-					"<code>/setprice_rub_premium &lt;₽&gt;</code>\n"+
+					"%s"+
 					"<code>/setpro_days &lt;дней&gt;</code>\n"+
 					"<code>/setpricing &lt;дней&gt;</code>\n"+
 					"<code>/setprice_usdt &lt;TON&gt;</code>\n"+
 					"<code>/setprice_stars &lt;⭐&gt;</code>",
-				proDays, priceRubPro, proStars,
-				premiumDays, priceRubPremium, premiumTON, premiumStars,
+				proDays, proRubLine, proStars,
+				premiumDays, premiumRubLine, premiumTON, premiumStars,
+				rubCommands,
 			),
 			ReplyMarkup: &models.InlineKeyboardMarkup{
 				InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -1750,20 +1780,27 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		priceRub := h.getProPriceRub()
 		usdt := h.getProUSDT()
 		stars := h.getProStars()
+		yooEnabled := h.isYooKassaConfigured()
+		rubLine := ""
+		rubCommands := ""
+		if yooEnabled {
+			rubLine = fmt.Sprintf("💳 ЮКасса: <b>%d ₽</b>\n", priceRub)
+			rubCommands = "<code>/setprice_rub_pro &lt;₽&gt;</code>\n"
+		}
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, ParseMode: models.ParseModeHTML,
 			Text: fmt.Sprintf(
 				"⚙️ <b>Настройки Pro</b>\n\n"+
 					"📅 Дней: <b>%d</b>\n"+
-					"💳 ЮКасса: <b>%d ₽</b>\n"+
+					"%s"+
 					"💵 TON: <b>%.2f</b>\n"+
 					"⭐ Stars: <b>%d</b>\n\n"+
 					"Изменить:\n"+
-					"<code>/setprice_rub_pro &lt;₽&gt;</code>\n"+
+					"%s"+
 					"<code>/setpro_days &lt;дней&gt;</code>\n"+
 					"<code>/setpro_price_usdt &lt;сумма&gt;</code>\n"+
 					"<code>/setpro_price_stars &lt;звёзды&gt;</code>",
-				days, priceRub, usdt, stars,
+				days, rubLine, usdt, stars, rubCommands,
 			),
 			ReplyMarkup: &models.InlineKeyboardMarkup{
 				InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -3743,9 +3780,11 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 			days, priceRub, usdt, stars)
 		var rows [][]models.InlineKeyboardButton
-		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
+		if h.isYooKassaConfigured() {
+			rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
+		}
 		rows = append(rows,
-			[]models.InlineKeyboardButton{{Text: "💵 TON (xRocket)", CallbackData: "buy_pro_usdt"}},
+			[]models.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_pro_usdt"}},
 			[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", stars), CallbackData: "buy_pro_stars"}},
 			[]models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
 		)
@@ -3779,7 +3818,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		text := fmt.Sprintf("⚡ Оплата Pro в TON через xRocket.\n\nСумма: <b>%.2f TON</b>\n\nНажмите кнопку ниже, чтобы перейти к оплате.", usdt)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "💵 Оплатить Pro в TON (xRocket)", URL: payURL}},
+				{{Text: fmt.Sprintf("💵 Оплатить %.2f TON", usdt), URL: payURL}},
 			},
 		}
 		msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
@@ -3841,7 +3880,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			"Сумма: <b>%.2f TON</b>\n\nНажмите кнопку ниже, чтобы перейти к оплате.", usdt)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "💵 Оплатить в TON (xRocket)", URL: payURL}},
+				{{Text: fmt.Sprintf("💵 Оплатить %.2f TON", usdt), URL: payURL}},
 			},
 		}
 		msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
@@ -4116,32 +4155,83 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 	}
 }
 
-// HandleBuyProRub отправляет счёт на оплату Pro через ЮKassa (Telegram Payments API).
+func (h *BotHandler) createYooKassaSmartPayment(ctx context.Context, userID int64, tariffType string, amountRub int, days int, description string) (string, string, error) {
+	if h.yooKassaShopID == "" || h.yooKassaSecretKey == "" || h.yooKassaReturnURL == "" {
+		return "", "", fmt.Errorf("yookassa smart payment config is incomplete")
+	}
+
+	reqBody := map[string]interface{}{
+		"amount": map[string]string{
+			"value":    fmt.Sprintf("%d.00", amountRub),
+			"currency": "RUB",
+		},
+		"capture": true,
+		"confirmation": map[string]string{
+			"type":       "redirect",
+			"return_url": h.yooKassaReturnURL,
+		},
+		"description": description,
+		"metadata": map[string]string{
+			"tg_id":        fmt.Sprintf("%d", userID),
+			"tariff_type":  tariffType,
+			"days_granted": fmt.Sprintf("%d", days),
+		},
+	}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.yookassa.ru/v3/payments", bytes.NewBuffer(data))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotence-Key", fmt.Sprintf("tg-%s-%d-%d-%d", tariffType, userID, days, time.Now().UnixNano()))
+	auth := base64.StdEncoding.EncodeToString([]byte(h.yooKassaShopID + ":" + h.yooKassaSecretKey))
+	req.Header.Set("Authorization", "Basic "+auth)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("yookassa api status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var out struct {
+		ID           string `json:"id"`
+		Confirmation struct {
+			ConfirmationURL string `json:"confirmation_url"`
+		} `json:"confirmation"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", "", err
+	}
+	if out.ID == "" || out.Confirmation.ConfirmationURL == "" {
+		return "", "", fmt.Errorf("yookassa response missing id or confirmation_url")
+	}
+	return out.ID, out.Confirmation.ConfirmationURL, nil
+}
+
+// HandleBuyProRub отправляет ссылку Smart Payment ЮКассы на оплату Pro.
 func (h *BotHandler) HandleBuyProRub(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
-	if h.yooKassaProviderToken == "" {
+	if h.yooKassaShopID == "" || h.yooKassaSecretKey == "" || h.yooKassaReturnURL == "" {
 		h.sendText(ctx, b, update, "❌ Оплата в рублях временно недоступна.")
 		return
 	}
 
 	days := h.getProDays()
 	priceRub := h.getProPriceRub()
-	payload := fmt.Sprintf("pro_%d_%d", days, userID)
-
-	link, err := b.CreateInvoiceLink(ctx, &bot.CreateInvoiceLinkParams{
-		Title:         fmt.Sprintf("Pro %d дней", days),
-		Description:   fmt.Sprintf("Pro подписка на %d дней — выделенные прокси dd+ee", days),
-		Payload:       payload,
-		ProviderToken: h.yooKassaProviderToken,
-		Currency:      "RUB",
-		Prices: []models.LabeledPrice{
-			{Label: fmt.Sprintf("Pro %d дней", days), Amount: priceRub * 100}, // копейки
-		},
-		ProviderData: fmt.Sprintf(`{"receipt":{"items":[{"description":"Pro подписка %d дней","quantity":"1.00","amount":{"value":"%d.00","currency":"RUB"},"vat_code":1}]}}`,
-			days, priceRub),
-	})
+	_, link, err := h.createYooKassaSmartPayment(
+		ctx, userID, "pro", priceRub, days,
+		fmt.Sprintf("Pro подписка на %d дней", days),
+	)
 	if err != nil {
-		log.Printf("[YooKassa] HandleBuyProRub CreateInvoiceLink tg_id=%d: %v", userID, err)
+		log.Printf("[YooKassa] HandleBuyProRub create payment tg_id=%d: %v", userID, err)
 		h.sendText(ctx, b, update, "❌ Не удалось создать счёт. Попробуйте позже.")
 		return
 	}
@@ -4155,32 +4245,22 @@ func (h *BotHandler) HandleBuyProRub(ctx context.Context, b *bot.Bot, update *mo
 	h.send(ctx, b, update, msg, kb)
 }
 
-// HandleBuyPremiumRub отправляет счёт на оплату Premium через ЮKassa (Telegram Payments API).
+// HandleBuyPremiumRub отправляет ссылку Smart Payment ЮКассы на оплату Premium.
 func (h *BotHandler) HandleBuyPremiumRub(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
-	if h.yooKassaProviderToken == "" {
+	if h.yooKassaShopID == "" || h.yooKassaSecretKey == "" || h.yooKassaReturnURL == "" {
 		h.sendText(ctx, b, update, "❌ Оплата в рублях временно недоступна.")
 		return
 	}
 
 	days := h.getPremiumDays()
 	priceRub := h.getPremiumPriceRub()
-	payload := fmt.Sprintf("premium_%d_%d", days, userID)
-
-	link, err := b.CreateInvoiceLink(ctx, &bot.CreateInvoiceLinkParams{
-		Title:         fmt.Sprintf("Premium %d дней", days),
-		Description:   fmt.Sprintf("Premium подписка на %d дней — персональные прокси dd+ee", days),
-		Payload:       payload,
-		ProviderToken: h.yooKassaProviderToken,
-		Currency:      "RUB",
-		Prices: []models.LabeledPrice{
-			{Label: fmt.Sprintf("Premium %d дней", days), Amount: priceRub * 100},
-		},
-		ProviderData: fmt.Sprintf(`{"receipt":{"items":[{"description":"Premium подписка %d дней","quantity":"1.00","amount":{"value":"%d.00","currency":"RUB"},"vat_code":1}]}}`,
-			days, priceRub),
-	})
+	_, link, err := h.createYooKassaSmartPayment(
+		ctx, userID, "premium", priceRub, days,
+		fmt.Sprintf("Premium подписка на %d дней", days),
+	)
 	if err != nil {
-		log.Printf("[YooKassa] HandleBuyPremiumRub CreateInvoiceLink tg_id=%d: %v", userID, err)
+		log.Printf("[YooKassa] HandleBuyPremiumRub create payment tg_id=%d: %v", userID, err)
 		h.sendText(ctx, b, update, "❌ Не удалось создать счёт. Попробуйте позже.")
 		return
 	}

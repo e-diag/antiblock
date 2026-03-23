@@ -54,8 +54,12 @@ services:
       DB_SSLMODE: disable
       DB_TIMEZONE: UTC
       
-      # ЮKassa (Telegram Payments, RUB)
+      # ЮКасса (Smart Payment + Telegram Payments token)
       YOOKASSA_PROVIDER_TOKEN: ${YOOKASSA_PROVIDER_TOKEN:-}
+      YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID:-}
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY:-}
+      YOOKASSA_RETURN_URL: ${YOOKASSA_RETURN_URL:-}
+      YOOKASSA_WEBHOOK_PORT: ${YOOKASSA_WEBHOOK_PORT:-8082}
 
       # xRocket Pay (TON)
       XROCKET_API_TOKEN: ${XROCKET_API_TOKEN}
@@ -74,6 +78,7 @@ services:
       TIMEWEB_SSH_KEY_PATH: ${TIMEWEB_SSH_KEY_PATH:-/antiblock/premium-keys/premium_bot_key}
     ports:
       - "127.0.0.1:8081:8081"  # Webhook xRocket (доступен только localhost; туннель cloudflared/ngrok проксирует снаружи)
+      - "127.0.0.1:8082:8082"  # Webhook ЮКассы
       - "127.0.0.1:9090:9090"  # Prometheus metrics
     restart: unless-stopped
     networks:

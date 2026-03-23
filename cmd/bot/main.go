@@ -161,6 +161,9 @@ func main() {
 		cfg.Timeweb.PremiumServerOSID,
 		cfg.Telegram.GetAdminIDs(),
 		cfg.YooKassa.ProviderToken,
+		cfg.YooKassa.ShopID,
+		cfg.YooKassa.SecretKey,
+		cfg.YooKassa.ReturnURL,
 	)
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 	rateMW := middleware.NewRateLimiter(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.BurstSize).Middleware
@@ -372,50 +375,51 @@ func main() {
 	go adRePinWorker.Start()
 	go invoiceCleanupWorker.Start()
 
+	getPremiumDays := func() int {
+		v, _ := settingsRepo.Get("premium_days")
+		if v == "" {
+			return 30
+		}
+		n, _ := strconv.Atoi(v)
+		if n < 1 {
+			return 30
+		}
+		return n
+	}
+	getProDays := func() int {
+		v, _ := settingsRepo.Get("pro_days")
+		if v == "" {
+			return 30
+		}
+		n, _ := strconv.Atoi(v)
+		if n < 1 {
+			return 30
+		}
+		return n
+	}
+	activatePremium := func(tgID int64, days int) error {
+		return userUC.ActivatePremium(tgID, days)
+	}
+	activatePro := func(tgID int64, days int) (*domain.ProGroup, bool, error) {
+		if proServerIP == "" {
+			return nil, false, fmt.Errorf("pro server ip is empty")
+		}
+		u, err := userRepo.GetByTGID(tgID)
+		if err != nil || u == nil {
+			return nil, false, fmt.Errorf("user not found")
+		}
+		return proUC.ActivateProSubscription(u, days, proServerIP, proDockerMgr, getProDays())
+	}
+
 	// Webhook xRocket Pay для подтверждения успешной оплаты TON.
 	if cfg.XRocket.WebhookPort != "" {
 		port, _ := strconv.Atoi(cfg.XRocket.WebhookPort)
 		if port > 0 {
 			mux := http.NewServeMux()
-			getPremiumDays := func() int {
-				v, _ := settingsRepo.Get("premium_days")
-				if v == "" {
-					return 30
-				}
-				n, _ := strconv.Atoi(v)
-				if n < 1 {
-					return 30
-				}
-				return n
-			}
-			getProDays := func() int {
-				v, _ := settingsRepo.Get("pro_days")
-				if v == "" {
-					return 30
-				}
-				n, _ := strconv.Atoi(v)
-				if n < 1 {
-					return 30
-				}
-				return n
-			}
-			activatePremium := func(tgID int64, days int) error {
-				return userUC.ActivatePremium(tgID, days)
-			}
-			activatePro := func(tgID int64, days int) (*domain.ProGroup, bool, error) {
-				if proServerIP == "" {
-					return nil, false, fmt.Errorf("pro server ip is empty")
-				}
-				u, err := userRepo.GetByTGID(tgID)
-				if err != nil || u == nil {
-					return nil, false, fmt.Errorf("user not found")
-				}
-				return proUC.ActivateProSubscription(u, days, proServerIP, proDockerMgr, getProDays())
-			}
 			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(activatePremium, activatePro, paymentUC, cfg.XRocket.APIToken, getPremiumDays, getProDays, b))
 			srv := &http.Server{
 				Addr:              ":" + cfg.XRocket.WebhookPort,
-				Handler:          mux,
+				Handler:           mux,
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
 				WriteTimeout:      15 * time.Second,
@@ -423,6 +427,27 @@ func main() {
 			}
 			go func() {
 				log.Printf("xRocket webhook listening on :%s", cfg.XRocket.WebhookPort)
+				_ = srv.ListenAndServe()
+			}()
+		}
+	}
+
+	// Webhook ЮКассы для Smart Payment (payment.succeeded).
+	if cfg.YooKassa.WebhookPort != "" {
+		port, _ := strconv.Atoi(cfg.YooKassa.WebhookPort)
+		if port > 0 {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/webhook/yookassa", webhook.YooKassaWebhook(activatePremium, activatePro, paymentUC, b))
+			srv := &http.Server{
+				Addr:              ":" + cfg.YooKassa.WebhookPort,
+				Handler:           mux,
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      15 * time.Second,
+				IdleTimeout:       60 * time.Second,
+			}
+			go func() {
+				log.Printf("YooKassa webhook listening on :%s", cfg.YooKassa.WebhookPort)
 				_ = srv.ListenAndServe()
 			}()
 		}
