@@ -1250,7 +1250,7 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 		"• Максимальная скорость и стабильность\n"+
 		"• Можно использовать на нескольких устройствах\n"+
 		"• Без рекламы\n\n"+
-		"💰 Стоимость: <b>%d ₽</b> (карта), <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
+		"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 		days, premiumPriceRub, usdt, starsCount)
 
 	var rows [][]models.InlineKeyboardButton
@@ -3742,7 +3742,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			"• Без рекламы\n"+
 			"• Два варианта: dd (стандарт) + ee/fake-TLS (маскировка)\n"+
 			"• Общий выделенный сервер (стабильно)\n\n"+
-			"💰 Стоимость: <b>%d ₽</b> (карта), <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
+			"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 			days, priceRub, usdt, stars)
 		var rows [][]models.InlineKeyboardButton
 		if h.yooKassaProviderToken != "" {
