@@ -288,6 +288,8 @@ type BotHandler struct {
 	botRef              *bot.Bot // для асинхронной рассылки альбомов (устанавливается из main)
 	broadcastSem        chan struct{}
 
+	yooKassaProviderToken string // токен провайдера Telegram Payments (ЮKassa)
+
 	vpsSetupSteps map[int64]*VPSSetupData
 	vpsSetupMu    sync.Mutex
 }
@@ -319,6 +321,7 @@ func NewBotHandler(
 	sshKeyPath string,
 	premiumServerOSID int,
 	adminIDs []int64,
+	yooKassaProviderToken string,
 ) *BotHandler {
 	return &BotHandler{
 		userUC:              userUC,
@@ -351,8 +354,9 @@ func NewBotHandler(
 		sshKeyPath:          sshKeyPath,
 		premiumServerOSID:   premiumServerOSID,
 		vpsSetupSteps:       make(map[int64]*VPSSetupData),
-		adminIDs:            adminIDs,
-		broadcastSem:        make(chan struct{}, 1),
+		adminIDs:              adminIDs,
+		broadcastSem:          make(chan struct{}, 1),
+		yooKassaProviderToken: yooKassaProviderToken,
 	}
 }
 
@@ -1099,6 +1103,38 @@ func (h *BotHandler) getPremiumStars() int {
 	return n
 }
 
+// getProPriceRub возвращает цену Pro в рублях из настроек.
+func (h *BotHandler) getProPriceRub() int {
+	if h.settingsRepo == nil {
+		return 299
+	}
+	v, _ := h.settingsRepo.Get("pro_price_rub")
+	if v == "" {
+		return 299
+	}
+	n, _ := strconv.Atoi(v)
+	if n < 1 {
+		return 299
+	}
+	return n
+}
+
+// getPremiumPriceRub возвращает цену Premium в рублях из настроек.
+func (h *BotHandler) getPremiumPriceRub() int {
+	if h.settingsRepo == nil {
+		return 499
+	}
+	v, _ := h.settingsRepo.Get("premium_price_rub")
+	if v == "" {
+		return 499
+	}
+	n, _ := strconv.Atoi(v)
+	if n < 1 {
+		return 499
+	}
+	return n
+}
+
 // buildAdKeyboard возвращает клавиатуру с одной кнопкой объявления. Используется CallbackData (ad_click_ID), чтобы бот получал callback и считал клики; ссылка открывается через AnswerCallbackQuery(URL).
 func (h *BotHandler) buildAdKeyboard(ad *domain.Ad) *models.InlineKeyboardMarkup {
 	hasLink := (ad.ButtonURL != nil && *ad.ButtonURL != "") || ad.ChannelLink != ""
@@ -1206,6 +1242,7 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 	days := h.getPremiumDays()
 	usdt := h.getPremiumUSDT()
 	starsCount := h.getPremiumStars()
+	premiumPriceRub := h.getPremiumPriceRub()
 	msg := fmt.Sprintf("💎 <b>Premium</b> — персональные dd+ee прокси на %d дн.\n\n"+
 		"• Минимальные риски блокировок\n"+
 		"• Индивидуальный сервер\n"+
@@ -1213,15 +1250,19 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 		"• Максимальная скорость и стабильность\n"+
 		"• Можно использовать на нескольких устройствах\n"+
 		"• Без рекламы\n\n"+
-		"💰 Стоимость: <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:", days, usdt, starsCount)
+		"💰 Стоимость: <b>%d ₽</b> (карта), <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
+		days, premiumPriceRub, usdt, starsCount)
 
-	kb := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "💵 TON (xRocket)", CallbackData: "buy_premium_usdt"}},
-			{{Text: "⭐ Telegram Stars", CallbackData: "buy_stars"}},
-			{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
-		},
+	var rows [][]models.InlineKeyboardButton
+	if h.yooKassaProviderToken != "" {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
 	}
+	rows = append(rows,
+		[]models.InlineKeyboardButton{{Text: "💵 TON (xRocket)", CallbackData: "buy_premium_usdt"}},
+		[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", starsCount), CallbackData: "buy_stars"}},
+		[]models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
+	)
+	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	h.sendOrEdit(ctx, b, userID, msg, kb)
 }
 
@@ -1628,12 +1669,34 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		send(sb.String())
 
 	case "mgr_pricing":
-		days := h.getPremiumDays()
-		usdt := h.getPremiumUSDT()
-		stars := h.getPremiumStars()
+		proDays := h.getProDays()
+		priceRubPro := h.getProPriceRub()
+		proStars := h.getProStars()
+		premiumDays := h.getPremiumDays()
+		priceRubPremium := h.getPremiumPriceRub()
+		premiumTON := h.getPremiumUSDT()
+		premiumStars := h.getPremiumStars()
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, ParseMode: models.ParseModeHTML,
-			Text: fmt.Sprintf("⚙️ <b>Настройки подписки</b>\n\n📅 Дней: <b>%d</b>\n💵 TON: <b>%.2f</b>\n⭐ Stars (XTR): <b>%d</b>\n\nИзменить:\n<code>/setpricing &lt;дней&gt;</code>\n<code>/setprice_usdt &lt;сумма&gt;</code>\n<code>/setprice_stars &lt;звёзды&gt;</code>", days, usdt, stars),
+			Text: fmt.Sprintf(
+				"⚙️ <b>Настройки подписки</b>\n\n"+
+					"📅 Pro дней: <b>%d</b>\n"+
+					"💳 Pro (ЮКасса): <b>%d ₽</b>\n"+
+					"⭐ Pro Stars: <b>%d</b>\n\n"+
+					"📅 Premium дней: <b>%d</b>\n"+
+					"💳 Premium (ЮКасса): <b>%d ₽</b>\n"+
+					"💵 Premium TON: <b>%.2f</b>\n"+
+					"⭐ Premium Stars: <b>%d</b>\n\n"+
+					"Изменить:\n"+
+					"<code>/setprice_rub_pro &lt;₽&gt;</code>\n"+
+					"<code>/setprice_rub_premium &lt;₽&gt;</code>\n"+
+					"<code>/setpro_days &lt;дней&gt;</code>\n"+
+					"<code>/setpricing &lt;дней&gt;</code>\n"+
+					"<code>/setprice_usdt &lt;TON&gt;</code>\n"+
+					"<code>/setprice_stars &lt;⭐&gt;</code>",
+				proDays, priceRubPro, proStars,
+				premiumDays, priceRubPremium, premiumTON, premiumStars,
+			),
 			ReplyMarkup: &models.InlineKeyboardMarkup{
 				InlineKeyboard: [][]models.InlineKeyboardButton{
 					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
@@ -1686,11 +1749,24 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 
 	case "mgr_pro_pricing":
 		days := h.getProDays()
+		priceRub := h.getProPriceRub()
 		usdt := h.getProUSDT()
 		stars := h.getProStars()
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, ParseMode: models.ParseModeHTML,
-			Text: fmt.Sprintf("⚙️ <b>Настройки Pro</b>\n\n📅 Дней: <b>%d</b>\n💵 TON: <b>%.2f</b>\n⭐ Stars: <b>%d</b>\n\nИзменить:\n<code>/setpro_days &lt;дней&gt;</code>\n<code>/setpro_price_usdt &lt;сумма&gt;</code>\n<code>/setpro_price_stars &lt;звёзды&gt;</code>", days, usdt, stars),
+			Text: fmt.Sprintf(
+				"⚙️ <b>Настройки Pro</b>\n\n"+
+					"📅 Дней: <b>%d</b>\n"+
+					"💳 ЮКасса: <b>%d ₽</b>\n"+
+					"💵 TON: <b>%.2f</b>\n"+
+					"⭐ Stars: <b>%d</b>\n\n"+
+					"Изменить:\n"+
+					"<code>/setprice_rub_pro &lt;₽&gt;</code>\n"+
+					"<code>/setpro_days &lt;дней&gt;</code>\n"+
+					"<code>/setpro_price_usdt &lt;сумма&gt;</code>\n"+
+					"<code>/setpro_price_stars &lt;звёзды&gt;</code>",
+				days, priceRub, usdt, stars,
+			),
 			ReplyMarkup: &models.InlineKeyboardMarkup{
 				InlineKeyboard: [][]models.InlineKeyboardButton{
 					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
@@ -3268,6 +3344,58 @@ func (h *BotHandler) HandleSetProPriceStars(ctx context.Context, b *bot.Bot, upd
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена Pro: %d Stars.", n))
 }
 
+// HandleSetPriceRubPro задаёт цену Pro в рублях: /setprice_rub_pro <сумма>
+func (h *BotHandler) HandleSetPriceRubPro(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.settingsRepo == nil {
+		h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) != 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /setprice_rub_pro <сумма>\nНапример: /setprice_rub_pro 299")
+		return
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil || n < 1 {
+		h.sendText(ctx, b, update, "❌ Введите целое число рублей.")
+		return
+	}
+	if err := h.settingsRepo.Set("pro_price_rub", fmt.Sprintf("%d", n)); err != nil {
+		h.sendText(ctx, b, update, "❌ Ошибка сохранения.")
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена Pro: %d ₽.", n))
+}
+
+// HandleSetPriceRubPremium задаёт цену Premium в рублях: /setprice_rub_premium <сумма>
+func (h *BotHandler) HandleSetPriceRubPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	if h.settingsRepo == nil {
+		h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) != 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /setprice_rub_premium <сумма>\nНапример: /setprice_rub_premium 499")
+		return
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil || n < 1 {
+		h.sendText(ctx, b, update, "❌ Введите целое число рублей.")
+		return
+	}
+	if err := h.settingsRepo.Set("premium_price_rub", fmt.Sprintf("%d", n)); err != nil {
+		h.sendText(ctx, b, update, "❌ Ошибка сохранения.")
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Цена Premium: %d ₽.", n))
+}
+
 // HandleSendAd открывает меню объявлений (Добавить/Редактировать/Снять). Рассылка выполняется автоматически при сохранении объявления.
 func (h *BotHandler) HandleSendAd(ctx context.Context, b *bot.Bot, update *models.Update) {
 	chatID := chatID(update)
@@ -3608,21 +3736,31 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		days := h.getProDays()
 		usdt := h.getProUSDT()
 		stars := h.getProStars()
+		priceRub := h.getProPriceRub()
 		msg := fmt.Sprintf("⚡ <b>Pro</b> — быстрые прокси без рекламы на %d дн.\n\n"+
 			"• Максимальная скорость\n"+
 			"• Без рекламы\n"+
 			"• Два варианта: dd (стандарт) + ee/fake-TLS (маскировка)\n"+
 			"• Общий выделенный сервер (стабильно)\n\n"+
-			"💰 Стоимость: <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
-			days, usdt, stars)
-		kb := &models.InlineKeyboardMarkup{
-			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "💵 TON (xRocket)", CallbackData: "buy_pro_usdt"}},
-				{{Text: "⭐ Telegram Stars", CallbackData: "buy_pro_stars"}},
-				{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
-			},
+			"💰 Стоимость: <b>%d ₽</b> (карта), <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
+			days, priceRub, usdt, stars)
+		var rows [][]models.InlineKeyboardButton
+		if h.yooKassaProviderToken != "" {
+			rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
 		}
+		rows = append(rows,
+			[]models.InlineKeyboardButton{{Text: "💵 TON (xRocket)", CallbackData: "buy_pro_usdt"}},
+			[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", stars), CallbackData: "buy_pro_stars"}},
+			[]models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
+		)
+		kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 		h.sendOrEdit(ctx, b, chatID, msg, kb)
+	case "buy_pro_rub":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		h.HandleBuyProRub(ctx, b, update)
+	case "buy_premium_rub":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		h.HandleBuyPremiumRub(ctx, b, update)
 	case "buy_pro_usdt":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		userID := update.CallbackQuery.From.ID
@@ -3982,6 +4120,84 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 	}
 }
 
+// HandleBuyProRub отправляет счёт на оплату Pro через ЮKassa (Telegram Payments API).
+func (h *BotHandler) HandleBuyProRub(ctx context.Context, b *bot.Bot, update *models.Update) {
+	userID := chatID(update)
+	if h.yooKassaProviderToken == "" {
+		h.sendText(ctx, b, update, "❌ Оплата в рублях временно недоступна.")
+		return
+	}
+
+	days := h.getProDays()
+	priceRub := h.getProPriceRub()
+	payload := fmt.Sprintf("pro_%d_%d", days, userID)
+
+	link, err := b.CreateInvoiceLink(ctx, &bot.CreateInvoiceLinkParams{
+		Title:         fmt.Sprintf("Pro %d дней", days),
+		Description:   fmt.Sprintf("Pro подписка на %d дней — выделенные прокси dd+ee", days),
+		Payload:       payload,
+		ProviderToken: h.yooKassaProviderToken,
+		Currency:      "RUB",
+		Prices: []models.LabeledPrice{
+			{Label: fmt.Sprintf("Pro %d дней", days), Amount: priceRub * 100}, // копейки
+		},
+		ProviderData: fmt.Sprintf(`{"receipt":{"items":[{"description":"Pro подписка %d дней","quantity":"1.00","amount":{"value":"%d.00","currency":"RUB"},"vat_code":1}]}}`,
+			days, priceRub),
+	})
+	if err != nil {
+		log.Printf("[YooKassa] HandleBuyProRub CreateInvoiceLink tg_id=%d: %v", userID, err)
+		h.sendText(ctx, b, update, "❌ Не удалось создать счёт. Попробуйте позже.")
+		return
+	}
+
+	msg := fmt.Sprintf("💳 Оплата Pro через ЮКассу\n\nСумма: <b>%d ₽</b>\nПериод: <b>%d дней</b>", priceRub, days)
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: fmt.Sprintf("💳 Оплатить %d ₽", priceRub), URL: link}},
+		},
+	}
+	h.send(ctx, b, update, msg, kb)
+}
+
+// HandleBuyPremiumRub отправляет счёт на оплату Premium через ЮKassa (Telegram Payments API).
+func (h *BotHandler) HandleBuyPremiumRub(ctx context.Context, b *bot.Bot, update *models.Update) {
+	userID := chatID(update)
+	if h.yooKassaProviderToken == "" {
+		h.sendText(ctx, b, update, "❌ Оплата в рублях временно недоступна.")
+		return
+	}
+
+	days := h.getPremiumDays()
+	priceRub := h.getPremiumPriceRub()
+	payload := fmt.Sprintf("premium_%d_%d", days, userID)
+
+	link, err := b.CreateInvoiceLink(ctx, &bot.CreateInvoiceLinkParams{
+		Title:         fmt.Sprintf("Premium %d дней", days),
+		Description:   fmt.Sprintf("Premium подписка на %d дней — персональные прокси dd+ee", days),
+		Payload:       payload,
+		ProviderToken: h.yooKassaProviderToken,
+		Currency:      "RUB",
+		Prices: []models.LabeledPrice{
+			{Label: fmt.Sprintf("Premium %d дней", days), Amount: priceRub * 100},
+		},
+		ProviderData: fmt.Sprintf(`{"receipt":{"items":[{"description":"Premium подписка %d дней","quantity":"1.00","amount":{"value":"%d.00","currency":"RUB"},"vat_code":1}]}}`,
+			days, priceRub),
+	})
+	if err != nil {
+		log.Printf("[YooKassa] HandleBuyPremiumRub CreateInvoiceLink tg_id=%d: %v", userID, err)
+		h.sendText(ctx, b, update, "❌ Не удалось создать счёт. Попробуйте позже.")
+		return
+	}
+
+	msg := fmt.Sprintf("💳 Оплата Premium через ЮКассу\n\nСумма: <b>%d ₽</b>\nПериод: <b>%d дней</b>", priceRub, days)
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: fmt.Sprintf("💳 Оплатить %d ₽", priceRub), URL: link}},
+		},
+	}
+	h.send(ctx, b, update, msg, kb)
+}
+
 // HandleBuyStars отправляет счёт на оплату Telegram Stars (XTR)
 func (h *BotHandler) HandleBuyStars(ctx context.Context, b *bot.Bot, update *models.Update) {
 	userID := chatID(update)
@@ -4024,56 +4240,122 @@ func (h *BotHandler) HandlePreCheckout(ctx context.Context, b *bot.Bot, update *
 	})
 }
 
-// HandleSuccessfulPayment выдача подписки после оплаты Stars (Premium/Pro)
+// HandleSuccessfulPayment выдача подписки после оплаты (Stars XTR / ЮKassa RUB).
 func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil || update.Message.SuccessfulPayment == nil {
 		return
 	}
 	sp := update.Message.SuccessfulPayment
 	payload := sp.InvoicePayload
-	kind := ""
-	if strings.HasPrefix(payload, "premium_") {
-		kind = "premium"
-		payload = strings.TrimPrefix(payload, "premium_")
-	} else if strings.HasPrefix(payload, "pro_") {
-		kind = "pro"
-		payload = strings.TrimPrefix(payload, "pro_")
-	} else {
-		return
-	}
 
-	parts := strings.SplitN(payload, "_", 2)
-	if len(parts) != 2 {
-		return
-	}
-	days, err1 := strconv.Atoi(parts[0])
-	userID, err2 := strconv.ParseInt(parts[1], 10, 64)
-	if err1 != nil || err2 != nil || days < 1 {
-		return
-	}
-	_ = h.paymentUC.RecordStarPayment(userID, int64(sp.TotalAmount), sp.Currency, days, sp.TelegramPaymentChargeID)
+	// Telegram Stars (XTR)
+	if sp.Currency == "XTR" {
+		kind := ""
+		if strings.HasPrefix(payload, "premium_") {
+			kind = "premium"
+			payload = strings.TrimPrefix(payload, "premium_")
+		} else if strings.HasPrefix(payload, "pro_") {
+			kind = "pro"
+			payload = strings.TrimPrefix(payload, "pro_")
+		} else {
+			return
+		}
 
-	if kind == "pro" {
-		if err := h.activateProAndSend(ctx, b, userID, days); err != nil {
-			log.Printf("HandleSuccessfulPayment ActivatePro tg_id=%d days=%d: %v", userID, days, err)
+		parts := strings.SplitN(payload, "_", 2)
+		if len(parts) != 2 {
+			return
+		}
+		days, err1 := strconv.Atoi(parts[0])
+		userID, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 != nil || err2 != nil || days < 1 {
+			return
+		}
+		_ = h.paymentUC.RecordStarPayment(userID, int64(sp.TotalAmount), sp.Currency, days, sp.TelegramPaymentChargeID)
+
+		if kind == "pro" {
+			if err := h.activateProAndSend(ctx, b, userID, days); err != nil {
+				log.Printf("HandleSuccessfulPayment ActivatePro tg_id=%d days=%d: %v", userID, days, err)
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации Pro. Попробуйте позже или обратитесь в поддержку.",
+				})
+			}
+			return
+		}
+
+		err := h.userUC.ActivatePremium(userID, days)
+		if err != nil {
+			log.Printf("HandleSuccessfulPayment ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации Pro. Попробуйте позже или обратитесь в поддержку.",
+				ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
 			})
 			return
 		}
-		return
-	}
-
-	err := h.userUC.ActivatePremium(userID, days)
-	if err != nil {
-		log.Printf("HandleSuccessfulPayment ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
+			ChatID: update.Message.Chat.ID,
+			Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", days),
 		})
 		return
 	}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", days),
-	})
+
+	// ЮKassa (RUB)
+	if sp.Currency == "RUB" {
+		if strings.HasPrefix(payload, "pro_") {
+			p := strings.TrimPrefix(payload, "pro_")
+			parts := strings.SplitN(p, "_", 2)
+			if len(parts) != 2 {
+				return
+			}
+			days, err1 := strconv.Atoi(parts[0])
+			userID, err2 := strconv.ParseInt(parts[1], 10, 64)
+			if err1 != nil || err2 != nil || days < 1 {
+				return
+			}
+			_ = h.paymentUC.RecordYooKassaPayment(
+				userID, "pro",
+				sp.TotalAmount/100,
+				days,
+				sp.TelegramPaymentChargeID,
+				sp.ProviderPaymentChargeID,
+			)
+			if err := h.activateProAndSend(ctx, b, userID, days); err != nil {
+				log.Printf("[YooKassa] ActivatePro tg_id=%d days=%d: %v", userID, days, err)
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: update.Message.Chat.ID, Text: "❌ Ошибка активации. Обратитесь в поддержку.",
+				})
+			}
+			return
+		}
+
+		if strings.HasPrefix(payload, "premium_") {
+			p := strings.TrimPrefix(payload, "premium_")
+			parts := strings.SplitN(p, "_", 2)
+			if len(parts) != 2 {
+				return
+			}
+			days, err1 := strconv.Atoi(parts[0])
+			userID, err2 := strconv.ParseInt(parts[1], 10, 64)
+			if err1 != nil || err2 != nil || days < 1 {
+				return
+			}
+			_ = h.paymentUC.RecordYooKassaPayment(
+				userID, "premium",
+				sp.TotalAmount/100,
+				days,
+				sp.TelegramPaymentChargeID,
+				sp.ProviderPaymentChargeID,
+			)
+			if err := h.userUC.ActivatePremium(userID, days); err != nil {
+				log.Printf("[YooKassa] ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
+				})
+				return
+			}
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:    update.Message.Chat.ID,
+				ParseMode: models.ParseModeHTML,
+				Text:      fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", days),
+			})
+		}
+	}
 }

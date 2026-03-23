@@ -54,6 +54,9 @@ services:
       DB_SSLMODE: disable
       DB_TIMEZONE: UTC
       
+      # ЮKassa (Telegram Payments, RUB)
+      YOOKASSA_PROVIDER_TOKEN: ${YOOKASSA_PROVIDER_TOKEN:-}
+
       # xRocket Pay (TON)
       XROCKET_API_TOKEN: ${XROCKET_API_TOKEN}
       XROCKET_API_URL: ${XROCKET_API_URL:-https://pay.xrocket.tg}

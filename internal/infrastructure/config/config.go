@@ -17,6 +17,7 @@ type Config struct {
 	Database  DatabaseConfig  `yaml:"database"`
 	CryptoBot CryptoBotConfig `yaml:"cryptobot"` // устаревший блок (CryptoPay), можно не заполнять
 	XRocket   XRocketConfig   `yaml:"xrocket"`
+	YooKassa  YooKassaConfig  `yaml:"yookassa"`
 	Timeweb   TimewebConfig   `yaml:"timeweb"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 	Workers   WorkersConfig   `yaml:"workers"`
@@ -87,6 +88,11 @@ type CryptoBotConfig struct {
 	APIURL        string `yaml:"api_url"`
 	WebhookPort   string `yaml:"webhook_port"`   // порт для приёма webhook CryptoPay (например 8080)
 	WebhookSecret string `yaml:"webhook_secret"` // секрет для проверки подписи CryptoPay webhook
+}
+
+// YooKassaConfig — Telegram Payments API (провайдер ЮKassa).
+type YooKassaConfig struct {
+	ProviderToken string `yaml:"provider_token"`
 }
 
 // XRocketConfig — настройки интеграции с xRocket Pay API (TON).
@@ -181,6 +187,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.XRocket.WebhookSecret == "" {
 		cfg.XRocket.WebhookSecret = getEnv("XROCKET_WEBHOOK_SECRET", "")
+	}
+
+	if cfg.YooKassa.ProviderToken == "" {
+		cfg.YooKassa.ProviderToken = getEnv("YOOKASSA_PROVIDER_TOKEN", "")
 	}
 
 	// TimeWeb Premium (условно включаем по TIMEWEB_API_TOKEN).

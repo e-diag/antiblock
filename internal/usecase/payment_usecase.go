@@ -28,14 +28,24 @@ type PaymentUseCase interface {
 	// CancelInvoice отменяет/удаляет инвойс в платёжной системе (если поддерживается) и помечает его отменённым в БД.
 	CancelInvoice(invoiceID int64) error
 	RecordStarPayment(tgID int64, amountTotal int64, currency string, daysGranted int, telegramPaymentChargeID string) error
+	// RecordYooKassaPayment сохраняет запись об успешной оплате через ЮKassa.
+	RecordYooKassaPayment(
+		tgID int64,
+		tariffType string,
+		amountRub int,
+		daysGranted int,
+		telegramChargeID string,
+		providerChargeID string,
+	) error
 }
 
 type paymentUseCase struct {
-	apiToken        string
-	apiURL          string
-	client          *http.Client
-	invRepo         InvoiceRepository
-	starPaymentRepo StarPaymentRepository
+	apiToken              string
+	apiURL                string
+	client                *http.Client
+	invRepo               InvoiceRepository
+	starPaymentRepo       StarPaymentRepository
+	yooKassaPaymentRepo   YooKassaPaymentRepository
 }
 
 // InvoiceRepository минимальный интерфейс для сохранения счетов
@@ -53,14 +63,20 @@ type StarPaymentRepository interface {
 	Create(p *domain.StarPayment) error
 }
 
+// YooKassaPaymentRepository — сохранение оплат ЮKassa (RUB через Telegram Payments).
+type YooKassaPaymentRepository interface {
+	Create(p *domain.YooKassaPayment) error
+}
+
 // NewPaymentUseCase создает новый use case для платежей
-func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starPaymentRepo StarPaymentRepository) PaymentUseCase {
+func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starPaymentRepo StarPaymentRepository, yooKassaPaymentRepo YooKassaPaymentRepository) PaymentUseCase {
 	return &paymentUseCase{
-		apiToken:        apiToken,
-		apiURL:          apiURL,
-		client:          &http.Client{Timeout: 30 * time.Second},
-		invRepo:         invRepo,
-		starPaymentRepo: starPaymentRepo,
+		apiToken:              apiToken,
+		apiURL:                apiURL,
+		client:                &http.Client{Timeout: 30 * time.Second},
+		invRepo:               invRepo,
+		starPaymentRepo:       starPaymentRepo,
+		yooKassaPaymentRepo:   yooKassaPaymentRepo,
 	}
 }
 
@@ -282,4 +298,26 @@ func (uc *paymentUseCase) RecordStarPayment(tgID int64, amountTotal int64, curre
 		TelegramPaymentChargeID: telegramPaymentChargeID,
 	}
 	return uc.starPaymentRepo.Create(p)
+}
+
+func (uc *paymentUseCase) RecordYooKassaPayment(
+	tgID int64,
+	tariffType string,
+	amountRub int,
+	daysGranted int,
+	telegramChargeID string,
+	providerChargeID string,
+) error {
+	if uc.yooKassaPaymentRepo == nil {
+		return nil
+	}
+	p := &domain.YooKassaPayment{
+		TGID:                      tgID,
+		TariffType:                tariffType,
+		AmountRub:                 amountRub,
+		DaysGranted:               daysGranted,
+		TelegramPaymentChargeID:   telegramChargeID,
+		ProviderPaymentChargeID:   providerChargeID,
+	}
+	return uc.yooKassaPaymentRepo.Create(p)
 }

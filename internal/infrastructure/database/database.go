@@ -57,6 +57,7 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.AdPin{},
 		&domain.Invoice{},
 		&domain.StarPayment{},
+		&domain.YooKassaPayment{},
 		&domain.AppSetting{},
 		&domain.ProGroup{},
 		&domain.ProSubscription{},
@@ -202,6 +203,8 @@ func seedAppSettings(db *gorm.DB) error {
 		"pro_days":        "30",
 		"pro_price_usdt":  "3",
 		"pro_price_stars": "50",
+		"pro_price_rub":     "299", // цена Pro в рублях (ЮKassa)
+		"premium_price_rub": "499", // цена Premium в рублях (ЮKassa)
 		"instruction_text": "📖 <b>Инструкция по использованию прокси</b>\n\n<b>1. Получите несколько прокси</b>\nНажмите «Получить прокси» 2-3 раза — вы получите разные прокси-серверы.\n\n<b>2. Добавьте все прокси в Telegram</b>\nНажмите «Подключиться» под каждым прокси и включите его.\n\n<b>3. Включите автопереключение</b>\nНастройки → Конфиденциальность и безопасность → Тип подключения → выберите все прокси.\n\nTelegram автоматически переключится на рабочий прокси при сбое!",
 		"instruction_photo_id": "",
 	}

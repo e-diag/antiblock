@@ -10,6 +10,10 @@ telegram:
   # Канал обязательной подписки для бесплатных пользователей (username без @ или ссылка). Пусто = отключено.
   forced_subscription_channel: ""
 
+# ЮKassa — провайдер Telegram Payments (RUB). Токен из @BotFather → Payments.
+yookassa:
+  provider_token: "${YOOKASSA_PROVIDER_TOKEN}"
+
 database:
   host: "${DB_HOST}"
   port: "${DB_PORT}"

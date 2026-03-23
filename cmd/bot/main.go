@@ -75,6 +75,7 @@ func main() {
 	adPinRepo := repository.NewAdPinRepository(db.DB)
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
 	starPaymentRepo := repository.NewStarPaymentRepository(db.DB)
+	yooKassaPaymentRepo := repository.NewYooKassaPaymentRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 	maintenanceWaitRepo := repository.NewMaintenanceWaitRepository(db.DB)
 	opStatsRepo := repository.NewOPStatsRepository(db.DB)
@@ -136,7 +137,7 @@ func main() {
 
 	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, proDockerMgr, proServerIP, userProxyRepo, premiumProvisioner, ctx)
 	// Платежи TON через xRocket Pay API.
-	paymentUC := usecase.NewPaymentUseCase(cfg.XRocket.APIToken, cfg.XRocket.APIURL, invoiceRepo, starPaymentRepo)
+	paymentUC := usecase.NewPaymentUseCase(cfg.XRocket.APIToken, cfg.XRocket.APIURL, invoiceRepo, starPaymentRepo, yooKassaPaymentRepo)
 
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
@@ -159,6 +160,7 @@ func main() {
 		cfg.Timeweb.SSHKeyPath,
 		cfg.Timeweb.PremiumServerOSID,
 		cfg.Telegram.GetAdminIDs(),
+		cfg.YooKassa.ProviderToken,
 	)
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 	rateMW := middleware.NewRateLimiter(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.BurstSize).Middleware
@@ -317,6 +319,8 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpro_days", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetProDays))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpro_price_usdt", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetProPriceUSDT))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setpro_price_stars", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetProPriceStars))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_rub_pro", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceRubPro))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_rub_premium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceRubPremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_text", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionText))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_photo", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionPhoto))
 
@@ -326,6 +330,8 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro_usdt", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro_stars", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro_rub", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium_rub", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_premium_usdt", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_stars", bot.MatchTypeExact, botHandler.HandleCallback)
