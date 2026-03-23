@@ -324,36 +324,36 @@ func NewBotHandler(
 	yooKassaProviderToken string,
 ) *BotHandler {
 	return &BotHandler{
-		userUC:              userUC,
-		proxyUC:             proxyUC,
-		proUC:               proUC,
-		paymentUC:           paymentUC,
-		userRepo:            userRepo,
-		userProxyRepo:       userProxyRepo,
-		proxyRepo:           proxyRepo,
-		adRepo:              adRepo,
-		adPinRepo:           adPinRepo,
-		settingsRepo:        settingsRepo,
-		opStatsRepo:         opStatsRepo,
-		maintenanceWaitRepo: maintenanceWaitRepo,
-		proDockerMgr:        proDockerMgr,
-		proServerIP:         proServerIP,
-		forcedSubCh:         forcedSubCh,
-		broadcastState:      broadcastState,
-		broadcastMediaGroup: broadcastMediaGroup,
-		adComposeState:      adComposeState,
-		msgState:            NewMessageState(),
-		waitingMsgIDs:       make(map[int64][]int),
-		opAwaiting:          make(map[int64]bool),
-		instrAwaitingText:   make(map[int64]bool),
-		instrAwaitingPhoto:  make(map[int64]bool),
-		twClient:            twClient,
-		premiumProvisioner:  premiumProvisioner,
-		vpsReqRepo:          vpsReqRepo,
-		premiumServerRepo:   premiumServerRepo,
-		sshKeyPath:          sshKeyPath,
-		premiumServerOSID:   premiumServerOSID,
-		vpsSetupSteps:       make(map[int64]*VPSSetupData),
+		userUC:                userUC,
+		proxyUC:               proxyUC,
+		proUC:                 proUC,
+		paymentUC:             paymentUC,
+		userRepo:              userRepo,
+		userProxyRepo:         userProxyRepo,
+		proxyRepo:             proxyRepo,
+		adRepo:                adRepo,
+		adPinRepo:             adPinRepo,
+		settingsRepo:          settingsRepo,
+		opStatsRepo:           opStatsRepo,
+		maintenanceWaitRepo:   maintenanceWaitRepo,
+		proDockerMgr:          proDockerMgr,
+		proServerIP:           proServerIP,
+		forcedSubCh:           forcedSubCh,
+		broadcastState:        broadcastState,
+		broadcastMediaGroup:   broadcastMediaGroup,
+		adComposeState:        adComposeState,
+		msgState:              NewMessageState(),
+		waitingMsgIDs:         make(map[int64][]int),
+		opAwaiting:            make(map[int64]bool),
+		instrAwaitingText:     make(map[int64]bool),
+		instrAwaitingPhoto:    make(map[int64]bool),
+		twClient:              twClient,
+		premiumProvisioner:    premiumProvisioner,
+		vpsReqRepo:            vpsReqRepo,
+		premiumServerRepo:     premiumServerRepo,
+		sshKeyPath:            sshKeyPath,
+		premiumServerOSID:     premiumServerOSID,
+		vpsSetupSteps:         make(map[int64]*VPSSetupData),
 		adminIDs:              adminIDs,
 		broadcastSem:          make(chan struct{}, 1),
 		yooKassaProviderToken: yooKassaProviderToken,
@@ -1254,9 +1254,7 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 		days, premiumPriceRub, usdt, starsCount)
 
 	var rows [][]models.InlineKeyboardButton
-	if h.yooKassaProviderToken != "" {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
-	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
 	rows = append(rows,
 		[]models.InlineKeyboardButton{{Text: "💵 TON (xRocket)", CallbackData: "buy_premium_usdt"}},
 		[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", starsCount), CallbackData: "buy_stars"}},
@@ -3745,9 +3743,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 			days, priceRub, usdt, stars)
 		var rows [][]models.InlineKeyboardButton
-		if h.yooKassaProviderToken != "" {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
-		}
+		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
 		rows = append(rows,
 			[]models.InlineKeyboardButton{{Text: "💵 TON (xRocket)", CallbackData: "buy_pro_usdt"}},
 			[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", stars), CallbackData: "buy_pro_stars"}},
