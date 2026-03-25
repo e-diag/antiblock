@@ -76,6 +76,7 @@ func main() {
 	invoiceRepo := repository.NewInvoiceRepository(db.DB)
 	starPaymentRepo := repository.NewStarPaymentRepository(db.DB)
 	yooKassaPaymentRepo := repository.NewYooKassaPaymentRepository(db.DB)
+	yooKassaInvoiceRepo := repository.NewYooKassaInvoiceRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 	maintenanceWaitRepo := repository.NewMaintenanceWaitRepository(db.DB)
 	opStatsRepo := repository.NewOPStatsRepository(db.DB)
@@ -137,7 +138,14 @@ func main() {
 
 	userUC := usecase.NewUserUseCase(userRepo, proxyRepo, proxyUC, proDockerMgr, proServerIP, userProxyRepo, premiumProvisioner, ctx)
 	// Платежи TON через xRocket Pay API.
-	paymentUC := usecase.NewPaymentUseCase(cfg.XRocket.APIToken, cfg.XRocket.APIURL, invoiceRepo, starPaymentRepo, yooKassaPaymentRepo)
+	paymentUC := usecase.NewPaymentUseCase(
+		cfg.XRocket.APIToken, cfg.XRocket.APIURL,
+		invoiceRepo, starPaymentRepo,
+		yooKassaPaymentRepo,
+		yooKassaInvoiceRepo,
+		cfg.YooKassa.ShopID,
+		cfg.YooKassa.SecretKey,
+	)
 
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
@@ -366,6 +374,7 @@ func main() {
 	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor, proDockerMgr)
 	adRePinWorker := worker.NewAdRePinWorker(b, adRepo, adPinRepo, cfg.Workers.AdRePin)
 	invoiceCleanupWorker := worker.NewInvoiceCleanupWorker(b, invoiceRepo, paymentUC, cfg.Workers.InvoiceCleanup)
+	yooKassaCleanupWorker := worker.NewYooKassaCleanupWorker(b, paymentUC, cfg.Workers.InvoiceCleanup)
 
 	go healthCheckWorker.Start()
 	go premiumHealthCheckWorker.Start()
@@ -374,6 +383,7 @@ func main() {
 	go dockerMonitorWorker.Start()
 	go adRePinWorker.Start()
 	go invoiceCleanupWorker.Start()
+	go yooKassaCleanupWorker.Start()
 
 	getPremiumDays := func() int {
 		v, _ := settingsRepo.Get("premium_days")
@@ -486,6 +496,7 @@ func main() {
 		log.Println("Shutting down...")
 		adRePinWorker.Stop()
 		invoiceCleanupWorker.Stop()
+		yooKassaCleanupWorker.Stop()
 		healthCheckWorker.Stop()
 		premiumHealthCheckWorker.Stop()
 		subscriptionWorker.Stop()

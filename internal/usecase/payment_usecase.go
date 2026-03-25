@@ -38,6 +38,12 @@ type PaymentUseCase interface {
 		providerChargeID string,
 	) error
 	HasYooKassaPayment(providerChargeID string) (bool, error)
+	// CreateYooKassaInvoice сохраняет pending запись для Smart Payment (для clean-up висящих платежей).
+	CreateYooKassaInvoice(inv *domain.YooKassaInvoice) error
+	MarkYooKassaInvoicePaid(paymentID string) error
+	ListPendingYooKassaInvoicesOlderThan(cutoff time.Time) ([]*domain.YooKassaInvoice, error)
+	DeleteYooKassaInvoice(paymentID string) error
+	CancelYooKassaPayment(paymentID string) error
 }
 
 type paymentUseCase struct {
@@ -47,6 +53,9 @@ type paymentUseCase struct {
 	invRepo               InvoiceRepository
 	starPaymentRepo       StarPaymentRepository
 	yooKassaPaymentRepo   YooKassaPaymentRepository
+	yooKassaInvoiceRepo   YooKassaInvoiceRepository
+	yooKassaShopID        string
+	yooKassaSecretKey     string
 }
 
 // InvoiceRepository минимальный интерфейс для сохранения счетов
@@ -70,8 +79,24 @@ type YooKassaPaymentRepository interface {
 	ExistsByProviderPaymentChargeID(providerPaymentChargeID string) (bool, error)
 }
 
+type YooKassaInvoiceRepository interface {
+	Create(inv *domain.YooKassaInvoice) error
+	ListPendingOlderThan(cutoff time.Time) ([]*domain.YooKassaInvoice, error)
+	MarkPaid(paymentID string) error
+	MarkCancelled(paymentID string) error
+	DeleteByPaymentID(paymentID string) error
+}
+
 // NewPaymentUseCase создает новый use case для платежей
-func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starPaymentRepo StarPaymentRepository, yooKassaPaymentRepo YooKassaPaymentRepository) PaymentUseCase {
+func NewPaymentUseCase(
+	apiToken, apiURL string,
+	invRepo InvoiceRepository,
+	starPaymentRepo StarPaymentRepository,
+	yooKassaPaymentRepo YooKassaPaymentRepository,
+	yooKassaInvoiceRepo YooKassaInvoiceRepository,
+	yooKassaShopID string,
+	yooKassaSecretKey string,
+) PaymentUseCase {
 	return &paymentUseCase{
 		apiToken:              apiToken,
 		apiURL:                apiURL,
@@ -79,6 +104,9 @@ func NewPaymentUseCase(apiToken, apiURL string, invRepo InvoiceRepository, starP
 		invRepo:               invRepo,
 		starPaymentRepo:       starPaymentRepo,
 		yooKassaPaymentRepo:   yooKassaPaymentRepo,
+		yooKassaInvoiceRepo:   yooKassaInvoiceRepo,
+		yooKassaShopID:        yooKassaShopID,
+		yooKassaSecretKey:     yooKassaSecretKey,
 	}
 }
 
@@ -329,4 +357,55 @@ func (uc *paymentUseCase) HasYooKassaPayment(providerChargeID string) (bool, err
 		return false, nil
 	}
 	return uc.yooKassaPaymentRepo.ExistsByProviderPaymentChargeID(providerChargeID)
+}
+
+func (uc *paymentUseCase) CreateYooKassaInvoice(inv *domain.YooKassaInvoice) error {
+	if uc.yooKassaInvoiceRepo == nil || inv == nil {
+		return nil
+	}
+	return uc.yooKassaInvoiceRepo.Create(inv)
+}
+
+func (uc *paymentUseCase) MarkYooKassaInvoicePaid(paymentID string) error {
+	if uc.yooKassaInvoiceRepo == nil {
+		return nil
+	}
+	return uc.yooKassaInvoiceRepo.MarkPaid(paymentID)
+}
+
+func (uc *paymentUseCase) ListPendingYooKassaInvoicesOlderThan(cutoff time.Time) ([]*domain.YooKassaInvoice, error) {
+	if uc.yooKassaInvoiceRepo == nil {
+		return nil, nil
+	}
+	return uc.yooKassaInvoiceRepo.ListPendingOlderThan(cutoff)
+}
+
+func (uc *paymentUseCase) DeleteYooKassaInvoice(paymentID string) error {
+	if uc.yooKassaInvoiceRepo == nil {
+		return nil
+	}
+	return uc.yooKassaInvoiceRepo.DeleteByPaymentID(paymentID)
+}
+
+func (uc *paymentUseCase) CancelYooKassaPayment(paymentID string) error {
+	if uc.yooKassaShopID == "" || uc.yooKassaSecretKey == "" || paymentID == "" {
+		return nil
+	}
+	url := fmt.Sprintf("https://api.yookassa.ru/v3/payments/%s/cancel", paymentID)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(uc.yooKassaShopID, uc.yooKassaSecretKey)
+	req.Header.Set("Idempotence-Key", fmt.Sprintf("cancel-%s-%d", paymentID, time.Now().UnixNano()))
+	resp, err := uc.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("yookassa cancel failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }

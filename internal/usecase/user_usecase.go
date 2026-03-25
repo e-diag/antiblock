@@ -246,18 +246,14 @@ func (uc *userUseCase) hasPremiumTimeWeb() bool {
 	return uc.premiumProvisioner != nil && uc.premiumProvisioner.IsConfigured()
 }
 
-// migrateLegacyPremiumToTimeweb деактивирует строку legacy в БД и снимает Docker на Pro-сервере перед выдачей через TimeWeb.
+// migrateLegacyPremiumToTimeweb снимает legacy Docker на Pro-сервере перед выдачей через TimeWeb.
+// Важно: не меняем статус в БД заранее, чтобы пользователь не терял доступ до готовности нового TimeWeb proxy.
 func (uc *userUseCase) migrateLegacyPremiumToTimeweb(tgID int64, user *domain.User, existing *domain.ProxyNode) error {
 	if existing == nil || !uc.isLegacyPremiumRecord(existing) {
 		return nil
 	}
 	log.Printf("[Premium] migrating legacy proxy_id=%d port=%d → TimeWeb floating IP tg_id=%d user_id=%d",
 		existing.ID, existing.Port, tgID, user.ID)
-	existing.Status = domain.ProxyStatusInactive
-	if err := uc.proxyRepo.Update(existing); err != nil {
-		log.Printf("[Premium] migrate legacy tg_id=%d: deactivate proxy row failed: %v", tgID, err)
-		return err
-	}
 	if uc.dockerMgr != nil {
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -313,18 +309,7 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 		return existing, nil
 	}
 
-	if existing != nil && uc.isLegacyPremiumRecord(existing) {
-		if err := uc.migrateLegacyPremiumToTimeweb(tgID, user, existing); err != nil {
-			return nil, err
-		}
-		existing, err = uc.proxyRepo.GetByOwnerID(user.ID)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil && existing.Type != domain.ProxyTypePremium {
-			existing = nil
-		}
-	}
+	wasLegacy := existing != nil && uc.isLegacyPremiumRecord(existing)
 
 	if existing != nil && existing.PremiumServerID != nil && *existing.PremiumServerID != 0 &&
 		strings.TrimSpace(existing.TimewebFloatingIPID) == "" && !uc.isLegacyPremiumRecord(existing) {
@@ -386,6 +371,10 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 	if err := uc.upsertPremiumProxy(proxy); err != nil {
 		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: upsert after ProvisionForUser FAILED: %v", tgID, err)
 		return proxy, fmt.Errorf("upsert premium proxy: %w", err)
+	}
+	// Только после успешного provision + upsert — чистим legacy Docker (если он был).
+	if wasLegacy {
+		_ = uc.migrateLegacyPremiumToTimeweb(tgID, user, existing)
 	}
 	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ProvisionForUser OK proxy_id=%d ip=%s", tgID, proxy.ID, proxy.IP)
 	return proxy, nil

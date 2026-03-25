@@ -58,6 +58,7 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.Invoice{},
 		&domain.StarPayment{},
 		&domain.YooKassaPayment{},
+		&domain.YooKassaInvoice{},
 		&domain.AppSetting{},
 		&domain.ProGroup{},
 		&domain.ProSubscription{},

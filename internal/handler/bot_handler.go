@@ -4226,7 +4226,7 @@ func (h *BotHandler) HandleBuyProRub(ctx context.Context, b *bot.Bot, update *mo
 
 	days := h.getProDays()
 	priceRub := h.getProPriceRub()
-	_, link, err := h.createYooKassaSmartPayment(
+	paymentID, link, err := h.createYooKassaSmartPayment(
 		ctx, userID, "pro", priceRub, days,
 		fmt.Sprintf("Pro подписка на %d дней", days),
 	)
@@ -4242,7 +4242,24 @@ func (h *BotHandler) HandleBuyProRub(ctx context.Context, b *bot.Bot, update *mo
 			{{Text: fmt.Sprintf("💳 Оплатить %d ₽", priceRub), URL: link}},
 		},
 	}
-	h.send(ctx, b, update, msg, kb)
+	sent, errSend := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      userID,
+		Text:        msg,
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: kb,
+	})
+	if errSend == nil && sent != nil && sent.ID != 0 {
+		_ = h.paymentUC.CreateYooKassaInvoice(&domain.YooKassaInvoice{
+			PaymentID:   paymentID,
+			TGID:        userID,
+			TariffType:  "pro",
+			AmountRub:   priceRub,
+			DaysGranted: days,
+			Status:      "pending",
+			ChatID:      userID,
+			MessageID:   int64(sent.ID),
+		})
+	}
 }
 
 // HandleBuyPremiumRub отправляет ссылку Smart Payment ЮКассы на оплату Premium.
@@ -4255,7 +4272,7 @@ func (h *BotHandler) HandleBuyPremiumRub(ctx context.Context, b *bot.Bot, update
 
 	days := h.getPremiumDays()
 	priceRub := h.getPremiumPriceRub()
-	_, link, err := h.createYooKassaSmartPayment(
+	paymentID, link, err := h.createYooKassaSmartPayment(
 		ctx, userID, "premium", priceRub, days,
 		fmt.Sprintf("Premium подписка на %d дней", days),
 	)
@@ -4271,7 +4288,24 @@ func (h *BotHandler) HandleBuyPremiumRub(ctx context.Context, b *bot.Bot, update
 			{{Text: fmt.Sprintf("💳 Оплатить %d ₽", priceRub), URL: link}},
 		},
 	}
-	h.send(ctx, b, update, msg, kb)
+	sent, errSend := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      userID,
+		Text:        msg,
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: kb,
+	})
+	if errSend == nil && sent != nil && sent.ID != 0 {
+		_ = h.paymentUC.CreateYooKassaInvoice(&domain.YooKassaInvoice{
+			PaymentID:   paymentID,
+			TGID:        userID,
+			TariffType:  "premium",
+			AmountRub:   priceRub,
+			DaysGranted: days,
+			Status:      "pending",
+			ChatID:      userID,
+			MessageID:   int64(sent.ID),
+		})
+	}
 }
 
 // HandleBuyStars отправляет счёт на оплату Telegram Stars (XTR)
