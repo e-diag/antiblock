@@ -689,21 +689,19 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 
 	var rows [][]models.InlineKeyboardButton
 
-	// Free-кнопка только если нет активных Pro и Premium.
-	if !hasPremium && !hasPro {
-		btnGetProxy := "🔗 Получить прокси"
-		if h.userProxyRepo != nil {
-			if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
-				for _, up := range list {
-					if up.ProxyType == domain.ProxyTypeFree {
-						btnGetProxy = "➕ Получить дополнительный free прокси"
-						break
-					}
+	// Free-прокси доступны всем: у Pro/Premium проверка ОП в HandleGetProxy не требуется (isPaidActive).
+	btnGetProxy := "🔗 Получить прокси"
+	if h.userProxyRepo != nil {
+		if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
+			for _, up := range list {
+				if up.ProxyType == domain.ProxyTypeFree {
+					btnGetProxy = "➕ Получить дополнительный free прокси"
+					break
 				}
 			}
 		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: btnGetProxy, CallbackData: "get_proxy"}})
 	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: btnGetProxy, CallbackData: "get_proxy"}})
 
 	if !hasPro {
 		btnPro := fmt.Sprintf("⚡ Купить Pro на %d дн.", proDays)
