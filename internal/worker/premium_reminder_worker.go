@@ -13,6 +13,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/yourusername/antiblock/internal/domain"
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/repository"
 	"github.com/yourusername/antiblock/internal/usecase"
@@ -24,6 +25,7 @@ type PremiumReminderWorker struct {
 	userUC       usecase.UserUseCase
 	paymentUC    usecase.PaymentUseCase
 	settingsRepo repository.SettingsRepository
+	alerts       *alert.TelegramAlerter
 	config       config.WorkerConfig
 	stop         chan struct{}
 	stopOnce     sync.Once
@@ -35,6 +37,7 @@ func NewPremiumReminderWorker(
 	userUC usecase.UserUseCase,
 	paymentUC usecase.PaymentUseCase,
 	settingsRepo repository.SettingsRepository,
+	alerts *alert.TelegramAlerter,
 	cfg config.WorkerConfig,
 ) *PremiumReminderWorker {
 	return &PremiumReminderWorker{
@@ -42,6 +45,7 @@ func NewPremiumReminderWorker(
 		userUC:       userUC,
 		paymentUC:    paymentUC,
 		settingsRepo: settingsRepo,
+		alerts:       alerts,
 		config:       cfg,
 		stop:         make(chan struct{}),
 	}
@@ -120,6 +124,13 @@ func (w *PremiumReminderWorker) sendReminders() {
 				continue
 			}
 			log.Printf("Premium reminder: GetUsersForPremiumReminder error: %v", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			w.alerts.Send(ctx, alert.Report{
+				Type:    "premium_reminder_query",
+				Source:  "worker/premium_reminder",
+				ErrText: err.Error(),
+			})
+			cancel()
 			return
 		}
 		break

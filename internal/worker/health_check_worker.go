@@ -7,19 +7,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-telegram/bot"
-
 	"github.com/yourusername/antiblock/internal/domain"
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
 
-// HealthCheckWorker проверяет только free-прокси и уведомляет менеджеров при сбоях/восстановлении.
+// HealthCheckWorker проверяет только free-прокси и шлёт алерты в служебный чат при сбоях/восстановлении.
 type HealthCheckWorker struct {
-	proxyUC  usecase.ProxyUseCase
-	bot      *bot.Bot
-	adminIDs []int64
-	config   config.WorkerConfig
+	proxyUC usecase.ProxyUseCase
+	alerts  *alert.TelegramAlerter
+	config  config.WorkerConfig
 	stop     chan struct{}
 	stopOnce sync.Once
 
@@ -28,11 +26,10 @@ type HealthCheckWorker struct {
 	prevStatus map[uint]bool // proxyID -> true если был недоступен
 }
 
-func NewHealthCheckWorker(proxyUC usecase.ProxyUseCase, b *bot.Bot, adminIDs []int64, cfg config.WorkerConfig) *HealthCheckWorker {
+func NewHealthCheckWorker(proxyUC usecase.ProxyUseCase, alerts *alert.TelegramAlerter, cfg config.WorkerConfig) *HealthCheckWorker {
 	return &HealthCheckWorker{
 		proxyUC:    proxyUC,
-		bot:        b,
-		adminIDs:   adminIDs,
+		alerts:     alerts,
 		config:     cfg,
 		stop:       make(chan struct{}),
 		prevStatus: make(map[uint]bool),
@@ -74,6 +71,14 @@ func (w *HealthCheckWorker) checkProxies() {
 	proxies, err := w.proxyUC.GetAllFreeProxies()
 	if err != nil {
 		log.Printf("HealthCheck: GetAllFreeProxies error: %v", err)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		w.alerts.Send(ctx, alert.Report{
+			Type:    "health_check_list_free",
+			Source:  "worker/health_check",
+			Tariff:  "free",
+			ErrText: err.Error(),
+		})
+		cancel()
 		return
 	}
 
@@ -84,8 +89,8 @@ func (w *HealthCheckWorker) checkProxies() {
 		freeResults = append(freeResults, proxyCheckResult{proxy, reachable, rttMs})
 	}
 
-	// Шаг 2: обновляем map и собираем уведомления — только под мьютексом, без сетевых вызовов.
-	var notifications []string
+	// Шаг 2: обновляем map и собираем отчёты — только под мьютексом, без сетевых вызовов.
+	var reports []alert.Report
 
 	w.prevMu.Lock()
 	for _, r := range freeResults {
@@ -93,45 +98,39 @@ func (w *HealthCheckWorker) checkProxies() {
 		if !r.reachable {
 			if !wasUnreachable {
 				w.prevStatus[r.proxy.ID] = true
-				notifications = append(notifications, fmt.Sprintf(
-					"⚠️ <b>Free-прокси недоступен</b>\n\nID: %d\n🌐 %s:%d\n\nПроверьте сервер.",
-					r.proxy.ID, r.proxy.IP, r.proxy.Port,
-				))
+				reports = append(reports, alert.Report{
+					Type:    "free_proxy_unreachable",
+					Source:  "worker/health_check",
+					Tariff:  "free",
+					ProxyID: r.proxy.ID,
+					IP:      r.proxy.IP,
+					Port:    r.proxy.Port,
+					ErrText: "прокси недоступен (health check)",
+				})
 				log.Printf("HealthCheck: free proxy ID=%d %s:%d is DOWN", r.proxy.ID, r.proxy.IP, r.proxy.Port)
 			}
 		} else {
 			if wasUnreachable {
 				delete(w.prevStatus, r.proxy.ID)
-				notifications = append(notifications, fmt.Sprintf(
-					"✅ <b>Free-прокси восстановлен</b>\n\nID: %d\n🌐 %s:%d\nRTT: %d мс",
-					r.proxy.ID, r.proxy.IP, r.proxy.Port, r.rttMs,
-				))
+				reports = append(reports, alert.Report{
+					Type:    "free_proxy_recovered",
+					Source:  "worker/health_check",
+					Tariff:  "free",
+					ProxyID: r.proxy.ID,
+					IP:      r.proxy.IP,
+					Port:    r.proxy.Port,
+					Extra:   fmt.Sprintf("RTT=%d ms", r.rttMs),
+					ErrText: "прокси снова доступен",
+				})
 				log.Printf("HealthCheck: free proxy ID=%d %s:%d is UP (RTT=%dms)", r.proxy.ID, r.proxy.IP, r.proxy.Port, r.rttMs)
 			}
 		}
 	}
 	w.prevMu.Unlock()
 
-	// Шаг 3: отправляем уведомления — без мьютекса.
-	for _, msg := range notifications {
-		w.notifyAdmins(msg)
-	}
-}
-
-// notifyAdmins отправляет уведомление каждому администратору.
-// Для каждого вызова создаётся отдельный контекст с коротким таймаутом,
-// не зависящий от продолжительности цикла проверки прокси.
-func (w *HealthCheckWorker) notifyAdmins(text string) {
-	for _, adminID := range w.adminIDs {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, err := w.bot.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:    adminID,
-			Text:      text,
-			ParseMode: "HTML",
-		})
-		cancel()
-		if err != nil {
-			log.Printf("HealthCheck: notifyAdmins failed for admin %d: %v", adminID, err)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, rep := range reports {
+		w.alerts.Send(ctx, rep)
 	}
 }

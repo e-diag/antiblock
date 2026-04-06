@@ -18,6 +18,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/yourusername/antiblock/internal/botmessage"
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
@@ -183,24 +184,8 @@ func XRocketWebhook(
 					})
 					tgCancel()
 				} else {
-					ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortDD, group.SecretDD)
-					msgDD := fmt.Sprintf("✅ <b>Ваш Pro proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:",
-						group.ServerIP, group.PortDD, group.SecretDD)
-					kbDD := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (dd)", URL: ddURL}}}}
-					tgCtx, tgCancel := context.WithTimeout(r.Context(), 5*time.Second)
-					_, _ = telegramBot.SendMessage(tgCtx, &bot.SendMessageParams{
-						ChatID: userID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD,
-					})
-					tgCancel()
-
-					eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
-					msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Запасной вариант для случаев, когда dd ограничен</i>",
-						group.ServerIP, group.PortEE, group.SecretEE)
-					kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
-					tgCtx, tgCancel = context.WithTimeout(r.Context(), 5*time.Second)
-					_, _ = telegramBot.SendMessage(tgCtx, &bot.SendMessageParams{
-						ChatID: userID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
-					})
+					tgCtx, tgCancel := context.WithTimeout(r.Context(), 15*time.Second)
+					botmessage.SendProGroupTwoEE(tgCtx, telegramBot, userID, group, botmessage.ProGroupStylePayment)
 					tgCancel()
 				}
 			}

@@ -7,6 +7,8 @@ telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
   admin_ids:
     - "${TELEGRAM_ADMIN_ID_1}"
+  # ID чата/группы/канала для технических алертов (бот должен быть участником). Пусто = только лог. Перекрывается TELEGRAM_ERROR_LOG_CHAT_ID.
+  error_log_chat_id: "${TELEGRAM_ERROR_LOG_CHAT_ID}"
   # Канал обязательной подписки для бесплатных пользователей (username без @ или ссылка). Пусто = отключено.
   forced_subscription_channel: ""
 

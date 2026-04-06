@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
@@ -16,6 +17,10 @@ type ProUseCase interface {
 	RevokeProSubscription(user *domain.User) error
 	GetActiveSubscription(userID uint) (*domain.ProSubscription, error)
 	CleanupExpiredGroups(dockerMgr *docker.Manager, cycleDays int) error
+	// MigrateActiveGroupsToEEOnly пересоздаёт контейнеры всех активных Pro-групп в nineseconds (ee), при необходимости регенерирует секреты.
+	MigrateActiveGroupsToEEOnly(dockerMgr *docker.Manager) error
+	// MigrateOneProGroupToEEOnly — один шаг: одна активная Pro-группа → ee (порты сохраняются).
+	MigrateOneProGroupToEEOnly(dockerMgr *docker.Manager, g *domain.ProGroup) error
 	GetActiveGroups() ([]*domain.ProGroup, error)
 	GetGroupByID(id uint) (*domain.ProGroup, error)
 	CountActiveSubscribersByGroup(groupID uint) (int64, error)
@@ -77,7 +82,7 @@ var proEEPorts = []int{
 	15443, 16443,
 }
 
-// proDDPorts — отдельный пул портов для dd контейнеров Pro-групп.
+// proDDPorts — первый пул портов для первого ee-контейнера Pro-группы (имя колонки БД историческое).
 // Не пересекается с proEEPorts и с диапазоном legacy Premium 20000-29999.
 var proDDPorts = []int{
 	8080, 8081, 8082, 8088, 8181, 8282, 8383, 8484,
@@ -107,18 +112,18 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 	genCtx, genCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer genCancel()
 
-	secretDD, err := generatePremiumSecret()
-	if err != nil {
-		return nil, fmt.Errorf("generate dd secret: %w", err)
-	}
 	if dockerMgr == nil {
-		return nil, fmt.Errorf("dockerMgr is required to generate ee secret for Pro group")
+		return nil, fmt.Errorf("dockerMgr is required to generate ee secrets for Pro group")
 	}
-	secretEE, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
+	secretEE1, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
 	if err != nil {
-		log.Printf("[Pro] createGroupForDay: GenerateEESecretViaDocker failed date=%s serverIP=%s: %v",
+		log.Printf("[Pro] createGroupForDay: GenerateEESecretViaDocker (1) failed date=%s serverIP=%s: %v",
 			dayStart.Format("2006-01-02"), serverIP, err)
-		return nil, fmt.Errorf("generate ee secret: %w", err)
+		return nil, fmt.Errorf("generate ee secret 1: %w", err)
+	}
+	secretEE2, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
+	if err != nil {
+		return nil, fmt.Errorf("generate ee secret 2: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -132,8 +137,8 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 		ServerIP:                serverIP,
 		PortDD:                  portDD,
 		PortEE:                  portEE,
-		SecretDD:                secretDD,
-		SecretEE:                secretEE,
+		SecretDD:                secretEE1,
+		SecretEE:                secretEE2,
 		InfrastructureExpiresAt: infraUntil,
 		Status:                  domain.ProxyStatusActive,
 	}
@@ -141,22 +146,18 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 	if err := uc.groupRepo.Create(group); err != nil {
 		return nil, err
 	}
-	group.ContainerDD = fmt.Sprintf(docker.ProContainerNameDD, group.ID)
-	group.ContainerEE = fmt.Sprintf(docker.ProContainerNameEE, group.ID)
+	group.ContainerDD = fmt.Sprintf(docker.ProContainerNameEE1, group.ID)
+	group.ContainerEE = fmt.Sprintf(docker.ProContainerNameEE2, group.ID)
 	if err := uc.groupRepo.Update(group); err != nil {
 		return nil, err
 	}
 
-	log.Printf("[Pro] createGroupForDay date=%s portDD=%d portEE=%d secretDD=%s... secretEE=%s...",
-		dayStart.Format("2006-01-02"), portDD, portEE, secretPreview(secretDD), secretPreview(secretEE))
+	log.Printf("[Pro] createGroupForDay date=%s portDD=%d portEE=%d ee1=%s... ee2=%s...",
+		dayStart.Format("2006-01-02"), portDD, portEE, secretPreview(secretEE1), secretPreview(secretEE2))
 
-	if err := dockerMgr.CreateProContainerDD(group); err != nil {
-		log.Printf("[Pro] CreateProContainerDD failed date=%s: %v", dayStart.Format("2006-01-02"), err)
-		return nil, fmt.Errorf("create dd container: %w", err)
-	}
-	if err := dockerMgr.CreateProContainerEE(group); err != nil {
-		log.Printf("[Pro] CreateProContainerEE failed date=%s: %v", dayStart.Format("2006-01-02"), err)
-		return nil, fmt.Errorf("create ee container: %w", err)
+	if err := dockerMgr.CreateProGroupEEContainers(group); err != nil {
+		log.Printf("[Pro] CreateProGroupEEContainers failed date=%s: %v", dayStart.Format("2006-01-02"), err)
+		return nil, fmt.Errorf("create pro ee containers: %w", err)
 	}
 
 	return group, nil
@@ -172,14 +173,14 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 	genCtx, genCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer genCancel()
 
-	secretDD, err := generatePremiumSecret()
+	if dockerMgr == nil {
+		return nil, fmt.Errorf("dockerMgr is required to generate ee secrets for Pro group")
+	}
+	secretEE1, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
 	if err != nil {
 		return nil, err
 	}
-	if dockerMgr == nil {
-		return nil, fmt.Errorf("dockerMgr is required to generate ee secret for Pro group")
-	}
-	secretEE, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
+	secretEE2, err := dockerMgr.GenerateEESecretViaDocker(genCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +188,8 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 	portDD := proPortForDay(dayStart, proDDPorts)
 	portEE := proPortForDay(dayStart, proEEPorts)
 
-	g.SecretDD = secretDD
-	g.SecretEE = secretEE
+	g.SecretDD = secretEE1
+	g.SecretEE = secretEE2
 	g.PortDD = portDD
 	g.PortEE = portEE
 	g.ServerIP = serverIP
@@ -199,10 +200,7 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 		return nil, err
 	}
 
-	if err := dockerMgr.CreateProContainerDD(g); err != nil {
-		return nil, fmt.Errorf("rotate Pro dd: %w", err)
-	}
-	if err := dockerMgr.CreateProContainerEE(g); err != nil {
+	if err := dockerMgr.CreateProGroupEEContainers(g); err != nil {
 		return nil, fmt.Errorf("rotate Pro ee: %w", err)
 	}
 
@@ -216,6 +214,78 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 		}
 	}
 	return g, nil
+}
+
+// MigrateActiveGroupsToEEOnly удаляет старые контейнеры (в т.ч. p3terx), при необходимости выдаёт ee-секреты и поднимает nineseconds на текущих портах.
+func (uc *proUseCase) MigrateActiveGroupsToEEOnly(dockerMgr *docker.Manager) error {
+	if dockerMgr == nil {
+		return fmt.Errorf("dockerMgr is required")
+	}
+	groups, err := uc.groupRepo.GetActiveGroups()
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		uc.teardownGroupContainers(dockerMgr, g)
+		genCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		needRegen := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(g.SecretDD)), "ee") ||
+			!strings.HasPrefix(strings.ToLower(strings.TrimSpace(g.SecretEE)), "ee")
+		if needRegen {
+			s1, e1 := dockerMgr.GenerateEESecretViaDocker(genCtx)
+			s2, e2 := dockerMgr.GenerateEESecretViaDocker(genCtx)
+			cancel()
+			if e1 != nil || e2 != nil {
+				return fmt.Errorf("pro group %d: generate ee secrets: %v; %v", g.ID, e1, e2)
+			}
+			g.SecretDD = s1
+			g.SecretEE = s2
+			if err := uc.groupRepo.Update(g); err != nil {
+				return fmt.Errorf("pro group %d: update secrets: %w", g.ID, err)
+			}
+		} else {
+			cancel()
+		}
+		if err := dockerMgr.CreateProGroupEEContainers(g); err != nil {
+			log.Printf("[Pro] MigrateActiveGroupsToEEOnly group %d: %v", g.ID, err)
+			continue
+		}
+		log.Printf("[Pro] MigrateActiveGroupsToEEOnly group %d OK ports %d-%d", g.ID, g.PortDD, g.PortEE)
+	}
+	return nil
+}
+
+// MigrateOneProGroupToEEOnly пересоздаёт контейнеры одной Pro-группы в ee (nineseconds), порты не меняются.
+func (uc *proUseCase) MigrateOneProGroupToEEOnly(dockerMgr *docker.Manager, g *domain.ProGroup) error {
+	if dockerMgr == nil || g == nil {
+		return fmt.Errorf("dockerMgr and group required")
+	}
+	uc.teardownGroupContainers(dockerMgr, g)
+	genCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	needRegen := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(g.SecretDD)), "ee") ||
+		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(g.SecretEE)), "ee")
+	if needRegen {
+		s1, e1 := dockerMgr.GenerateEESecretViaDocker(genCtx)
+		s2, e2 := dockerMgr.GenerateEESecretViaDocker(genCtx)
+		cancel()
+		if e1 != nil || e2 != nil {
+			return fmt.Errorf("pro group %d: generate ee secrets: %v; %v", g.ID, e1, e2)
+		}
+		g.SecretDD = s1
+		g.SecretEE = s2
+		if err := uc.groupRepo.Update(g); err != nil {
+			return fmt.Errorf("pro group %d: update secrets: %w", g.ID, err)
+		}
+	} else {
+		cancel()
+	}
+	if err := dockerMgr.CreateProGroupEEContainers(g); err != nil {
+		return fmt.Errorf("pro group %d: create containers: %w", g.ID, err)
+	}
+	log.Printf("[Pro] MigrateOneProGroupToEEOnly group %d OK ports %d-%d", g.ID, g.PortDD, g.PortEE)
+	return nil
 }
 
 // ensureTodayGroup группа текущего UTC-дня: создать / при истёкшей инфраструктуре — обновить на месте.
@@ -385,6 +455,11 @@ func (uc *proUseCase) teardownGroupContainers(dockerMgr *docker.Manager, g *doma
 	}
 	if g.ContainerEE != "" {
 		_ = dockerMgr.RemoveUserContainer(ctx, g.ContainerEE)
+	}
+	// Старые имена контейнеров Pro (до ee-only).
+	if g.ID != 0 {
+		_ = dockerMgr.RemoveUserContainer(ctx, fmt.Sprintf(docker.ProContainerNameLegacyDD, g.ID))
+		_ = dockerMgr.RemoveUserContainer(ctx, fmt.Sprintf(docker.ProContainerNameLegacyEE, g.ID))
 	}
 }
 

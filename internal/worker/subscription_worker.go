@@ -1,10 +1,12 @@
 package worker
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
@@ -12,15 +14,17 @@ import (
 // SubscriptionWorker проверяет истечение премиум подписок
 type SubscriptionWorker struct {
 	userUC usecase.UserUseCase
+	alerts *alert.TelegramAlerter
 	config config.WorkerConfig
 	stop   chan struct{}
 	stopOnce sync.Once
 }
 
 // NewSubscriptionWorker создает новый worker для проверки подписок
-func NewSubscriptionWorker(userUC usecase.UserUseCase, cfg config.WorkerConfig) *SubscriptionWorker {
+func NewSubscriptionWorker(userUC usecase.UserUseCase, alerts *alert.TelegramAlerter, cfg config.WorkerConfig) *SubscriptionWorker {
 	return &SubscriptionWorker{
 		userUC: userUC,
+		alerts: alerts,
 		config: cfg,
 		stop:   make(chan struct{}),
 	}
@@ -67,6 +71,13 @@ func (w *SubscriptionWorker) checkSubscriptions() {
 				continue
 			}
 			log.Printf("Error during subscription check: %v", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			w.alerts.Send(ctx, alert.Report{
+				Type:    "subscription_check_expired",
+				Source:  "worker/subscription_checker",
+				ErrText: err.Error(),
+			})
+			cancel()
 		}
 		break
 	}
@@ -77,6 +88,13 @@ func (w *SubscriptionWorker) checkSubscriptions() {
 				continue
 			}
 			log.Printf("Error during proxy cleanup: %v", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			w.alerts.Send(ctx, alert.Report{
+				Type:    "subscription_proxy_cleanup",
+				Source:  "worker/subscription_checker",
+				ErrText: err.Error(),
+			})
+			cancel()
 		}
 		break
 	}

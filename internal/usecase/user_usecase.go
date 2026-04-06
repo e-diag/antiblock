@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ type UserUseCase interface {
 	CleanupExpiredProxies(graceDays int) error
 	GetUsersForPremiumReminder() ([]*domain.User, error)
 	MarkPremiumReminderSent(tgID int64) error
+	// ReissuePremiumProxy полностью перевыпускает Premium-прокси (новые ключи/для TimeWeb — новый FIP). Только активный Premium.
+	ReissuePremiumProxy(tgID int64) (*domain.ProxyNode, error)
 }
 
 type userUseCase struct {
@@ -257,8 +260,7 @@ func (uc *userUseCase) migrateLegacyPremiumToTimeweb(tgID int64, user *domain.Us
 	if uc.dockerMgr != nil {
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = uc.dockerMgr.RemoveUserContainer(cleanCtx, fmt.Sprintf(docker.UserContainerNameDD, tgID))
-		_ = uc.dockerMgr.RemoveUserContainerEE(cleanCtx, tgID)
+		uc.dockerMgr.RemoveUserPremiumEEContainers(cleanCtx, tgID)
 		log.Printf("[Premium] legacy docker containers removed tg_id=%d before TimeWeb provision", tgID)
 	}
 	return nil
@@ -334,24 +336,23 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 		return proxy, nil
 	}
 
-	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=ProvisionForUser (new secrets + floating IP)", tgID)
-	secretDD, err := generatePremiumSecret()
-	if err != nil {
-		log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: generatePremiumSecret FAILED: %v", tgID, err)
-		return nil, err
-	}
-	// EE — как в Pro: через тот же Docker API (nineseconds/mtg:2 generate-secret). Если Pro Docker выключен — ee сгенерируется на Premium VPS после EnsureDockerInstalled.
-	var secretEE string
+	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=ProvisionForUser (new ee secrets + floating IP)", tgID)
+	var secretEE1, secretEE2 string
 	if uc.dockerMgr != nil && uc.dockerMgr.GetClient() != nil {
-		ee, errEE := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
-		if errEE != nil {
-			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: GenerateEESecretViaDocker (Pro) failed, ee на VPS: %v", tgID, errEE)
+		ee1, err1 := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+		if err1 != nil {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: GenerateEESecretViaDocker (1) failed: %v", tgID, err1)
 		} else {
-			secretEE = ee
-			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ee secret from Pro Docker (same as Pro tariff)", tgID)
+			secretEE1 = ee1
+		}
+		ee2, err2 := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+		if err2 != nil {
+			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: GenerateEESecretViaDocker (2) failed: %v", tgID, err2)
+		} else {
+			secretEE2 = ee2
 		}
 	}
-	proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretDD, secretEE)
+	proxy, err := uc.premiumProvisioner.ProvisionForUser(ctx, user, secretEE1, secretEE2)
 	if err != nil {
 		if errors.Is(err, ErrNoActivePremiumServer) {
 			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: no active premium server at ProvisionForUser — enqueueing user", tgID)
@@ -470,8 +471,7 @@ func (uc *userUseCase) RevokePremium(tgID int64) error {
 		cancel()
 	} else if legacy && uc.dockerMgr != nil {
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = uc.dockerMgr.RemoveUserContainer(cleanCtx, fmt.Sprintf(docker.UserContainerNameDD, user.TGID))
-		_ = uc.dockerMgr.RemoveUserContainerEE(cleanCtx, user.TGID)
+		uc.dockerMgr.RemoveUserPremiumEEContainers(cleanCtx, user.TGID)
 		cancel()
 		log.Printf("[Premium] legacy containers removed for tg_id=%d", user.TGID)
 	}
@@ -610,8 +610,7 @@ func (uc *userUseCase) CheckExpiredPremiums() error {
 				cancel()
 			} else if legacy && uc.dockerMgr != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				_ = uc.dockerMgr.RemoveUserContainer(ctx, fmt.Sprintf(docker.UserContainerNameDD, user.TGID))
-				_ = uc.dockerMgr.RemoveUserContainerEE(ctx, user.TGID)
+				uc.dockerMgr.RemoveUserPremiumEEContainers(ctx, user.TGID)
 				cancel()
 				log.Printf("[Premium] legacy containers removed for tg_id=%d", user.TGID)
 			}
@@ -682,8 +681,7 @@ func (uc *userUseCase) CleanupExpiredProxies(graceDays int) error {
 
 			if uc.dockerMgr != nil {
 				depCtx, depCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				_ = uc.dockerMgr.RemoveUserContainer(depCtx, fmt.Sprintf(docker.UserContainerNameDD, u.TGID))
-				_ = uc.dockerMgr.RemoveUserContainerEE(depCtx, u.TGID)
+				uc.dockerMgr.RemoveUserPremiumEEContainers(depCtx, u.TGID)
 				depCancel()
 			}
 		}
@@ -711,6 +709,124 @@ func (uc *userUseCase) MarkPremiumReminderSent(tgID int64) error {
 	return uc.userRepo.Update(user)
 }
 
+func (uc *userUseCase) deletePremiumUserProxies(userID uint) {
+	if uc.userProxyRepo == nil {
+		return
+	}
+	if err := uc.userProxyRepo.DeleteByUserIDAndProxyType(userID, domain.ProxyTypePremium); err != nil {
+		log.Printf("[Premium] DeleteByUserIDAndProxyType user_id=%d: %v", userID, err)
+	}
+}
+
+// ReissuePremiumProxy полностью перевыпускает Premium: новые ee-секреты; для TimeWeb — deprovision + новый FIP.
+func (uc *userUseCase) ReissuePremiumProxy(tgID int64) (*domain.ProxyNode, error) {
+	if uc.proxyRepo == nil {
+		return nil, errors.New("proxy repository not configured")
+	}
+	user, err := uc.userRepo.GetByTGID(tgID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, errors.New("user not found")
+	}
+	if !user.IsPremiumActive() {
+		return nil, errors.New("премиум не активен")
+	}
+	proxy, err := uc.proxyRepo.GetByOwnerID(user.ID)
+	if err != nil || proxy == nil || proxy.Type != domain.ProxyTypePremium {
+		return nil, errors.New("нет записи premium proxy")
+	}
+	uc.deletePremiumUserProxies(user.ID)
+	if uc.isLegacyPremiumRecord(proxy) {
+		return uc.reissuePremiumLegacy(user, proxy)
+	}
+	if uc.hasPremiumTimeWeb() && uc.premiumProvisioner != nil {
+		return uc.reissuePremiumTimeweb(user, proxy)
+	}
+	return nil, errors.New("невозможно перевыпустить: нет TimeWeb provisioner и не legacy Docker")
+}
+
+func (uc *userUseCase) reissuePremiumLegacy(user *domain.User, proxy *domain.ProxyNode) (*domain.ProxyNode, error) {
+	if uc.dockerMgr == nil || uc.dockerMgr.GetClient() == nil {
+		return nil, errors.New("docker недоступен для legacy Premium")
+	}
+	if strings.TrimSpace(uc.premiumServerIP) == "" || net.ParseIP(uc.premiumServerIP) == nil {
+		return nil, errors.New("не задан PREMIUM_SERVER_IP / IP Pro-сервера")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	uc.dockerMgr.RemoveUserPremiumEEContainers(ctx, user.TGID)
+	s1, e1 := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+	s2, e2 := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+	if e1 != nil || e2 != nil {
+		return nil, fmt.Errorf("generate ee secrets: %v; %v", e1, e2)
+	}
+	proxy.Secret = s1
+	proxy.SecretEE = s2
+	proxy.Status = domain.ProxyStatusActive
+	if err := uc.proxyRepo.Update(proxy); err != nil {
+		return nil, err
+	}
+	out, err := uc.proxyUC.EnsurePremiumProxyForUser(user, uc.premiumServerIP, uc.dockerMgr)
+	if err != nil {
+		return nil, err
+	}
+	if err := uc.dockerMgr.CreateUserPremiumEEContainers(ctx, user.TGID, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (uc *userUseCase) reissuePremiumTimeweb(user *domain.User, proxy *domain.ProxyNode) (*domain.ProxyNode, error) {
+	if uc.dockerMgr == nil || uc.dockerMgr.GetClient() == nil {
+		return nil, errors.New("docker нужен для генерации ee-секретов")
+	}
+	if proxy.PremiumServerID == nil || *proxy.PremiumServerID == 0 {
+		return nil, errors.New("у прокси нет PremiumServerID — сначала завершите выдачу через TimeWeb")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
+	defer cancel()
+	if err := uc.premiumProvisioner.DeprovisionForUser(ctx, user, proxy); err != nil {
+		return nil, fmt.Errorf("deprovision: %w", err)
+	}
+	uc.clearTimewebFloatingStateAfterDeprovision(proxy)
+	rel, err := uc.proxyRepo.GetByOwnerID(user.ID)
+	if err != nil || rel == nil {
+		return nil, errors.New("не удалось перечитать proxy_nodes после deprovision")
+	}
+	s1, e1 := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+	s2, e2 := uc.dockerMgr.GenerateEESecretViaDocker(ctx)
+	if e1 != nil || e2 != nil {
+		return nil, fmt.Errorf("generate ee secrets: %v; %v", e1, e2)
+	}
+	rel.Secret = s1
+	rel.SecretEE = s2
+	rel.Status = domain.ProxyStatusInactive
+	if err := uc.proxyRepo.Update(rel); err != nil {
+		return nil, err
+	}
+	var out *domain.ProxyNode
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		out, lastErr = uc.premiumProvisioner.ProvisionExistingProxyForUser(ctx, user, rel)
+		if lastErr == nil {
+			break
+		}
+		log.Printf("[Premium] reissue TimeWeb provision attempt %d/3 user_id=%d: %v", attempt, user.ID, lastErr)
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("provision после deprovision (повторите /reissue_premium при необходимости): %w", lastErr)
+	}
+	if err := uc.proxyRepo.Update(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ensurePremiumContainer гарантирует, что для пользователя с активным премиумом
 // запущен Docker‑контейнер mtg-user-{tg_id} с параметрами из БД.
 func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) error {
@@ -727,34 +843,18 @@ func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) err
 		return err
 	}
 
-	name := fmt.Sprintf(docker.UserContainerNameDD, tgID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	running, err := uc.dockerMgr.IsContainerRunning(ctx, name)
-	if err != nil {
-		log.Printf("[Premium] ensurePremiumContainer tg_id=%d IsContainerRunning %s: %v", tgID, name, err)
-		return err
-	}
-	if running {
-		// DD уже запущен — ee контейнер попробуем поднять отдельно (не фатально).
-		if proxy.SecretEE != "" {
-			if err := uc.dockerMgr.CreateUserContainerEE(ctx, tgID, proxy); err != nil {
-				log.Printf("[Premium] CreateUserContainerEE tg_id=%d: %v (non-fatal)", tgID, err)
-			}
-		}
+	ee1, _ := uc.dockerMgr.IsContainerRunning(ctx, fmt.Sprintf(docker.UserContainerNameEE1, tgID))
+	ee2, _ := uc.dockerMgr.IsContainerRunning(ctx, fmt.Sprintf(docker.UserContainerNameEE2, tgID))
+	if ee1 && ee2 && proxy.SecretEE != "" {
 		return nil
 	}
 
-	if err := uc.dockerMgr.CreateUserContainer(ctx, tgID, proxy); err != nil {
-		log.Printf("[Premium] ensurePremiumContainer tg_id=%d CreateUserContainer name=%s port=%d: %v", tgID, name, proxy.Port, err)
+	if err := uc.dockerMgr.CreateUserPremiumEEContainers(ctx, tgID, proxy); err != nil {
+		log.Printf("[Premium] ensurePremiumContainer tg_id=%d CreateUserPremiumEEContainers port=%d: %v", tgID, proxy.Port, err)
 		return err
-	}
-	// После успешного создания dd-контейнера — создаём ee-контейнер (не критично).
-	if proxy.SecretEE != "" {
-		if err := uc.dockerMgr.CreateUserContainerEE(ctx, tgID, proxy); err != nil {
-			log.Printf("[Premium] CreateUserContainerEE tg_id=%d: %v (non-fatal)", tgID, err)
-		}
 	}
 	return nil
 }

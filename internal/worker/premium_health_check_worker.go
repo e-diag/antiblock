@@ -2,34 +2,30 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
 
-	"github.com/go-telegram/bot"
-
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
 
-// PremiumHealthCheckWorker каждые 15 мин проверяет активные премиум-прокси; при сбое уведомляет админов
+// PremiumHealthCheckWorker каждые 15 мин проверяет активные премиум-прокси; при сбое шлёт в служебный чат
 // и помечает UnreachableSince; каждые 5 мин перепроверяет недоступные до восстановления.
 type PremiumHealthCheckWorker struct {
-	bot      *bot.Bot
-	proxyUC  usecase.ProxyUseCase
-	adminIDs []int64
-	cfg      config.PremiumHealthCheckConfig
+	proxyUC usecase.ProxyUseCase
+	alerts  *alert.TelegramAlerter
+	cfg     config.PremiumHealthCheckConfig
 	stop     chan struct{}
 	stopOnce sync.Once
 }
 
-func NewPremiumHealthCheckWorker(b *bot.Bot, proxyUC usecase.ProxyUseCase, adminIDs []int64, cfg config.PremiumHealthCheckConfig) *PremiumHealthCheckWorker {
+func NewPremiumHealthCheckWorker(proxyUC usecase.ProxyUseCase, alerts *alert.TelegramAlerter, cfg config.PremiumHealthCheckConfig) *PremiumHealthCheckWorker {
 	return &PremiumHealthCheckWorker{
-		bot:      b,
-		proxyUC:  proxyUC,
-		adminIDs: adminIDs,
-		cfg:      cfg,
+		proxyUC: proxyUC,
+		alerts:  alerts,
+		cfg:     cfg,
 		stop:     make(chan struct{}),
 	}
 }
@@ -84,6 +80,14 @@ func (w *PremiumHealthCheckWorker) checkActivePremium() {
 	proxies, err := w.proxyUC.GetActivePremiumProxies()
 	if err != nil {
 		log.Printf("Premium health check: GetActivePremiumProxies: %v", err)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		w.alerts.Send(ctx, alert.Report{
+			Type:    "premium_health_list",
+			Source:  "worker/premium_health_check",
+			Tariff:  "premium",
+			ErrText: err.Error(),
+		})
+		cancel()
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -91,8 +95,22 @@ func (w *PremiumHealthCheckWorker) checkActivePremium() {
 	for _, p := range proxies {
 		reachable, _ := w.proxyUC.CheckPremiumProxy(p)
 		if !reachable {
-			msg := fmt.Sprintf("⚠️ Премиум-прокси ID %d (%s:%d) не отвечает.", p.ID, p.IP, p.Port)
-			w.notifyAdmins(ctx, msg)
+			rep := alert.Report{
+				Type:    "premium_proxy_unreachable",
+				Source:  "worker/premium_health_check",
+				Tariff:  "premium",
+				ProxyID: p.ID,
+				IP:      p.IP,
+				Port:    p.Port,
+				ErrText: "не отвечает (health check)",
+			}
+			if p.OwnerID != nil {
+				rep.UserDBID = *p.OwnerID
+			}
+			if p.TimewebFloatingIPID != "" {
+				rep.Extra = "fip_id=" + p.TimewebFloatingIPID
+			}
+			w.alerts.Send(ctx, rep)
 		}
 	}
 }
@@ -107,19 +125,20 @@ func (w *PremiumHealthCheckWorker) checkUnreachablePremium() {
 	for _, p := range proxies {
 		reachable, _ := w.proxyUC.CheckPremiumProxy(p)
 		if reachable {
-			msg := fmt.Sprintf("✅ Премиум-прокси ID %d (%s:%d) снова доступен.", p.ID, p.IP, p.Port)
-			w.notifyAdmins(ctx, msg)
+			rep := alert.Report{
+				Type:    "premium_proxy_recovered",
+				Source:  "worker/premium_health_check",
+				Tariff:  "premium",
+				ProxyID: p.ID,
+				IP:      p.IP,
+				Port:    p.Port,
+				ErrText: "снова доступен",
+			}
+			if p.OwnerID != nil {
+				rep.UserDBID = *p.OwnerID
+			}
+			w.alerts.Send(ctx, rep)
 		}
-	}
-}
-
-func (w *PremiumHealthCheckWorker) notifyAdmins(ctx context.Context, text string) {
-	for _, adminID := range w.adminIDs {
-		_, _ = w.bot.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:    adminID,
-			Text:      text,
-			ParseMode: "HTML",
-		})
 	}
 }
 

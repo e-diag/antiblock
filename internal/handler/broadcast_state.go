@@ -10,47 +10,95 @@ const (
 	BroadcastAudienceFree BroadcastAudience = "free"
 )
 
-// BroadcastState хранит состояние рассылки по админам:
-// ожидается ли ввод сообщения и для какой аудитории.
+// BroadcastPhase — этап сценария рассылки.
+type BroadcastPhase int
+
+const (
+	BroadcastPhaseIdle BroadcastPhase = iota
+	BroadcastPhaseAwaitingMessage // выбрана аудитория, ждём контент
+	BroadcastPhasePreview         // контент сохранён, ждём подтверждения
+)
+
+// BroadcastPending — что разослать после подтверждения (одно сообщение или альбом).
+type BroadcastPending struct {
+	Audience   BroadcastAudience
+	FromChatID int64
+	MessageIDs []int
+}
+
+// BroadcastState — FSM рассылки по админам.
 type BroadcastState struct {
-	mu        sync.Mutex
-	awaiting  map[int64]bool
-	audience  map[int64]BroadcastAudience
+	mu       sync.Mutex
+	phase    map[int64]BroadcastPhase
+	audience map[int64]BroadcastAudience
+	pending  map[int64]*BroadcastPending
 }
 
 func NewBroadcastState() *BroadcastState {
 	return &BroadcastState{
-		awaiting: make(map[int64]bool),
+		phase:    make(map[int64]BroadcastPhase),
 		audience: make(map[int64]BroadcastAudience),
+		pending:  make(map[int64]*BroadcastPending),
 	}
 }
 
-// SetAwaiting включает режим ожидания сообщения для админа и запоминает аудиторию.
-func (s *BroadcastState) SetAwaiting(adminID int64, audience BroadcastAudience) {
+// SetAwaitingMessage — выбор аудитории: ждём сообщение (сбрасывает предыдущий preview).
+func (s *BroadcastState) SetAwaitingMessage(adminID int64, audience BroadcastAudience) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.awaiting[adminID] = true
+	s.phase[adminID] = BroadcastPhaseAwaitingMessage
 	s.audience[adminID] = audience
+	delete(s.pending, adminID)
 }
 
-// IsAwaiting возвращает, ожидается ли сейчас ввод сообщения от этого админа.
-func (s *BroadcastState) IsAwaiting(adminID int64) bool {
+// SetPreview — контент получен, ждём подтверждения.
+func (s *BroadcastState) SetPreview(adminID int64, p *BroadcastPending) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.awaiting[adminID]
+	s.phase[adminID] = BroadcastPhasePreview
+	if p != nil {
+		s.audience[adminID] = p.Audience
+		s.pending[adminID] = p
+	}
 }
 
-// Audience возвращает выбранную аудиторию для админа.
+// Phase текущий этап (по умолчанию Idle).
+func (s *BroadcastState) Phase(adminID int64) BroadcastPhase {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.phase[adminID]
+}
+
+// IsAwaitingMessage — ждём ввод сообщения для рассылки.
+func (s *BroadcastState) IsAwaitingMessage(adminID int64) bool {
+	return s.Phase(adminID) == BroadcastPhaseAwaitingMessage
+}
+
+// IsPreview — показан предпросмотр, ждём confirm/cancel.
+func (s *BroadcastState) IsPreview(adminID int64) bool {
+	return s.Phase(adminID) == BroadcastPhasePreview
+}
+
+// Audience выбранная аудитория (для awaiting и preview).
 func (s *BroadcastState) Audience(adminID int64) BroadcastAudience {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.audience[adminID]
 }
 
-// Clear сбрасывает состояние ожидания и аудиторию для админа.
+// Pending данные для подтверждённой рассылки.
+func (s *BroadcastState) Pending(adminID int64) (*BroadcastPending, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.pending[adminID]
+	return p, p != nil
+}
+
+// Clear сбрасывает состояние админа.
 func (s *BroadcastState) Clear(adminID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.awaiting, adminID)
+	delete(s.phase, adminID)
 	delete(s.audience, adminID)
+	delete(s.pending, adminID)
 }

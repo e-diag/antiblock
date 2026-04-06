@@ -15,6 +15,8 @@ type UserRepository interface {
 	Update(user *domain.User) error
 	GetAll() ([]*domain.User, error)
 	GetPremiumUsers() ([]*domain.User, error)
+	// ListPaidActiveUserIDs — пользователи с активным Premium (premium_until > now) или активной Pro-подпиской.
+	ListPaidActiveUserIDs() ([]uint, error)
 	GetUsersForPremiumReminder(daysFrom, daysTo int) ([]*domain.User, error) // premium_until через daysFrom–daysTo дней, напоминание ещё не отправлялось
 	Count() (int64, error)
 }
@@ -70,6 +72,18 @@ func (r *userRepository) GetPremiumUsers() ([]*domain.User, error) {
 	var users []*domain.User
 	err := r.db.Where("is_premium = ?", true).Find(&users).Error
 	return users, err
+}
+
+func (r *userRepository) ListPaidActiveUserIDs() ([]uint, error) {
+	now := time.Now().UTC()
+	var ids []uint
+	err := r.db.Raw(`
+		SELECT id FROM users
+		WHERE is_premium = true AND premium_until IS NOT NULL AND premium_until > ?
+		UNION
+		SELECT user_id FROM pro_subscriptions WHERE expires_at > ?
+	`, now, now).Scan(&ids).Error
+	return ids, err
 }
 
 // GetUsersForPremiumReminder возвращает пользователей с активным премиумом, у которых premium_until

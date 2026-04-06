@@ -1,0 +1,333 @@
+{
+  "_meta": {
+    "description": "Каталог inline-кнопок. Редактируйте text и при необходимости paid_emoji_id / icon_custom_emoji_id.",
+    "paid_emoji_fill": "У каждой кнопки есть поле paid_emoji_id: вставьте id custom emoji из @Stickers (пустая строка = без premium-иконки).",
+    "telegram_field": "В Bot API поле называется icon_custom_emoji_id — иконка показывается ПЕРЕД текстом кнопки. paid_emoji_id — синоним для удобства.",
+    "template_note": "В text можно использовать плейсхолдеры fmt, например %d для дней (см. main_buy_pro).",
+    "fields": {
+      "key": "Уникальный идентификатор кнопки в проекте",
+      "text": "Подпись кнопки (Text). Для шаблонов — как в fmt.Sprintf",
+      "callback_data": "Эталонный callback для документации; в коде может совпадать",
+      "screen": "Раздел",
+      "paid_emoji_id": "Custom emoji id (строка) для icon_custom_emoji_id",
+      "icon_custom_emoji_id": "То же, что paid_emoji_id, если нужно явное имя поля Telegram"
+    }
+  },
+  "buttons": [
+    {
+      "key": "main_get_proxy",
+      "text": "🔗 Получить прокси",
+      "callback_data": "get_proxy",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_get_proxy_extra",
+      "text": "➕ Получить дополнительный free прокси",
+      "callback_data": "get_proxy",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_buy_pro",
+      "text": "⚡ Купить Pro на %d дн.",
+      "callback_data": "buy_pro",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_buy_premium",
+      "text": "💎 Купить Premium на %d дн.",
+      "callback_data": "buy_premium",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_get_pro_proxy",
+      "text": "⚡ Получить Pro proxy",
+      "callback_data": "get_pro_proxy",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_get_premium_proxy",
+      "text": "🔐 Получить Premium proxy",
+      "callback_data": "get_premium_proxy",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_extend_pro",
+      "text": "⚡ Продлить Pro",
+      "callback_data": "buy_pro",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_extend_premium",
+      "text": "💎 Продлить Premium",
+      "callback_data": "buy_premium",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_my_proxies",
+      "text": "📋 Мои прокси",
+      "callback_data": "my_proxies",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_instructions",
+      "text": "📖 Инструкция",
+      "callback_data": "show_instructions",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "main_support",
+      "text": "🛟 Поддержка",
+      "callback_data": "support_menu",
+      "screen": "Главное меню",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "support_proxy_issue",
+      "text": "🔌 Не работает прокси",
+      "callback_data": "support_proxy_issue",
+      "screen": "Поддержка",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "support_payment",
+      "text": "💳 Проблема с оплатой",
+      "callback_data": "support_payment",
+      "screen": "Поддержка",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "support_partnership",
+      "text": "🤝 Вопрос сотрудничества",
+      "url": "(задаётся менеджером: support_partnership_link)",
+      "screen": "Поддержка",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "support_other",
+      "text": "✉️ Другой вопрос",
+      "url": "(задаётся менеджером: support_other_question_link)",
+      "screen": "Поддержка",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "support_back_main",
+      "text": "◀️ В главное меню",
+      "callback_data": "back_to_main",
+      "screen": "Поддержка",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "payment_back",
+      "text": "◀️ Назад",
+      "callback_data": "cancel_payment",
+      "screen": "Оплата Pro/Premium",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_stats",
+      "text": "📊 Статистика",
+      "callback_data": "mgr_stats",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_proxies",
+      "text": "📋 Прокси",
+      "callback_data": "mgr_proxies",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_addproxy",
+      "text": "➕ Добавить прокси",
+      "callback_data": "mgr_addproxy",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_delproxy",
+      "text": "🗑 Удалить прокси",
+      "callback_data": "mgr_delproxy",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_broadcast",
+      "text": "📢 Рассылка",
+      "callback_data": "mgr_broadcast",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_sendad",
+      "text": "📣 Объявления",
+      "callback_data": "mgr_sendad",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_forcedsub",
+      "text": "📢 Управление ОП",
+      "callback_data": "mgr_forcedsub",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_maintenance",
+      "text": "🔧 Технические работы",
+      "callback_data": "mgr_maintenance_menu",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_maintenance_active",
+      "text": "🔧 Тех. работы: ВКЛ ⚠️",
+      "callback_data": "mgr_maintenance_menu",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_pro_groups",
+      "text": "⚡ Pro-группы",
+      "callback_data": "mgr_pro_groups",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_pro_pricing",
+      "text": "⚙️ Цена Pro",
+      "callback_data": "mgr_pro_pricing",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_instruction",
+      "text": "📖 Инструкция",
+      "callback_data": "mgr_instruction",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_subs",
+      "text": "💎 Premium",
+      "callback_data": "mgr_subs",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_pricing",
+      "text": "⚙️ Цена Premium",
+      "callback_data": "mgr_pricing",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_grant",
+      "text": "✅ Выдать премиум",
+      "callback_data": "mgr_grant",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_revoke",
+      "text": "❌ Отозвать премиум",
+      "callback_data": "mgr_revoke",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_grant_pro",
+      "text": "✅ Выдать Pro",
+      "callback_data": "mgr_grant_pro",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_revoke_pro",
+      "text": "❌ Отозвать Pro",
+      "callback_data": "mgr_revoke_pro",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_support_settings",
+      "text": "🛟 Тексты поддержки",
+      "callback_data": "mgr_support_settings",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_premium_reissue",
+      "text": "🔄 Перевыпустить Premium-прокси",
+      "callback_data": "mgr_premium_reissue",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_back",
+      "text": "◀️ Назад",
+      "callback_data": "mgr_back",
+      "screen": "Панель менеджера / вложенные",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "mgr_refresh_stats",
+      "text": "🔄 Обновить",
+      "callback_data": "mgr_refresh_stats",
+      "screen": "Панель менеджера",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "forced_sub_check",
+      "text": "✅ Проверить подписку",
+      "callback_data": "check_sub_forced",
+      "screen": "Обязательная подписка",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "proxies_filter_free",
+      "text": "🆓",
+      "callback_data": "mgr_proxies_free_*",
+      "screen": "Менеджер: список прокси",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "proxies_filter_pro",
+      "text": "⚡ Pro",
+      "callback_data": "mgr_proxies_pro_*",
+      "screen": "Менеджер: список прокси",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "proxies_filter_premium",
+      "text": "💎",
+      "callback_data": "mgr_proxies_premium_*",
+      "screen": "Менеджер: список прокси",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "proxies_filter_all",
+      "text": "Все",
+      "callback_data": "mgr_proxies_all_*",
+      "screen": "Менеджер: список прокси",
+      "paid_emoji_id": ""
+    },
+    {
+      "key": "proxies_refresh",
+      "text": "🔄 Обновить",
+      "callback_data": "mgr_proxies_*",
+      "screen": "Менеджер: список прокси",
+      "paid_emoji_id": ""
+    }
+  ]
+}

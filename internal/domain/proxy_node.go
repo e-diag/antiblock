@@ -11,11 +11,13 @@ const (
 	ProxyTypePro     ProxyType = "pro"
 )
 
-// PremiumPortDD/EE — фиксированные порты для Premium-ключей при TimeWeb provisioning.
-// dd — стандартный прокси (p3terx/mtg), ee — fake-TLS (nineseconds/mtg:2).
+// PremiumPortEE1/EE2 — фиксированные порты для двух ee-прокси (nineseconds) при TimeWeb provisioning.
 const (
-	PremiumPortDD = 8443
-	PremiumPortEE = 443
+	PremiumPortEE1 = 8443
+	PremiumPortEE2 = 443
+	// Устаревшие имена: ранее 8443 считался «dd», 443 — «ee»; оба порта теперь только ee.
+	PremiumPortDD = PremiumPortEE1
+	PremiumPortEE = PremiumPortEE2
 )
 
 // ProxyStatus определяет статус прокси-сервера

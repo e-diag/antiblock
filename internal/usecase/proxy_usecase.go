@@ -2,8 +2,6 @@ package usecase
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -35,7 +33,7 @@ type ProxyUseCase interface {
 	GetUnreachablePremiumProxies() ([]*domain.ProxyNode, error)
 	// CheckPremiumProxy проверяет премиум-прокси; при неудаче выставляет UnreachableSince, при успехе сбрасывает. Возвращает reachable.
 	CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bool, err error)
-	// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
+	// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: два ee-секрета (nineseconds),
 	// выбирает свободный порт 20000-30000, создаёт/обновляет запись в proxy_nodes с serverIP.
 	EnsurePremiumProxyForUser(user *domain.User, serverIP string, dockerMgr *docker.Manager) (*domain.ProxyNode, error)
 	// GetAllFreeProxies возвращает все free-прокси (активные и неактивные) для мониторинга.
@@ -359,19 +357,8 @@ func (uc *proxyUseCase) CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bo
 	return true, nil
 }
 
-// generatePremiumSecret возвращает секрет для mtg: префикс "dd" + 32 символа HEX (итого 34).
-func generatePremiumSecret() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return "dd" + hex.EncodeToString(b), nil
-}
-
-// generateEESecret запускает docker команду для генерации ee-секрета с доменом vk.com.
-// Возвращает строку вида "ee...".
-// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: генерирует секрет (dd+32 hex),
-// выбирает свободный порт в [20000, 30000], создаёт или обновляет запись в proxy_nodes с serverIP.
+// EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: два ee-секрета (nineseconds),
+// свободный порт в [20000, 30000] для legacy, создаёт или обновляет запись в proxy_nodes с serverIP.
 func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP string, dockerMgr *docker.Manager) (*domain.ProxyNode, error) {
 	if user == nil {
 		return nil, errors.New("user is nil")
@@ -390,18 +377,22 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		existing.Type = domain.ProxyTypePremium
 		existing.Status = domain.ProxyStatusActive
 		existing.IP = serverIP
-		// Backfill ee secret при старых записях.
-		if existing.SecretEE == "" {
-			if dockerMgr == nil {
-				return nil, errors.New("dockerMgr is required to generate ee secret")
-			}
+		// Миграция со старых dd-ключей: оба слота — ee (nineseconds).
+		if dockerMgr == nil {
+			return nil, errors.New("dockerMgr is required to generate ee secrets")
+		}
+		needRegen := !strings.HasPrefix(strings.ToLower(existing.Secret), "ee") || existing.SecretEE == "" ||
+			!strings.HasPrefix(strings.ToLower(existing.SecretEE), "ee")
+		if needRegen {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-
-			secretEE, errEE := dockerMgr.GenerateEESecretViaDocker(ctx)
-			if errEE == nil && strings.TrimSpace(secretEE) != "" {
-				existing.SecretEE = secretEE
+			s1, e1 := dockerMgr.GenerateEESecretViaDocker(ctx)
+			s2, e2 := dockerMgr.GenerateEESecretViaDocker(ctx)
+			if e1 != nil || e2 != nil {
+				return nil, fmt.Errorf("generate ee secrets: %v; %v", e1, e2)
 			}
+			existing.Secret = s1
+			existing.SecretEE = s2
 		}
 		if err := uc.proxyRepo.Update(existing); err != nil {
 			return nil, err
@@ -409,19 +400,19 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		return existing, nil
 	}
 
-	secretDD, err := generatePremiumSecret()
-	if err != nil {
-		return nil, fmt.Errorf("generate dd secret: %w", err)
-	}
 	if dockerMgr == nil {
-		return nil, errors.New("dockerMgr is required to generate ee secret")
+		return nil, errors.New("dockerMgr is required to generate ee secrets")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	secretEE, err := dockerMgr.GenerateEESecretViaDocker(ctx)
+	secretEE1, err := dockerMgr.GenerateEESecretViaDocker(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("generate ee secret via docker: %w", err)
+		return nil, fmt.Errorf("generate ee secret 1: %w", err)
+	}
+	secretEE2, err := dockerMgr.GenerateEESecretViaDocker(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("generate ee secret 2: %w", err)
 	}
 
 	const (
@@ -442,8 +433,8 @@ func (uc *proxyUseCase) EnsurePremiumProxyForUser(user *domain.User, serverIP st
 		proxy := &domain.ProxyNode{
 			IP:       serverIP,
 			Port:     port,
-			Secret:   secretDD,
-			SecretEE: secretEE,
+			Secret:   secretEE1,
+			SecretEE: secretEE2,
 			Type:     domain.ProxyTypePremium,
 			Status:   domain.ProxyStatusActive,
 			Load:     0,

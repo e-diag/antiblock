@@ -52,6 +52,10 @@ type AppConfig struct {
 type TelegramConfig struct {
 	BotToken                  string   `yaml:"bot_token"`
 	AdminIDs                  []string `yaml:"admin_ids"`
+	// ErrorLogChatID — id чата/группы/канала для технических алертов (см. TELEGRAM_ERROR_LOG_CHAT_ID). Пусто = только лог.
+	ErrorLogChatID string `yaml:"error_log_chat_id"`
+	// ManagerProgressChatID — прогресс paidops (миграция dd→ee, компенсации). См. TELEGRAM_MANAGER_PROGRESS_CHAT_ID.
+	ManagerProgressChatID string `yaml:"manager_progress_chat_id"`
 	ForcedSubscriptionChannel string   `yaml:"forced_subscription_channel"` // @channel или username, пусто = отключено
 }
 
@@ -64,6 +68,38 @@ func (t *TelegramConfig) GetAdminIDs() []int64 {
 		}
 	}
 	return ids
+}
+
+// GetErrorLogChatID возвращает id служебного чата для технических ошибок; 0 = не настроено.
+func (t *TelegramConfig) GetErrorLogChatID() int64 {
+	if t == nil {
+		return 0
+	}
+	s := strings.TrimSpace(t.ErrorLogChatID)
+	if s == "" || strings.HasPrefix(s, "${") {
+		return 0
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// GetManagerProgressChatID — чат для отчётов paidops (миграция, рассылки компенсации); 0 = не настроено.
+func (t *TelegramConfig) GetManagerProgressChatID() int64 {
+	if t == nil {
+		return 0
+	}
+	s := strings.TrimSpace(t.ManagerProgressChatID)
+	if s == "" || strings.HasPrefix(s, "${") {
+		return 0
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 type DatabaseConfig struct {
@@ -237,8 +273,26 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	cfg.Telegram.AdminIDs = mergeAdminIDs(cfg.Telegram.AdminIDs)
+	cfg.Telegram.ErrorLogChatID = mergeErrorLogChatID(cfg.Telegram.ErrorLogChatID)
+	cfg.Telegram.ManagerProgressChatID = mergeManagerProgressChatID(cfg.Telegram.ManagerProgressChatID)
 
 	return &cfg, nil
+}
+
+// mergeErrorLogChatID: TELEGRAM_ERROR_LOG_CHAT_ID перекрывает значение из yaml.
+func mergeErrorLogChatID(base string) string {
+	if v := os.Getenv("TELEGRAM_ERROR_LOG_CHAT_ID"); v != "" {
+		return trimQuotes(v)
+	}
+	return base
+}
+
+// mergeManagerProgressChatID: TELEGRAM_MANAGER_PROGRESS_CHAT_ID перекрывает yaml.
+func mergeManagerProgressChatID(base string) string {
+	if v := os.Getenv("TELEGRAM_MANAGER_PROGRESS_CHAT_ID"); v != "" {
+		return trimQuotes(v)
+	}
+	return base
 }
 
 // applyDatabaseDefaults заполняет пустые поля Database из env с дефолтами

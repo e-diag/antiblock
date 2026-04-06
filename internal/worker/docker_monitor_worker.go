@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,17 +13,16 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	"github.com/go-telegram/bot"
 
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
 )
 
 // DockerMonitorWorker следит за использованием памяти контейнерами mtg-user-{tg_id}
-// и уведомляет админов при превышении лимита 100MB.
+// и шлёт алерты в служебный чат при превышении лимита 100MB.
 type DockerMonitorWorker struct {
-	bot      *bot.Bot
-	adminIDs []int64
+	alerts *alert.TelegramAlerter
 	cfg      config.WorkerConfig
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -30,8 +30,7 @@ type DockerMonitorWorker struct {
 }
 
 func NewDockerMonitorWorker(
-	b *bot.Bot,
-	adminIDs []int64,
+	alerts *alert.TelegramAlerter,
 	cfg config.WorkerConfig,
 	dockerMgr *docker.Manager,
 ) *DockerMonitorWorker {
@@ -40,9 +39,8 @@ func NewDockerMonitorWorker(
 		cli = dockerMgr.GetClient()
 	}
 	return &DockerMonitorWorker{
-		bot:      b,
-		adminIDs: adminIDs,
-		cfg:      cfg,
+		alerts: alerts,
+		cfg:    cfg,
 		stop:     make(chan struct{}),
 		cli:      cli,
 	}
@@ -104,7 +102,11 @@ func (w *DockerMonitorWorker) checkOnce() {
 	})
 	if err != nil {
 		log.Printf("docker monitor: list containers error: %v", err)
-		w.notifyAdmins(ctx, fmt.Sprintf("❗ Ошибка чтения списка контейнеров Docker: %v", err))
+		w.alerts.Send(ctx, alert.Report{
+			Type:    "docker_list_containers",
+			Source:  "worker/docker_monitor",
+			ErrText: err.Error(),
+		})
 		return
 	}
 
@@ -150,26 +152,13 @@ func (w *DockerMonitorWorker) checkOnce() {
 			continue
 		}
 
-		// Шлём алерт всем админам
-		text := fmt.Sprintf(
-			"⚠️ <b>Превышен лимит памяти</b>\n\n"+
-				"Контейнер: <code>%s</code>\n"+
-				"TG ID: <code>%s</code>\n"+
-				"Память: <b>%.1f MB</b> (лимит 100 MB)\n",
-			name, tgIDStr, usageMB,
-		)
-
-		w.notifyAdmins(ctx, text)
-	}
-}
-
-// notifyAdmins отправляет сообщение всем администраторам.
-func (w *DockerMonitorWorker) notifyAdmins(ctx context.Context, text string) {
-	for _, adminID := range w.adminIDs {
-		_, _ = w.bot.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:    adminID,
-			Text:      text,
-			ParseMode: "HTML",
+		tgID, _ := strconv.ParseInt(tgIDStr, 10, 64)
+		w.alerts.Send(ctx, alert.Report{
+			Type:     "docker_high_memory",
+			Source:   "worker/docker_monitor",
+			UserTGID: tgID,
+			Extra:    fmt.Sprintf("container=%s memory_mb=%.1f (limit 100 MB)", name, usageMB),
+			ErrText:  "превышен лимит памяти контейнера mtg-user",
 		})
 	}
 }

@@ -1,16 +1,19 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/yourusername/antiblock/internal/botmessage"
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/usecase"
 )
@@ -94,7 +97,7 @@ func YooKassaWebhook(
 			}
 			if telegramBot != nil {
 				// Поведение как у xRocket webhook: при продлении (extendedOnly) — уведомление,
-				// при новой группе — отправляем dd+ee прокси.
+				// при новой группе — два ee-прокси (nineseconds).
 				if extendedOnly {
 					_, _ = telegramBot.SendMessage(r.Context(), &bot.SendMessageParams{
 						ChatID:    tgID,
@@ -102,21 +105,9 @@ func YooKassaWebhook(
 						Text:      fmt.Sprintf("✅ <b>Pro продлён</b> на %d дн.", days),
 					})
 				} else if group != nil {
-					ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortDD, group.SecretDD)
-					msgDD := fmt.Sprintf("✅ <b>Ваш Pro proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:",
-						group.ServerIP, group.PortDD, group.SecretDD)
-					kbDD := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (dd)", URL: ddURL}}}}
-					_, _ = telegramBot.SendMessage(r.Context(), &bot.SendMessageParams{
-						ChatID: tgID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD,
-					})
-
-					eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
-					msgEE := fmt.Sprintf("🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Запасной вариант для случаев, когда dd ограничен</i>",
-						group.ServerIP, group.PortEE, group.SecretEE)
-					kbEE := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "🔗 Подключиться (ee)", URL: eeURL}}}}
-					_, _ = telegramBot.SendMessage(r.Context(), &bot.SendMessageParams{
-						ChatID: tgID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
-					})
+					tgCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+					botmessage.SendProGroupTwoEE(tgCtx, telegramBot, tgID, group, botmessage.ProGroupStylePayment)
+					cancel()
 				}
 			}
 			w.WriteHeader(http.StatusOK)

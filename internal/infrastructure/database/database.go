@@ -113,7 +113,7 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
-	// Уникальный порт для Pro-групп (dd). Порт ee вычисляется как PortDD+10000.
+	// Уникальный порт первого ee-слота Pro-группы (колонка port_dd — историческое имя). Второй слот — port_ee.
 	if err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_groups_port_dd_unique
 		ON pro_groups (port_dd)

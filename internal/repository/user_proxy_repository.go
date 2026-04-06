@@ -16,6 +16,8 @@ type UserProxyRepository interface {
 	DeleteByIPPort(ip string, port int) error
 	// DeleteByIPPortSecret удаляет записи по точному совпадению ip, port, secret (один прокси).
 	DeleteByIPPortSecret(ip string, port int, secret string) error
+	// DeleteByUserIDAndProxyType удаляет все выданные прокси пользователя указанного типа (например при перевыпуске Premium).
+	DeleteByUserIDAndProxyType(userID uint, proxyType domain.ProxyType) error
 }
 
 type userProxyRepository struct {
@@ -66,4 +68,8 @@ func (r *userProxyRepository) DeleteByIPPort(ip string, port int) error {
 
 func (r *userProxyRepository) DeleteByIPPortSecret(ip string, port int, secret string) error {
 	return r.db.Where("ip = ? AND port = ? AND secret = ?", ip, port, secret).Delete(&domain.UserProxy{}).Error
+}
+
+func (r *userProxyRepository) DeleteByUserIDAndProxyType(userID uint, proxyType domain.ProxyType) error {
+	return r.db.Where("user_id = ? AND proxy_type = ?", userID, proxyType).Delete(&domain.UserProxy{}).Error
 }

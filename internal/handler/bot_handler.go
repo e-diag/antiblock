@@ -16,16 +16,22 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/yourusername/antiblock/internal/botbuttons"
+	"github.com/yourusername/antiblock/internal/botmessage"
 	"github.com/yourusername/antiblock/internal/domain"
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
 	"github.com/yourusername/antiblock/internal/infrastructure/timeweb"
 	"github.com/yourusername/antiblock/internal/repository"
+	"github.com/yourusername/antiblock/internal/telegramx"
 	"github.com/yourusername/antiblock/internal/usecase"
+	"gorm.io/gorm"
 )
 
 const broadcastDelayMs = 50 // ~20 сообщений в секунду (лимит Telegram ~30/сек)
@@ -78,18 +84,18 @@ func formatProxyLine(p *domain.ProxyNode, withBullet bool) string {
 
 // buildManagerProxiesPage возвращает текст и клавиатуру для страницы списка прокси.
 // proxyType: "free", "premium", "pro", "all"
-func (h *BotHandler) buildManagerProxiesPage(proxyType string, page int) (string, *models.InlineKeyboardMarkup, error) {
+func (h *BotHandler) buildManagerProxiesPage(proxyType string, page int) (string, models.ReplyMarkup, error) {
 	if proxyType == "pro" {
 		if h.proUC == nil {
-			return "⚡ <b>Pro-прокси</b>\n\nPro не настроен.", &models.InlineKeyboardMarkup{
-				InlineKeyboard: [][]models.InlineKeyboardButton{
+			return "⚡ <b>Pro-прокси</b>\n\nPro не настроен.", &telegramx.InlineKeyboardMarkup{
+				InlineKeyboard: [][]telegramx.InlineKeyboardButton{
 					{
-						{Text: markActive("🆓", false), CallbackData: "mgr_proxies_free_0"},
-						{Text: markActive("⚡ Pro", true), CallbackData: "mgr_proxies_pro_0"},
-						{Text: markActive("💎", false), CallbackData: "mgr_proxies_premium_0"},
-						{Text: markActive("Все", false), CallbackData: "mgr_proxies_all_0"},
+						h.markActiveBtn("proxies_filter_free", h.txt("proxies_filter_free", "🆓"), false, "mgr_proxies_free_0"),
+						h.markActiveBtn("proxies_filter_pro", h.txt("proxies_filter_pro", "⚡ Pro"), true, "mgr_proxies_pro_0"),
+						h.markActiveBtn("proxies_filter_premium", h.txt("proxies_filter_premium", "💎"), false, "mgr_proxies_premium_0"),
+						h.markActiveBtn("proxies_filter_all", h.txt("proxies_filter_all", "Все"), false, "mgr_proxies_all_0"),
 					},
-					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+					{h.cb("mgr_back", h.txt("mgr_back", "◀️ Назад"), "mgr_back")},
 				},
 			}, nil
 		}
@@ -112,17 +118,17 @@ func (h *BotHandler) buildManagerProxiesPage(proxyType string, page int) (string
 				))
 			}
 		}
-		kb := &models.InlineKeyboardMarkup{
-			InlineKeyboard: [][]models.InlineKeyboardButton{
+		kb := &telegramx.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegramx.InlineKeyboardButton{
 				{
-					{Text: markActive("🆓", false), CallbackData: "mgr_proxies_free_0"},
-					{Text: markActive("⚡ Pro", true), CallbackData: "mgr_proxies_pro_0"},
-					{Text: markActive("💎", false), CallbackData: "mgr_proxies_premium_0"},
-					{Text: markActive("Все", false), CallbackData: "mgr_proxies_all_0"},
+					h.markActiveBtn("proxies_filter_free", h.txt("proxies_filter_free", "🆓"), false, "mgr_proxies_free_0"),
+					h.markActiveBtn("proxies_filter_pro", h.txt("proxies_filter_pro", "⚡ Pro"), true, "mgr_proxies_pro_0"),
+					h.markActiveBtn("proxies_filter_premium", h.txt("proxies_filter_premium", "💎"), false, "mgr_proxies_premium_0"),
+					h.markActiveBtn("proxies_filter_all", h.txt("proxies_filter_all", "Все"), false, "mgr_proxies_all_0"),
 				},
 				{
-					{Text: "🔄 Обновить", CallbackData: "mgr_proxies_pro_0"},
-					{Text: "◀️ Назад", CallbackData: "mgr_back"},
+					h.cb("proxies_refresh", h.txt("proxies_refresh", "🔄 Обновить"), "mgr_proxies_pro_0"),
+					h.cb("mgr_back", h.txt("mgr_back", "◀️ Назад"), "mgr_back"),
 				},
 			},
 		}
@@ -208,46 +214,38 @@ func (h *BotHandler) buildManagerProxiesPage(proxyType string, page int) (string
 	}
 
 	// Клавиатура: фильтры + пагинация + назад
-	var rows [][]models.InlineKeyboardButton
+	var rows [][]telegramx.InlineKeyboardButton
 
 	// Строка фильтров
-	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: markActive("🆓", proxyType == "free"), CallbackData: "mgr_proxies_free_0"},
-		{Text: markActive("⚡ Pro", proxyType == "pro"), CallbackData: "mgr_proxies_pro_0"},
-		{Text: markActive("💎", proxyType == "premium"), CallbackData: "mgr_proxies_premium_0"},
-		{Text: markActive("Все", proxyType == "all"), CallbackData: "mgr_proxies_all_0"},
+	rows = append(rows, []telegramx.InlineKeyboardButton{
+		h.markActiveBtn("proxies_filter_free", h.txt("proxies_filter_free", "🆓"), proxyType == "free", "mgr_proxies_free_0"),
+		h.markActiveBtn("proxies_filter_pro", h.txt("proxies_filter_pro", "⚡ Pro"), proxyType == "pro", "mgr_proxies_pro_0"),
+		h.markActiveBtn("proxies_filter_premium", h.txt("proxies_filter_premium", "💎"), proxyType == "premium", "mgr_proxies_premium_0"),
+		h.markActiveBtn("proxies_filter_all", h.txt("proxies_filter_all", "Все"), proxyType == "all", "mgr_proxies_all_0"),
 	})
 
-	// Строка пагинации
-	var navRow []models.InlineKeyboardButton
+	// Строка пагинации (без записей в JSON — только иконки/цифры)
+	var navRow []telegramx.InlineKeyboardButton
 	if page > 0 {
-		navRow = append(navRow, models.InlineKeyboardButton{
+		navRow = append(navRow, telegramx.InlineKeyboardButton{
 			Text: "◀️", CallbackData: fmt.Sprintf("mgr_proxies_%s_%d", proxyType, page-1),
 		})
 	}
-	navRow = append(navRow, models.InlineKeyboardButton{
+	navRow = append(navRow, telegramx.InlineKeyboardButton{
 		Text: fmt.Sprintf("%d/%d", page+1, totalPages), CallbackData: "mgr_noop",
 	})
 	if page < totalPages-1 {
-		navRow = append(navRow, models.InlineKeyboardButton{
+		navRow = append(navRow, telegramx.InlineKeyboardButton{
 			Text: "▶️", CallbackData: fmt.Sprintf("mgr_proxies_%s_%d", proxyType, page+1),
 		})
 	}
 	rows = append(rows, navRow)
-	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: "🔄 Обновить", CallbackData: fmt.Sprintf("mgr_proxies_%s_%d", proxyType, page)},
-		{Text: "◀️ Назад", CallbackData: "mgr_back"},
+	rows = append(rows, []telegramx.InlineKeyboardButton{
+		h.cb("proxies_refresh", h.txt("proxies_refresh", "🔄 Обновить"), fmt.Sprintf("mgr_proxies_%s_%d", proxyType, page)),
+		h.cb("mgr_back", h.txt("mgr_back", "◀️ Назад"), "mgr_back"),
 	})
 
-	return sb.String(), &models.InlineKeyboardMarkup{InlineKeyboard: rows}, nil
-}
-
-// markActive добавляет ✓ к тексту кнопки если active == true
-func markActive(text string, active bool) string {
-	if active {
-		return "✓ " + text
-	}
-	return text
+	return sb.String(), &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}, nil
 }
 
 // BotHandler обрабатывает команды бота
@@ -289,7 +287,8 @@ type BotHandler struct {
 	instrAwaitingPhoto  map[int64]bool
 	instrMu             sync.Mutex
 	adminIDs            []int64
-	botRef              *bot.Bot // для асинхронной рассылки альбомов (устанавливается из main)
+	techAlerts          *alert.TelegramAlerter // служебный чат технических ошибок (не личка менеджера)
+	botRef              *bot.Bot               // для асинхронной рассылки альбомов (устанавливается из main)
 	broadcastSem        chan struct{}
 
 	yooKassaProviderToken string // токен провайдера Telegram Payments (ЮKassa)
@@ -299,6 +298,19 @@ type BotHandler struct {
 
 	vpsSetupSteps map[int64]*VPSSetupData
 	vpsSetupMu    sync.Mutex
+
+	// Ожидание ввода значений поддержки (ключ app_settings → следующее сообщение админа).
+	supportAwaitKey map[int64]string
+	supportMu       sync.Mutex
+
+	// btnCatalog — тексты и icon_custom_emoji_id из assets/bot_buttons.json (может быть nil).
+	btnCatalog *botbuttons.Catalog
+
+	gormDB                *gorm.DB
+	paidOps               *usecase.PaidOps
+	managerProgressChatID int64
+	opsTariffRunning      atomic.Bool
+	opsMigrateRunning     atomic.Bool
 }
 
 // NewBotHandler создает новый обработчик бота
@@ -332,6 +344,10 @@ func NewBotHandler(
 	yooKassaShopID string,
 	yooKassaSecretKey string,
 	yooKassaReturnURL string,
+	gormDB *gorm.DB,
+	paidOps *usecase.PaidOps,
+	managerProgressChatID int64,
+	btnCatalog *botbuttons.Catalog,
 ) *BotHandler {
 	return &BotHandler{
 		userUC:                userUC,
@@ -364,13 +380,88 @@ func NewBotHandler(
 		sshKeyPath:            sshKeyPath,
 		premiumServerOSID:     premiumServerOSID,
 		vpsSetupSteps:         make(map[int64]*VPSSetupData),
+		supportAwaitKey:       make(map[int64]string),
 		adminIDs:              adminIDs,
 		broadcastSem:          make(chan struct{}, 1),
 		yooKassaProviderToken: yooKassaProviderToken,
 		yooKassaShopID:        yooKassaShopID,
 		yooKassaSecretKey:     yooKassaSecretKey,
 		yooKassaReturnURL:     yooKassaReturnURL,
+		gormDB:                gormDB,
+		paidOps:               paidOps,
+		managerProgressChatID: managerProgressChatID,
+		btnCatalog:            btnCatalog,
 	}
+}
+
+func (h *BotHandler) txt(key, fallback string) string {
+	if h.btnCatalog == nil {
+		return fallback
+	}
+	if t := strings.TrimSpace(h.btnCatalog.Text(key)); t != "" {
+		return t
+	}
+	return fallback
+}
+
+func (h *BotHandler) menuFmt(key, fallback string, args ...any) string {
+	tpl := fallback
+	if h.btnCatalog != nil {
+		if t := strings.TrimSpace(h.btnCatalog.Text(key)); t != "" {
+			tpl = t
+		}
+	}
+	return fmt.Sprintf(tpl, args...)
+}
+
+func (h *BotHandler) cb(key, text, data string) telegramx.InlineKeyboardButton {
+	return botbuttons.Callback(h.btnCatalog, key, text, data)
+}
+
+func (h *BotHandler) urlB(key, text, u string) telegramx.InlineKeyboardButton {
+	return botbuttons.URLButton(h.btnCatalog, key, text, u)
+}
+
+func (h *BotHandler) markActiveBtn(key, text string, active bool, cb string) telegramx.InlineKeyboardButton {
+	if active {
+		text = "✓ " + text
+	}
+	return h.cb(key, text, cb)
+}
+
+// discardBroadcastSession сбрасывает FSM рассылки и отбрасывает незавершённые альбомы в буфере.
+func (h *BotHandler) discardBroadcastSession(adminID int64) {
+	h.broadcastState.Clear(adminID)
+	if h.broadcastMediaGroup != nil {
+		_ = h.broadcastMediaGroup.FlushAllForAdmin(adminID)
+	}
+}
+
+func (h *BotHandler) sendBroadcastAudiencePrompt(ctx context.Context, b *bot.Bot, chatID int64) {
+	b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatID, ParseMode: models.ParseModeHTML,
+		Text: "📢 <b>Рассылка</b>\n\nВыберите аудиторию:",
+		ReplyMarkup: &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "👥 Всем", CallbackData: "broadcast_audience_all"}},
+				{{Text: "🆓 Только бесплатным", CallbackData: "broadcast_audience_free"}},
+				{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+			},
+		},
+	})
+}
+
+// SetTechAlerts подключает отправку технических инцидентов в служебный Telegram-чат (после bot.New).
+func (h *BotHandler) SetTechAlerts(a *alert.TelegramAlerter) {
+	h.techAlerts = a
+}
+
+func (h *BotHandler) techReport(ctx context.Context, r alert.Report) {
+	if h.techAlerts == nil {
+		log.Printf("[tech] %s", r.LogLine())
+		return
+	}
+	h.techAlerts.Send(ctx, r)
 }
 
 func (h *BotHandler) getVPSSetup(adminID int64) *VPSSetupData {
@@ -431,7 +522,7 @@ func (h *BotHandler) activateProAndSend(ctx context.Context, b *bot.Bot, tgID in
 	return nil
 }
 
-// sendProGroupProxies отправляет dd+ee прокси по ID группы.
+// sendProGroupProxies отправляет два ee-прокси (nineseconds) по ID группы.
 func (h *BotHandler) sendProGroupProxies(ctx context.Context, b *bot.Bot, tgID int64, groupID uint) error {
 	if h.proUC == nil {
 		return fmt.Errorf("pro is not configured")
@@ -444,34 +535,12 @@ func (h *BotHandler) sendProGroupProxies(ctx context.Context, b *bot.Bot, tgID i
 	return nil
 }
 
-// SendProGroupProxiesToUser отправляет два сообщения с Pro-прокси (dd + ee).
+// SendProGroupProxiesToUser отправляет два ee-прокси (nineseconds); поля PortDD/SecretDD в БД — первый слот ee.
 func (h *BotHandler) SendProGroupProxiesToUser(ctx context.Context, b *bot.Bot, tgID int64, group *domain.ProGroup) {
 	if group == nil {
 		return
 	}
-	ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortDD, group.SecretDD)
-	msgDD := fmt.Sprintf("⚡ <b>Ваш Pro proxy (стандартный dd)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>",
-		group.ServerIP, group.PortDD, group.SecretDD)
-	kbDD := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔗 Подключиться (dd)", URL: ddURL}},
-		},
-	}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: tgID, Text: msgDD, ParseMode: models.ParseModeHTML, ReplyMarkup: kbDD,
-	})
-
-	eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, group.PortEE, group.SecretEE)
-	msgEE := fmt.Sprintf("🛡 <b>Ваш Pro proxy (маскировка ee/fake-TLS)</b>\n\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n<i>Запасной вариант для обхода ограничений на dd</i>",
-		group.ServerIP, group.PortEE, group.SecretEE)
-	kbEE := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔗 Подключиться (ee)", URL: eeURL}},
-		},
-	}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: tgID, Text: msgEE, ParseMode: models.ParseModeHTML, ReplyMarkup: kbEE,
-	})
+	botmessage.SendProGroupTwoEE(ctx, b, tgID, group, botmessage.ProGroupStyleBot)
 
 	// Сохраняем Pro-прокси в «Мои прокси».
 	if h.userProxyRepo != nil && h.userRepo != nil {
@@ -597,7 +666,7 @@ func (h *BotHandler) send(ctx context.Context, b *bot.Bot, update *models.Update
 
 // sendOrEdit редактирует последнее сообщение бота пользователю, если есть сохранённый messageID.
 // При неудаче отправляет новое. НЕ использовать для сообщений с прокси и объявлений.
-func (h *BotHandler) sendOrEdit(ctx context.Context, b *bot.Bot, userID int64, text string, replyMarkup *models.InlineKeyboardMarkup) {
+func (h *BotHandler) sendOrEdit(ctx context.Context, b *bot.Bot, userID int64, text string, replyMarkup models.ReplyMarkup) {
 	if msgID, ok := h.msgState.Get(userID); ok {
 		_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:      userID,
@@ -656,7 +725,7 @@ func (h *BotHandler) RegisterWaitingMessage(chatID int64, msgID int) {
 }
 
 // mainMenuContent возвращает текст и клавиатуру главного меню пользователя (для /start и кнопки «Назад»).
-func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *models.InlineKeyboardMarkup) {
+func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb models.ReplyMarkup) {
 	welcomeMsg = "👋 <b>Добро пожаловать в eDiag Proxy Bot!</b>\n\n"
 	welcomeMsg += "🔐 Безопасный доступ к Telegram через MTProto-прокси.\n\n"
 	welcomeMsg += "Нажми: <b>«Получить proxy»</b> → <b>«Подключиться»</b> → <b>«Включить»</b> — и Telegram работает без замедлений!\n\n"
@@ -687,51 +756,130 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb *
 	days := h.getPremiumDays()
 	proDays := h.getProDays()
 
-	var rows [][]models.InlineKeyboardButton
+	var rows [][]telegramx.InlineKeyboardButton
 
-	// Free-прокси доступны всем: у Pro/Premium проверка ОП в HandleGetProxy не требуется (isPaidActive).
-	btnGetProxy := "🔗 Получить прокси"
+	extraFree := false
 	if h.userProxyRepo != nil {
 		if list, err := h.userProxyRepo.ListByUserID(user.ID); err == nil {
 			for _, up := range list {
 				if up.ProxyType == domain.ProxyTypeFree {
-					btnGetProxy = "➕ Получить дополнительный free прокси"
+					extraFree = true
 					break
 				}
 			}
 		}
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: btnGetProxy, CallbackData: "get_proxy"}})
+	proxyKey := "main_get_proxy"
+	btnGetProxy := h.txt("main_get_proxy", "🔗 Получить прокси")
+	if extraFree {
+		btnGetProxy = h.txt("main_get_proxy_extra", "➕ Получить дополнительный free прокси")
+		proxyKey = "main_get_proxy_extra"
+	}
+	rows = append(rows, []telegramx.InlineKeyboardButton{h.cb(proxyKey, btnGetProxy, "get_proxy")})
 
 	if !hasPro {
-		btnPro := fmt.Sprintf("⚡ Купить Pro на %d дн.", proDays)
-		rows = append(rows, []models.InlineKeyboardButton{{Text: btnPro, CallbackData: "buy_pro"}})
+		btnPro := h.menuFmt("main_buy_pro", "⚡ Купить Pro на %d дн.", proDays)
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_buy_pro", btnPro, "buy_pro")})
 	}
 	if !hasPremium {
-		btnPremium := fmt.Sprintf("💎 Купить Premium на %d дн.", days)
-		rows = append(rows, []models.InlineKeyboardButton{{Text: btnPremium, CallbackData: "buy_premium"}})
+		btnPremium := h.menuFmt("main_buy_premium", "💎 Купить Premium на %d дн.", days)
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_buy_premium", btnPremium, "buy_premium")})
 	}
 
 	if hasPro {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "⚡ Получить Pro proxy", CallbackData: "get_pro_proxy"}})
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_get_pro_proxy", h.txt("main_get_pro_proxy", "⚡ Получить Pro proxy"), "get_pro_proxy")})
 	}
 	if hasPremium {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "🔐 Получить Premium proxy", CallbackData: "get_premium_proxy"}})
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_get_premium_proxy", h.txt("main_get_premium_proxy", "🔐 Получить Premium proxy"), "get_premium_proxy")})
 	}
 
 	if hasPro {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "⚡ Продлить Pro", CallbackData: "buy_pro"}})
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_extend_pro", h.txt("main_extend_pro", "⚡ Продлить Pro"), "buy_pro")})
 	}
 	if hasPremium {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "💎 Продлить Premium", CallbackData: "buy_premium"}})
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_extend_premium", h.txt("main_extend_premium", "💎 Продлить Premium"), "buy_premium")})
 	}
 
-	rows = append(rows, []models.InlineKeyboardButton{{Text: "📋 Мои прокси", CallbackData: "my_proxies"}})
-	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: "📖 Инструкция", CallbackData: "show_instructions"},
+	rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_my_proxies", h.txt("main_my_proxies", "📋 Мои прокси"), "my_proxies")})
+	rows = append(rows, []telegramx.InlineKeyboardButton{
+		h.cb("main_instructions", h.txt("main_instructions", "📖 Инструкция"), "show_instructions"),
 	})
-	kb = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	rows = append(rows, []telegramx.InlineKeyboardButton{
+		h.cb("main_support", h.txt("main_support", "🛟 Поддержка"), "support_menu"),
+	})
+	kb = &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return welcomeMsg, kb
+}
+
+func (h *BotHandler) setSupportAwaiting(adminID int64, settingKey string) {
+	h.supportMu.Lock()
+	defer h.supportMu.Unlock()
+	if h.supportAwaitKey == nil {
+		h.supportAwaitKey = make(map[int64]string)
+	}
+	if settingKey == "" {
+		delete(h.supportAwaitKey, adminID)
+		return
+	}
+	h.supportAwaitKey[adminID] = settingKey
+}
+
+func (h *BotHandler) getSupportAwaitingKey(adminID int64) string {
+	h.supportMu.Lock()
+	defer h.supportMu.Unlock()
+	return h.supportAwaitKey[adminID]
+}
+
+func (h *BotHandler) clearSupportAwaiting(adminID int64) bool {
+	h.supportMu.Lock()
+	defer h.supportMu.Unlock()
+	if h.supportAwaitKey == nil {
+		return false
+	}
+	if _, ok := h.supportAwaitKey[adminID]; !ok {
+		return false
+	}
+	delete(h.supportAwaitKey, adminID)
+	return true
+}
+
+func (h *BotHandler) buildSupportMenuKeyboard() models.ReplyMarkup {
+	var rows [][]telegramx.InlineKeyboardButton
+	rows = append(rows, []telegramx.InlineKeyboardButton{
+		h.cb("support_proxy_issue", h.txt("support_proxy_issue", "🔌 Не работает прокси"), "support_proxy_issue"),
+		h.cb("support_payment", h.txt("support_payment", "💳 Проблема с оплатой"), "support_payment"),
+	})
+	pLink, oLink := "", ""
+	if h.settingsRepo != nil {
+		pLink, _ = h.settingsRepo.Get(domain.SettingSupportPartnershipLink)
+		oLink, _ = h.settingsRepo.Get(domain.SettingSupportOtherQuestionLink)
+	}
+	pLink = strings.TrimSpace(pLink)
+	oLink = strings.TrimSpace(oLink)
+	if pLink != "" {
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.urlB("support_partnership", h.txt("support_partnership", "🤝 Вопрос сотрудничества"), pLink)})
+	} else {
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("support_partnership", h.txt("support_partnership", "🤝 Вопрос сотрудничества"), "support_partner_missing")})
+	}
+	if oLink != "" {
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.urlB("support_other", h.txt("support_other", "✉️ Другой вопрос"), oLink)})
+	} else {
+		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("support_other", h.txt("support_other", "✉️ Другой вопрос"), "support_other_missing")})
+	}
+	rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("support_back_main", h.txt("support_back_main", "◀️ В главное меню"), "back_to_main")})
+	return &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (h *BotHandler) supportTextOrPlaceholder(settingKey string) string {
+	if h.settingsRepo == nil {
+		return "Текст пока не настроен. Обратитесь к администратору."
+	}
+	t, _ := h.settingsRepo.Get(settingKey)
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return "Текст пока не настроен. Обратитесь к администратору."
+	}
+	return t
 }
 
 // HandleStart обрабатывает команду /start
@@ -848,24 +996,24 @@ func (h *BotHandler) isSubscribedToForcedChannel(ctx context.Context, b *bot.Bot
 }
 
 // buildForcedSubKeyboard строит клавиатуру: кнопки «Подписаться» на каждый канал + «Проверить подписку»
-func (h *BotHandler) buildForcedSubKeyboard(channels []string) *models.InlineKeyboardMarkup {
+func (h *BotHandler) buildForcedSubKeyboard(channels []string) models.ReplyMarkup {
 	if len(channels) == 0 {
 		return nil
 	}
-	var rows [][]models.InlineKeyboardButton
+	var rows [][]telegramx.InlineKeyboardButton
 	for i, ch := range channels {
 		label := channelToChatID(ch)
 		if len(label) > 30 {
 			label = fmt.Sprintf("Канал %d", i+1)
 		}
-		rows = append(rows, []models.InlineKeyboardButton{
+		rows = append(rows, []telegramx.InlineKeyboardButton{
 			{Text: "📢 " + label, URL: channelToURL(ch)},
 		})
 	}
-	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: "✅ Проверить подписку", CallbackData: "check_sub_forced"},
+	rows = append(rows, []telegramx.InlineKeyboardButton{
+		h.cb("forced_sub_check", h.txt("forced_sub_check", "✅ Проверить подписку"), "check_sub_forced"),
 	})
-	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	return &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 // sendProxyToUser получает прокси для пользователя и отправляет ему сообщение с данными прокси.
@@ -938,8 +1086,7 @@ func premiumTimewebClientIP(p *domain.ProxyNode) string {
 	return strings.TrimSpace(p.IP)
 }
 
-// sendPremiumProxyToUser отправляет пользователю 2 сообщения: dd (8443) и ee (443) для TimeWeb Premium.
-// Для legacy Premium оставляем прежнюю схему портов: ee = ddPort + 10000.
+// sendPremiumProxyToUser отправляет два ee-прокси (nineseconds): TimeWeb — 8443 и 443, legacy — proxy.Port и +10000.
 func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User, proxy *domain.ProxyNode) {
 	if proxy == nil || user == nil {
 		return
@@ -949,13 +1096,12 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 	}
 	h.clearWaitingMessages(ctx, b, chatID)
 
-	// Для legacy-юзера TimewebFloatingIPID = "" (и PremiumServerID обычно nil).
 	isTimeweb := proxy.TimewebFloatingIPID != ""
-	ddPort := proxy.Port
-	eePort := proxy.Port + 10000
+	port1 := proxy.Port
+	port2 := proxy.Port + 10000
 	if isTimeweb {
-		ddPort = domain.PremiumPortDD
-		eePort = domain.PremiumPortEE
+		port1 = domain.PremiumPortEE1
+		port2 = domain.PremiumPortEE2
 	}
 
 	clientIP := strings.TrimSpace(proxy.IP)
@@ -967,69 +1113,45 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 		}
 	}
 
-	ddURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", clientIP, ddPort, proxy.Secret)
-	kbDD := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔗 Подключиться (dd)", URL: ddURL}},
-		},
-	}
-	msgDD := fmt.Sprintf("✅ <b>Ваш Premium proxy готов!</b>\n\n🔐 <b>Тип: стандартный (dd)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\nНажмите для подключения:", clientIP, ddPort, proxy.Secret)
-
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        msgDD,
-		ParseMode:   models.ParseModeHTML,
-		ReplyMarkup: kbDD,
-	})
-
-	// Новый Premium: отдаём ещё и ee (всегда dd+ee для новых).
-	if isTimeweb && proxy.SecretEE != "" {
-		eeURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", clientIP, eePort, proxy.SecretEE)
-		kbEE := &models.InlineKeyboardMarkup{
+	sendEE := func(title string, port int, secret string, withHint bool) {
+		if port <= 0 || secret == "" {
+			return
+		}
+		u := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", clientIP, port, secret)
+		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "🔗 Подключиться (ee)", URL: eeURL}},
+				{{Text: "🔗 Подключиться (ee)", URL: u}},
 			},
 		}
-		msgEE := fmt.Sprintf(
-			"🛡 <b>Дополнительный proxy с маскировкой (ee/fake-TLS)</b>\n\n"+
-				"🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>\n\n"+
-				"<i>Маскировка ee/fake-TLS — запасной вариант</i>",
-			clientIP, eePort, proxy.SecretEE,
+		hint := ""
+		if withHint {
+			hint = "\n\n<i>Второй вариант — в следующем сообщении.</i>"
+		}
+		msg := fmt.Sprintf(
+			"🛡 <b>%s</b>\n\n🔐 <b>ee / fake-TLS (nineseconds)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>%s",
+			title, clientIP, port, secret, hint,
 		)
-
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:      chatID,
-			Text:        msgEE,
-			ParseMode:   models.ParseModeHTML,
-			ReplyMarkup: kbEE,
+			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
 		})
 	}
+	sendEE("Ваш Premium proxy (1/2)", port1, proxy.Secret, proxy.SecretEE != "")
+	if proxy.SecretEE != "" {
+		sendEE("Ваш Premium proxy (2/2)", port2, proxy.SecretEE, false)
+	}
 
-	// Сохраняем оба прокси в «Мои прокси», чтобы /replace_ip мог корректно работать.
 	if h.userProxyRepo != nil {
-		// dd
-		if ddPort > 0 && proxy.Secret != "" {
-			existingDD, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, ddPort, proxy.Secret)
-			if existingDD == nil {
+		if port1 > 0 && proxy.Secret != "" {
+			if existing, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, port1, proxy.Secret); existing == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
-					UserID:    user.ID,
-					IP:        clientIP,
-					Port:      ddPort,
-					Secret:    proxy.Secret,
-					ProxyType: domain.ProxyTypePremium,
+					UserID: user.ID, IP: clientIP, Port: port1, Secret: proxy.Secret, ProxyType: domain.ProxyTypePremium,
 				})
 			}
 		}
-		// ee
-		if eePort > 0 && proxy.SecretEE != "" {
-			existingEE, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, eePort, proxy.SecretEE)
-			if existingEE == nil {
+		if port2 > 0 && proxy.SecretEE != "" {
+			if existing, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, port2, proxy.SecretEE); existing == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
-					UserID:    user.ID,
-					IP:        clientIP,
-					Port:      eePort,
-					Secret:    proxy.SecretEE,
-					ProxyType: domain.ProxyTypePremium,
+					UserID: user.ID, IP: clientIP, Port: port2, Secret: proxy.SecretEE, ProxyType: domain.ProxyTypePremium,
 				})
 			}
 		}
@@ -1259,26 +1381,26 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 	usdt := h.getPremiumUSDT()
 	starsCount := h.getPremiumStars()
 	premiumPriceRub := h.getPremiumPriceRub()
-	msg := fmt.Sprintf("💎 <b>Premium</b> — персональные dd+ee прокси на %d дн.\n\n"+
+	msg := fmt.Sprintf("💎 <b>Premium</b> — два ee-прокси (nineseconds) на %d дн.\n\n"+
 		"• Минимальные риски блокировок\n"+
 		"• Индивидуальный сервер\n"+
-		"• 2 прокси: стандарт (dd) + маскировка (ee/fake-TLS)\n"+
+		"• 2 прокси: ee / fake-TLS (разные порты)\n"+
 		"• Максимальная скорость и стабильность\n"+
 		"• Можно использовать на нескольких устройствах\n"+
 		"• Без рекламы\n\n"+
 		"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 		days, premiumPriceRub, usdt, starsCount)
 
-	var rows [][]models.InlineKeyboardButton
+	var rows [][]telegramx.InlineKeyboardButton
 	if h.isYooKassaConfigured() {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
+		rows = append(rows, []telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
 	}
 	rows = append(rows,
-		[]models.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_premium_usdt"}},
-		[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", starsCount), CallbackData: "buy_stars"}},
-		[]models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
+		[]telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_premium_usdt"}},
+		[]telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", starsCount), CallbackData: "buy_stars"}},
+		[]telegramx.InlineKeyboardButton{h.cb("payment_back", h.txt("payment_back", "◀️ Назад"), "cancel_payment")},
 	)
-	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	kb := &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}
 	h.sendOrEdit(ctx, b, userID, msg, kb)
 }
 
@@ -1315,7 +1437,15 @@ func (h *BotHandler) HandleAddProxy(ctx context.Context, b *bot.Bot, update *mod
 
 	if err := h.proxyUC.AddProxy(ip, port, secret, domain.ProxyTypeFree); err != nil {
 		log.Printf("[addproxy] AddProxy error: %v", err)
-		h.sendText(ctx, b, update, fmt.Sprintf("❌ Ошибка при добавлении прокси: %v", err))
+		h.techReport(ctx, alert.Report{
+			Type:    "add_free_proxy_failed",
+			Source:  "handler/HandleAddProxy",
+			Tariff:  "free",
+			IP:      ip,
+			Port:    port,
+			ErrText: err.Error(),
+		})
+		h.sendText(ctx, b, update, "❌ Не удалось добавить прокси. Подробности — в служебном чате ошибок.")
 		return
 	}
 	log.Printf("[addproxy] added Free proxy %s:%d", ip, port)
@@ -1323,46 +1453,54 @@ func (h *BotHandler) HandleAddProxy(ctx context.Context, b *bot.Bot, update *mod
 }
 
 // managerPanelMessage и клавиатура главного меню (для /manager и кнопки «Назад»)
-func (h *BotHandler) managerPanelContent() (msg string, kb *models.InlineKeyboardMarkup) {
+func (h *BotHandler) managerPanelContent() (msg string, kb models.ReplyMarkup) {
 	msg = "🛠 <b>Панель менеджера</b>\n\nВыберите действие:"
-	kb = &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
+	maintKey := "mgr_maintenance"
+	if h.isMaintenanceMode() {
+		maintKey = "mgr_maintenance_active"
+	}
+	kb = &telegramx.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegramx.InlineKeyboardButton{
 			{
-				{Text: "📊 Статистика", CallbackData: "mgr_stats"},
-				{Text: "📋 Прокси", CallbackData: "mgr_proxies"},
+				h.cb("mgr_stats", h.txt("mgr_stats", "📊 Статистика"), "mgr_stats"),
+				h.cb("mgr_proxies", h.txt("mgr_proxies", "📋 Прокси"), "mgr_proxies"),
 			},
 			{
-				{Text: "➕ Добавить прокси", CallbackData: "mgr_addproxy"},
-				{Text: "🗑 Удалить прокси", CallbackData: "mgr_delproxy"},
+				h.cb("mgr_addproxy", h.txt("mgr_addproxy", "➕ Добавить прокси"), "mgr_addproxy"),
+				h.cb("mgr_delproxy", h.txt("mgr_delproxy", "🗑 Удалить прокси"), "mgr_delproxy"),
 			},
 			{
-				{Text: "📢 Рассылка", CallbackData: "mgr_broadcast"},
-				{Text: "📣 Объявления", CallbackData: "mgr_sendad"},
+				h.cb("mgr_broadcast", h.txt("mgr_broadcast", "📢 Рассылка"), "mgr_broadcast"),
+				h.cb("mgr_sendad", h.txt("mgr_sendad", "📣 Объявления"), "mgr_sendad"),
 			},
 			{
-				{Text: "📢 Управление ОП", CallbackData: "mgr_forcedsub"},
+				h.cb("mgr_forcedsub", h.txt("mgr_forcedsub", "📢 Управление ОП"), "mgr_forcedsub"),
 			},
 			{
-				{Text: h.maintenanceManagerButtonLabel(), CallbackData: "mgr_maintenance_menu"},
+				h.cb(maintKey, h.maintenanceManagerButtonLabel(), "mgr_maintenance_menu"),
 			},
 			{
-				{Text: "⚡ Pro-группы", CallbackData: "mgr_pro_groups"},
-				{Text: "⚙️ Цена Pro", CallbackData: "mgr_pro_pricing"},
+				h.cb("mgr_pro_groups", h.txt("mgr_pro_groups", "⚡ Pro-группы"), "mgr_pro_groups"),
+				h.cb("mgr_pro_pricing", h.txt("mgr_pro_pricing", "⚙️ Цена Pro"), "mgr_pro_pricing"),
 			},
 			{
-				{Text: "📖 Инструкция", CallbackData: "mgr_instruction"},
+				h.cb("mgr_instruction", h.txt("mgr_instruction", "📖 Инструкция"), "mgr_instruction"),
 			},
 			{
-				{Text: "💎 Premium", CallbackData: "mgr_subs"},
-				{Text: "⚙️ Цена Premium", CallbackData: "mgr_pricing"},
+				h.cb("mgr_subs", h.txt("mgr_subs", "💎 Premium"), "mgr_subs"),
+				h.cb("mgr_pricing", h.txt("mgr_pricing", "⚙️ Цена Premium"), "mgr_pricing"),
 			},
 			{
-				{Text: "✅ Выдать премиум", CallbackData: "mgr_grant"},
-				{Text: "❌ Отозвать премиум", CallbackData: "mgr_revoke"},
+				h.cb("mgr_grant", h.txt("mgr_grant", "✅ Выдать премиум"), "mgr_grant"),
+				h.cb("mgr_revoke", h.txt("mgr_revoke", "❌ Отозвать премиум"), "mgr_revoke"),
 			},
 			{
-				{Text: "✅ Выдать Pro", CallbackData: "mgr_grant_pro"},
-				{Text: "❌ Отозвать Pro", CallbackData: "mgr_revoke_pro"},
+				h.cb("mgr_grant_pro", h.txt("mgr_grant_pro", "✅ Выдать Pro"), "mgr_grant_pro"),
+				h.cb("mgr_revoke_pro", h.txt("mgr_revoke_pro", "❌ Отозвать Pro"), "mgr_revoke_pro"),
+			},
+			{
+				h.cb("mgr_support_settings", h.txt("mgr_support_settings", "🛟 Тексты поддержки"), "mgr_support_settings"),
+				h.cb("mgr_premium_reissue", h.txt("mgr_premium_reissue", "🔄 Перевыпустить Premium-прокси"), "mgr_premium_reissue"),
 			},
 		},
 	}
@@ -1413,10 +1551,13 @@ func (h *BotHandler) runMaintenanceResumeBroadcast(adminChatID int64, tgIDs []in
 }
 
 // refreshKeyboardStats возвращает клавиатуру [Обновить, Назад] для экрана статистики.
-func refreshKeyboardStats() *models.InlineKeyboardMarkup {
-	return &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "🔄 Обновить", CallbackData: "mgr_refresh_stats"}, {Text: "◀️ Назад", CallbackData: "mgr_back"}},
+func (h *BotHandler) refreshKeyboardStats() models.ReplyMarkup {
+	return &telegramx.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegramx.InlineKeyboardButton{
+			{
+				h.cb("mgr_refresh_stats", h.txt("mgr_refresh_stats", "🔄 Обновить"), "mgr_refresh_stats"),
+				h.cb("mgr_back", h.txt("mgr_back", "◀️ Назад"), "mgr_back"),
+			},
 		},
 	}
 }
@@ -1499,6 +1640,11 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 
 	b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 
+	// Любой callback вне сценария broadcast_* сбрасывает ожидание рассылки (в т.ч. предпросмотр и буфер альбома).
+	if !strings.HasPrefix(data, "broadcast_") {
+		h.discardBroadcastSession(chatID)
+	}
+
 	send := func(text string) {
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML,
@@ -1522,7 +1668,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			return
 		}
 		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: refreshKeyboardStats(),
+			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: h.refreshKeyboardStats(),
 		})
 
 	case "mgr_refresh_stats":
@@ -1540,7 +1686,7 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			MessageID:   msgObj.ID,
 			Text:        msg,
 			ParseMode:   models.ParseModeHTML,
-			ReplyMarkup: refreshKeyboardStats(),
+			ReplyMarkup: h.refreshKeyboardStats(),
 		})
 
 	case "mgr_proxies":
@@ -1578,26 +1724,26 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 		send("🗑 <b>Удалить прокси</b>\n\nСначала откройте «📋 Прокси», затем отправьте:\n<code>/delproxy &lt;id&gt;</code>")
 
 	case "mgr_broadcast":
-		// Шаг 1: выбор аудитории (без перехода в режим ожидания)
-		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: chatID, ParseMode: models.ParseModeHTML,
-			Text: "📢 <b>Рассылка</b>\n\nВыберите аудиторию:",
-			ReplyMarkup: &models.InlineKeyboardMarkup{
-				InlineKeyboard: [][]models.InlineKeyboardButton{
-					{{Text: "👥 Всем", CallbackData: "broadcast_audience_all"}},
-					{{Text: "🆓 Только бесплатным", CallbackData: "broadcast_audience_free"}},
-					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
-				},
-			},
-		})
+		h.sendBroadcastAudiencePrompt(ctx, b, chatID)
 
 	case "broadcast_audience_all":
-		h.broadcastState.SetAwaiting(chatID, BroadcastAudienceAll)
-		send("📢 Рассылка <b>всем</b>. Отправьте сообщение: текст, фото, видео или документ. Отмена: /cancel")
+		h.broadcastState.SetAwaitingMessage(chatID, BroadcastAudienceAll)
+		send("📢 Рассылка <b>всем</b>. Отправьте сообщение: текст, фото, видео или документ.\n\nДалее будет <b>предпросмотр</b> — подтвердите отправку. Отмена: /cancel")
 
 	case "broadcast_audience_free":
-		h.broadcastState.SetAwaiting(chatID, BroadcastAudienceFree)
-		send("📢 Рассылка <b>только бесплатным</b>. Отправьте сообщение: текст, фото, видео или документ. Отмена: /cancel")
+		h.broadcastState.SetAwaitingMessage(chatID, BroadcastAudienceFree)
+		send("📢 Рассылка <b>только бесплатным</b>. Отправьте сообщение: текст, фото, видео или документ.\n\nДалее будет <b>предпросмотр</b> — подтвердите отправку. Отмена: /cancel")
+
+	case "broadcast_confirm":
+		h.handleBroadcastConfirm(ctx, b, chatID)
+
+	case "broadcast_cancel":
+		h.discardBroadcastSession(chatID)
+		send("❌ Рассылка отменена.")
+
+	case "broadcast_preview_back":
+		h.discardBroadcastSession(chatID)
+		h.sendBroadcastAudiencePrompt(ctx, b, chatID)
 
 	case "mgr_sendad":
 		b.SendMessage(ctx, &bot.SendMessageParams{
@@ -1956,6 +2102,66 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			_ = h.settingsRepo.Set("instruction_photo_id", "")
 		}
 		send("✅ Фото инструкции удалено.")
+
+	case "mgr_support_settings":
+		if h.settingsRepo == nil {
+			send("❌ Настройки недоступны.")
+			return
+		}
+		preview := func(key string, max int) string {
+			t, _ := h.settingsRepo.Get(key)
+			t = strings.TrimSpace(t)
+			if t == "" {
+				return "(пусто)"
+			}
+			if len(t) > max {
+				return t[:max] + "…"
+			}
+			return t
+		}
+		msg := fmt.Sprintf(
+			"🛟 <b>Поддержка (тексты и ссылки)</b>\n\n"+
+				"🔌 Не работает прокси:\n<code>%s</code>\n\n"+
+				"💳 Оплата:\n<code>%s</code>\n\n"+
+				"🤝 Ссылка сотрудничества:\n<code>%s</code>\n\n"+
+				"✉️ Ссылка «другой вопрос»:\n<code>%s</code>\n\n"+
+				"Выберите, что изменить — следующим сообщением пришлите новое значение (HTML для текстов, полный URL для ссылок). Отмена: /cancel",
+			preview(domain.SettingSupportProxyNotWorkingText, 80),
+			preview(domain.SettingSupportPaymentIssueText, 80),
+			preview(domain.SettingSupportPartnershipLink, 120),
+			preview(domain.SettingSupportOtherQuestionLink, 120),
+		)
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, ParseMode: models.ParseModeHTML, Text: msg,
+			ReplyMarkup: &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{{Text: "🔌 Текст: не работает прокси", CallbackData: "mgr_sup_edit_proxy"}},
+					{{Text: "💳 Текст: оплата", CallbackData: "mgr_sup_edit_pay"}},
+					{{Text: "🤝 Ссылка: сотрудничество", CallbackData: "mgr_sup_edit_partner"}},
+					{{Text: "✉️ Ссылка: другой вопрос", CallbackData: "mgr_sup_edit_other"}},
+					{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
+				},
+			},
+		})
+
+	case "mgr_premium_reissue":
+		send("🔄 <b>Перевыпуск Premium-прокси</b>\n\nДля выбранного пользователя с активным Premium будут удалены старый контейнер/FIP и выданы новые ключи (и при TimeWeb — новый IP).\n\nИспользование:\n<code>/reissue_premium &lt;tg_id&gt;</code>\n\nПример: <code>/reissue_premium 123456789</code>")
+
+	case "mgr_sup_edit_proxy":
+		h.setSupportAwaiting(chatID, domain.SettingSupportProxyNotWorkingText)
+		send("Отправьте текст для «Не работает прокси» (HTML). Отмена: /cancel")
+
+	case "mgr_sup_edit_pay":
+		h.setSupportAwaiting(chatID, domain.SettingSupportPaymentIssueText)
+		send("Отправьте текст для «Проблема с оплатой» (HTML). Отмена: /cancel")
+
+	case "mgr_sup_edit_partner":
+		h.setSupportAwaiting(chatID, domain.SettingSupportPartnershipLink)
+		send("Отправьте ссылку (например <code>https://t.me/username</code>). Отмена: /cancel")
+
+	case "mgr_sup_edit_other":
+		h.setSupportAwaiting(chatID, domain.SettingSupportOtherQuestionLink)
+		send("Отправьте ссылку для «Другой вопрос» (например <code>https://t.me/username</code>). Отмена: /cancel")
 
 	case "mgr_op_add":
 		h.setOPAwaiting(chatID, true)
@@ -2377,30 +2583,30 @@ func (h *BotHandler) HandleAdminInfo(ctx context.Context, b *bot.Bot, update *mo
 	fip := strings.TrimSpace(proxy.TimewebFloatingIPID)
 	isLegacy := (fip == "" || fip == "0") && (proxy.PremiumServerID == nil || *proxy.PremiumServerID == 0)
 
-	ddPort := proxy.Port
-	// Для legacy ee-секрет используется на порту ddPort + 10000,
-	// для TimeWeb — фиксированные порты домена (8443/443).
+	port1 := proxy.Port
+	port2 := proxy.Port + 10000
 	if !isLegacy {
-		ddPort = domain.PremiumPortDD
+		port1 = domain.PremiumPortEE1
+		port2 = domain.PremiumPortEE2
 	}
 
-	nameDD := fmt.Sprintf(docker.UserContainerNameDD, tgID)
-	nameEE := fmt.Sprintf(docker.UserContainerNameEE, tgID)
-	ddStatus := "⚪ неизвестен"
-	eeStatus := "⚪ неизвестен"
+	nameEE1 := fmt.Sprintf(docker.UserContainerNameEE1, tgID)
+	nameEE2 := fmt.Sprintf(docker.UserContainerNameEE2, tgID)
+	ee1Status := "⚪ неизвестен"
+	ee2Status := "⚪ неизвестен"
 	if h.proDockerMgr != nil {
-		if running, err := h.proDockerMgr.IsContainerRunning(ctx, nameDD); err == nil {
+		if running, err := h.proDockerMgr.IsContainerRunning(ctx, nameEE1); err == nil {
 			if running {
-				ddStatus = "🟢 запущен"
+				ee1Status = "🟢 запущен"
 			} else {
-				ddStatus = "🔴 остановлен"
+				ee1Status = "🔴 остановлен"
 			}
 		}
-		if running, err := h.proDockerMgr.IsContainerRunning(ctx, nameEE); err == nil {
+		if running, err := h.proDockerMgr.IsContainerRunning(ctx, nameEE2); err == nil {
 			if running {
-				eeStatus = "🟢 запущен"
+				ee2Status = "🟢 запущен"
 			} else {
-				eeStatus = "🔴 остановлен"
+				ee2Status = "🔴 остановлен"
 			}
 		}
 	}
@@ -2413,11 +2619,13 @@ func (h *BotHandler) HandleAdminInfo(ctx context.Context, b *bot.Bot, update *mo
 	msg := fmt.Sprintf(
 		"👤 <b>Пользователь %d</b>\n\n"+
 			"💎 Премиум до: %s\n"+
-			"🔌 Порт dd: <code>%d</code>\n"+
-			"🔑 Secret dd: <code>%s</code>\n"+
+			"🔌 EE порт 1: <code>%d</code>\n"+
+			"🔑 Secret 1: <code>%s</code>\n"+
 			"📦 <code>%s</code> — %s\n"+
+			"🔌 EE порт 2: <code>%d</code>\n"+
+			"🔑 Secret 2: <code>%s</code>\n"+
 			"📦 <code>%s</code> — %s\n",
-		tgID, until, ddPort, proxy.Secret, nameDD, ddStatus, nameEE, eeStatus,
+		tgID, until, port1, proxy.Secret, nameEE1, ee1Status, port2, proxy.SecretEE, nameEE2, ee2Status,
 	)
 	h.sendText(ctx, b, update, msg)
 }
@@ -2438,11 +2646,6 @@ func (h *BotHandler) HandleAdminRebuild(ctx context.Context, b *bot.Bot, update 
 		return
 	}
 
-	if h.proDockerMgr == nil {
-		h.sendText(ctx, b, update, "❌ Docker менеджер недоступен")
-		return
-	}
-
 	user, err := h.userRepo.GetByTGID(tgID)
 	if err != nil || user == nil {
 		h.sendText(ctx, b, update, "❌ Пользователь не найден")
@@ -2455,100 +2658,196 @@ func (h *BotHandler) HandleAdminRebuild(ctx context.Context, b *bot.Bot, update 
 		return
 	}
 
-	nameDD := fmt.Sprintf(docker.UserContainerNameDD, tgID)
-	nameEE := fmt.Sprintf(docker.UserContainerNameEE, tgID)
-
-	if err := h.proDockerMgr.RemoveUserContainer(ctx, nameDD); err != nil {
-		h.sendText(ctx, b, update, "❌ Ошибка удаления контейнера")
-		return
-	}
-
-	// ee контейнер — best-effort (его может не быть, если SecretEE пустой).
-	_ = h.proDockerMgr.RemoveUserContainer(ctx, nameEE)
-
-	if err := h.proDockerMgr.CreateUserContainer(ctx, tgID, proxy); err != nil {
-		h.sendText(ctx, b, update, "❌ Ошибка создания контейнера")
-		return
-	}
-
-	if proxy.SecretEE != "" {
-		if err := h.proDockerMgr.CreateUserContainerEE(ctx, tgID, proxy); err != nil {
-			log.Printf("[AdminRebuild] CreateUserContainerEE tg_id=%d: %v (non-fatal)", tgID, err)
+	fip := strings.TrimSpace(proxy.TimewebFloatingIPID)
+	if fip != "" && fip != "0" {
+		if h.premiumProvisioner == nil {
+			h.sendText(ctx, b, update, "❌ PremiumProvisioner не настроен (TimeWeb)")
+			return
 		}
+		rctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		defer cancel()
+		if err := h.premiumProvisioner.RestartContainersForUser(rctx, user, proxy); err != nil {
+			h.techReport(ctx, alert.Report{
+				Type:     "admin_rebuild_timeweb",
+				Source:   "handler/HandleAdminRebuild",
+				UserTGID: tgID,
+				Tariff:   "premium",
+				ProxyID:  proxy.ID,
+				IP:       proxy.IP,
+				Extra:    "Timeweb FIP",
+				ErrText:  err.Error(),
+			})
+			h.sendText(ctx, b, update, "❌ Ошибка перезапуска на VPS. Подробности — в служебном чате ошибок.")
+			return
+		}
+		h.sendText(ctx, b, update, "✅ Контейнеры ee+ee на VPS перезапущены")
+		return
 	}
 
-	h.sendText(ctx, b, update, "✅ Контейнеры пересозданы (dd + ee)")
+	if h.proDockerMgr == nil {
+		h.sendText(ctx, b, update, "❌ Docker менеджер недоступен (нужен для legacy Premium)")
+		return
+	}
+
+	subCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	h.proDockerMgr.RemoveUserPremiumEEContainers(subCtx, tgID)
+	if err := h.proDockerMgr.CreateUserPremiumEEContainers(subCtx, tgID, proxy); err != nil {
+		h.techReport(ctx, alert.Report{
+			Type:     "admin_rebuild_legacy_docker",
+			Source:   "handler/HandleAdminRebuild",
+			UserTGID: tgID,
+			Tariff:   "premium",
+			ProxyID:  proxy.ID,
+			IP:       proxy.IP,
+			Port:     proxy.Port,
+			ErrText:  err.Error(),
+		})
+		h.sendText(ctx, b, update, "❌ Ошибка создания контейнеров. Подробности — в служебном чате ошибок.")
+		return
+	}
+
+	h.sendText(ctx, b, update, "✅ Контейнеры пересозданы (ee + ee, nineseconds)")
 }
 
 // HandleBroadcast обрабатывает команду /broadcast (только для админов): выбор аудитории, затем сообщение
 func (h *BotHandler) HandleBroadcast(ctx context.Context, b *bot.Bot, update *models.Update) {
-	msg := "📢 <b>Рассылка</b>\n\nВыберите аудиторию:"
-	kb := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "👥 Всем", CallbackData: "broadcast_audience_all"}},
-			{{Text: "🆓 Только бесплатным", CallbackData: "broadcast_audience_free"}},
-		},
-	}
-	h.send(ctx, b, update, msg, kb)
+	uid := chatID(update)
+	h.discardBroadcastSession(uid)
+	h.sendBroadcastAudiencePrompt(ctx, b, uid)
 }
 
-// flushBroadcastMediaGroup выполняет рассылку одного альбома по списку пользователей в отдельной горутине.
-// audience передаётся явно (захватывается при добавлении в буфер), чтобы при срабатывании таймера не опираться на уже очищенный broadcastState.
-func (h *BotHandler) flushBroadcastMediaGroup(adminID int64, fromChatID int64, messageIDs []int, audience BroadcastAudience) {
-	botRef := h.botRef
-	if botRef == nil || len(messageIDs) == 0 {
+// transitionBroadcastToPreview переводит в фазу preview и показывает кнопки подтверждения (reply к исходному сообщению).
+func (h *BotHandler) transitionBroadcastToPreview(ctx context.Context, b *bot.Bot, adminID int64, replyToMsgID int, p *BroadcastPending) {
+	if b == nil || p == nil || len(p.MessageIDs) == 0 {
 		return
 	}
-	go func() {
-		h.broadcastSem <- struct{}{}
-		defer func() { <-h.broadcastSem }()
-
-		sort.Ints(messageIDs)
-		ctx := context.Background()
-		users, err := h.userRepo.GetAll()
-		if err != nil {
-			botRef.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: adminID, Text: "❌ Ошибка получения списка пользователей", ParseMode: models.ParseModeHTML,
-			})
-			return
-		}
-		sent, failed := 0, 0
-		var lastErr error
-		for _, u := range users {
-			if h.isPaidActive(u) {
-				continue
-			}
-			_, err := botRef.CopyMessages(ctx, &bot.CopyMessagesParams{
-				ChatID:     u.TGID,
-				FromChatID: fromChatID,
-				MessageIDs: messageIDs,
-			})
-			if err != nil {
-				failed++
-				lastErr = err
-			} else {
-				sent++
-			}
-			time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
-		}
-		resultMsg := fmt.Sprintf("✅ Рассылка альбома завершена. Доставлено: %d, ошибок: %d", sent, failed)
-		if failed > 0 && lastErr != nil {
-			resultMsg += fmt.Sprintf("\n\n⚠️ Пример ошибки: %v", lastErr)
-		}
-		botRef.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: adminID, Text: resultMsg, ParseMode: models.ParseModeHTML,
-		})
-	}()
+	h.broadcastState.SetPreview(adminID, p)
+	aud := "всем пользователям (без Pro/Premium в выдаче — как раньше)"
+	if p.Audience == BroadcastAudienceFree {
+		aud = "только бесплатным (как раньше: без активных Pro/Premium)"
+	}
+	text := fmt.Sprintf("👁 <b>Предпросмотр рассылки</b>\nАудитория: <b>%s</b>\n\nСообщение ниже будет разослано после подтверждения.", aud)
+	kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: "✅ Подтвердить рассылку", CallbackData: "broadcast_confirm"}},
+		{{Text: "❌ Отменить", CallbackData: "broadcast_cancel"}},
+		{{Text: "◀️ К выбору аудитории", CallbackData: "broadcast_preview_back"}},
+	}}
+	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      adminID,
+		Text:        text,
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: kb,
+		ReplyParameters: &models.ReplyParameters{
+			MessageID: replyToMsgID,
+			ChatID:    adminID,
+		},
+	})
 }
 
-// HandleBroadcastMessage выполняет рассылку по списку пользователей (текст, фото, видео, документ) с rate limit.
-// Альбомы (несколько фото/видео с одним media_group_id) буферизуются и отправляются одним CopyMessages на получателя.
+func (h *BotHandler) handleBroadcastConfirm(ctx context.Context, b *bot.Bot, chatID int64) {
+	p, ok := h.broadcastState.Pending(chatID)
+	if !ok || p == nil || len(p.MessageIDs) == 0 {
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID, ParseMode: models.ParseModeHTML,
+			Text: "❌ Нет данных для рассылки. Откройте «📢 Рассылка» и пройдите шаги снова.",
+		})
+		return
+	}
+	pCopy := *p
+	h.discardBroadcastSession(chatID)
+	b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatID, ParseMode: models.ParseModeHTML,
+		Text: "📢 Рассылка запущена, вы получите отчёт по завершении.",
+	})
+	go h.executeBroadcastFromPending(chatID, &pCopy)
+}
+
+// executeBroadcastFromPending рассылает копии сообщений с тем же ограничением скорости, что и раньше.
+func (h *BotHandler) executeBroadcastFromPending(adminID int64, p *BroadcastPending) {
+	botRef := h.botRef
+	if botRef == nil || len(p.MessageIDs) == 0 {
+		return
+	}
+	h.broadcastSem <- struct{}{}
+	defer func() { <-h.broadcastSem }()
+
+	sort.Ints(p.MessageIDs)
+	ctx := context.Background()
+	users, err := h.userRepo.GetAll()
+	if err != nil {
+		_, _ = botRef.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: adminID, Text: "❌ Ошибка получения списка пользователей", ParseMode: models.ParseModeHTML,
+		})
+		return
+	}
+	sent, failed := 0, 0
+	var lastErr error
+	single := len(p.MessageIDs) == 1
+	for _, u := range users {
+		if h.isPaidActive(u) {
+			continue
+		}
+		var errCopy error
+		if single {
+			_, errCopy = botRef.CopyMessage(ctx, &bot.CopyMessageParams{
+				ChatID:     u.TGID,
+				FromChatID: p.FromChatID,
+				MessageID:  p.MessageIDs[0],
+			})
+		} else {
+			_, errCopy = botRef.CopyMessages(ctx, &bot.CopyMessagesParams{
+				ChatID:     u.TGID,
+				FromChatID: p.FromChatID,
+				MessageIDs: p.MessageIDs,
+			})
+		}
+		if errCopy != nil {
+			failed++
+			lastErr = errCopy
+		} else {
+			sent++
+		}
+		time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
+	}
+	resultMsg := fmt.Sprintf("✅ Рассылка завершена. Доставлено: %d, ошибок: %d", sent, failed)
+	if !single {
+		resultMsg = fmt.Sprintf("✅ Рассылка альбома завершена. Доставлено: %d, ошибок: %d", sent, failed)
+	}
+	if failed > 0 && lastErr != nil {
+		resultMsg += fmt.Sprintf("\n\n⚠️ Пример ошибки: %v", lastErr)
+	}
+	_, _ = botRef.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: adminID, Text: resultMsg, ParseMode: models.ParseModeHTML,
+	})
+}
+
+// flushBroadcastMediaGroup вызывается после сборки альбома: показ предпросмотра, без немедленной рассылки.
+func (h *BotHandler) flushBroadcastMediaGroup(adminID int64, fromChatID int64, messageIDs []int, audience BroadcastAudience) {
+	if len(messageIDs) == 0 {
+		return
+	}
+	if !h.broadcastState.IsAwaitingMessage(adminID) {
+		return
+	}
+	sort.Ints(messageIDs)
+	p := &BroadcastPending{Audience: audience, FromChatID: fromChatID, MessageIDs: messageIDs}
+	if h.botRef == nil {
+		h.broadcastState.Clear(adminID)
+		return
+	}
+	ctx := context.Background()
+	h.transitionBroadcastToPreview(ctx, h.botRef, adminID, messageIDs[0], p)
+}
+
+// HandleBroadcastMessage принимает контент рассылки и переводит в предпросмотр (без немедленной отправки).
+// Альбомы буферизуются; после таймера — предпросмотр.
 func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
 	}
 	adminID := chatID(update)
-	if !h.broadcastState.IsAwaiting(adminID) {
+	if !h.broadcastState.IsAwaitingMessage(adminID) {
 		return
 	}
 
@@ -2556,8 +2855,7 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 	if mediaGroupID != "" && h.broadcastMediaGroup != nil {
 		aud := h.broadcastState.Audience(adminID)
 		h.broadcastMediaGroup.Add(adminID, mediaGroupID, update.Message.Chat.ID, update.Message.ID, aud, func(aid int64, fromChat int64, ids []int, a BroadcastAudience) {
-			// Не рассылать, если рассылку отменили до срабатывания таймера
-			if !h.broadcastState.IsAwaiting(aid) {
+			if !h.broadcastState.IsAwaitingMessage(aid) {
 				return
 			}
 			h.flushBroadcastMediaGroup(aid, fromChat, ids, a)
@@ -2565,22 +2863,20 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 		return
 	}
 
-	// Досрочный сброс: отправить накопленные альбомы с той аудиторией, которая была при добавлении каждой группы
+	// Досрочный сброс незавершённого альбома: показать предпросмотр по первой группе; текущее сообщение в этом апдейте не обрабатываем.
 	if h.broadcastMediaGroup != nil {
 		pending := h.broadcastMediaGroup.FlushAllForAdmin(adminID)
 		for _, g := range pending {
 			if len(g.MessageIDs) > 0 {
 				h.flushBroadcastMediaGroup(adminID, g.FromChatID, g.MessageIDs, g.Audience)
+				return
 			}
 		}
 	}
 
-	// Контент: текст из Message.Text или подпись к медиа; источник фиксируется явно.
 	text := update.Message.Text
-	textFromCaption := false
 	if text == "" && update.Message.Caption != "" {
 		text = update.Message.Caption
-		textFromCaption = true
 	}
 	hasMedia := len(update.Message.Photo) > 0 || update.Message.Video != nil || update.Message.Document != nil
 	if !hasMedia && text == "" {
@@ -2588,72 +2884,11 @@ func (h *BotHandler) HandleBroadcastMessage(ctx context.Context, b *bot.Bot, upd
 		return
 	}
 
-	users, err := h.userRepo.GetAll()
-	if err != nil {
-		h.sendText(ctx, b, update, "❌ Ошибка получения списка пользователей")
-		h.broadcastState.Clear(adminID)
-		return
-	}
-
-	// Копируем данные для горутины (контекст и update не должны использоваться после возврата).
+	aud := h.broadcastState.Audience(adminID)
 	fromChatID := update.Message.Chat.ID
 	messageID := update.Message.ID
-	// Entities берём строго из того поля, откуда взят text, чтобы не применить
-	// CaptionEntities к тексту из Message.Text или наоборот.
-	var entitiesForText []models.MessageEntity
-	if !textFromCaption && len(update.Message.Entities) > 0 {
-		entitiesForText = append([]models.MessageEntity(nil), update.Message.Entities...)
-	} else if textFromCaption && len(update.Message.CaptionEntities) > 0 {
-		entitiesForText = append([]models.MessageEntity(nil), update.Message.CaptionEntities...)
-	}
-
-	h.broadcastState.Clear(adminID)
-	h.sendText(ctx, b, update, "📢 Рассылка запущена, вы получите отчёт по завершении.")
-
-	go func() {
-		h.broadcastSem <- struct{}{}
-		defer func() { <-h.broadcastSem }()
-
-		bgCtx := context.Background()
-		sent, failed := 0, 0
-		botRef := h.botRef
-		if botRef == nil {
-			return
-		}
-		for _, u := range users {
-			if h.isPaidActive(u) {
-				continue
-			}
-			var sendErr error
-			if hasMedia {
-				_, sendErr = botRef.CopyMessage(bgCtx, &bot.CopyMessageParams{
-					ChatID:     u.TGID,
-					FromChatID: fromChatID,
-					MessageID:  messageID,
-					Caption:    text,
-					ParseMode:  models.ParseModeHTML,
-				})
-			} else {
-				params := &bot.SendMessageParams{ChatID: u.TGID, Text: text}
-				if len(entitiesForText) > 0 {
-					params.Entities = entitiesForText
-				} else {
-					params.ParseMode = models.ParseModeHTML
-				}
-				_, sendErr = botRef.SendMessage(bgCtx, params)
-			}
-			if sendErr != nil {
-				failed++
-			} else {
-				sent++
-			}
-			time.Sleep(time.Duration(broadcastDelayMs) * time.Millisecond)
-		}
-		reportMsg := fmt.Sprintf("✅ Рассылка завершена. Доставлено: %d, ошибок: %d", sent, failed)
-		botRef.SendMessage(bgCtx, &bot.SendMessageParams{
-			ChatID: adminID, Text: reportMsg, ParseMode: models.ParseModeHTML,
-		})
-	}()
+	p := &BroadcastPending{Audience: aud, FromChatID: fromChatID, MessageIDs: []int{messageID}}
+	h.transitionBroadcastToPreview(ctx, b, adminID, messageID, p)
 }
 
 // DefaultHandler вызывается, если ни один обработчик не сработал (для broadcast, ad compose и т.д.)
@@ -2669,7 +2904,7 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 	if strings.HasPrefix(update.Message.Text, "/") {
 		return
 	}
-	if h.broadcastState.IsAwaiting(cid) {
+	if h.broadcastState.IsAwaitingMessage(cid) {
 		hasText := update.Message.Text != ""
 		hasCaption := update.Message.Caption != ""
 		hasMedia := len(update.Message.Photo) > 0 || update.Message.Video != nil || update.Message.Document != nil
@@ -2684,6 +2919,29 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 	}
 	if h.isOPAwaiting(cid) {
 		h.HandleOPChannelInput(ctx, b, update)
+		return
+	}
+	if key := h.getSupportAwaitingKey(cid); key != "" {
+		text := strings.TrimSpace(update.Message.Text)
+		if text == "" {
+			h.sendText(ctx, b, update, "❌ Значение не может быть пустым. Отправьте текст или /cancel.")
+			return
+		}
+		if (key == domain.SettingSupportPartnershipLink || key == domain.SettingSupportOtherQuestionLink) &&
+			!strings.HasPrefix(strings.ToLower(text), "http://") && !strings.HasPrefix(strings.ToLower(text), "https://") {
+			h.sendText(ctx, b, update, "❌ Нужна ссылка, начинающаяся с http:// или https://")
+			return
+		}
+		if h.settingsRepo == nil {
+			h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
+			return
+		}
+		if err := h.settingsRepo.Set(key, text); err != nil {
+			h.sendText(ctx, b, update, "❌ Ошибка сохранения.")
+			return
+		}
+		h.clearSupportAwaiting(cid)
+		h.sendText(ctx, b, update, "✅ Значение сохранено.")
 		return
 	}
 	if st := h.getVPSSetup(cid); st != nil && st.Step == VPSSetupName {
@@ -2849,11 +3107,11 @@ func (h *BotHandler) HandlePremiumInfo(ctx context.Context, b *bot.Bot, update *
 
 	hasFloat := proxy.TimewebFloatingIPID != ""
 	hasPremiumSrv := proxy.PremiumServerID != nil && *proxy.PremiumServerID != 0
-	ddPort := proxy.Port
-	eePort := proxy.Port + 10000
+	portEE1 := proxy.Port
+	portEE2 := proxy.Port + 10000
 	if hasFloat || hasPremiumSrv {
-		ddPort = domain.PremiumPortDD
-		eePort = domain.PremiumPortEE
+		portEE1 = domain.PremiumPortEE1
+		portEE2 = domain.PremiumPortEE2
 	}
 	isLegacy := !hasFloat && !hasPremiumSrv
 
@@ -2890,27 +3148,33 @@ func (h *BotHandler) HandlePremiumInfo(ctx context.Context, b *bot.Bot, update *
 			psID,
 		)
 	} else if isLegacy {
-		containerName := fmt.Sprintf(docker.UserContainerNameDD, user.TGID)
-		containerStatus := "⚪ неизвестен (нет подключения к Pro-серверу)"
+		n1 := fmt.Sprintf(docker.UserContainerNameEE1, user.TGID)
+		n2 := fmt.Sprintf(docker.UserContainerNameEE2, user.TGID)
+		st1 := "⚪ неизвестен (нет Docker)"
+		st2 := st1
 		if h.proDockerMgr != nil {
-			running, err := h.proDockerMgr.IsContainerRunning(ctx, containerName)
-			if err == nil {
+			if running, err := h.proDockerMgr.IsContainerRunning(ctx, n1); err == nil {
 				if running {
-					containerStatus = "🟢 запущен"
+					st1 = "🟢 запущен"
 				} else {
-					containerStatus = "🔴 остановлен"
+					st1 = "🔴 остановлен"
+				}
+			}
+			if running, err := h.proDockerMgr.IsContainerRunning(ctx, n2); err == nil {
+				if running {
+					st2 = "🟢 запущен"
+				} else {
+					st2 = "🔴 остановлен"
 				}
 			}
 		}
 		typeBlock = fmt.Sprintf(
 			"🔶 <b>Тип: Legacy Premium</b>\n"+
 				"🌐 IP: <code>%s</code> (Pro-сервер)\n"+
-				"🔌 Порт dd: <code>%d</code>\n"+
-				"🔑 Secret dd: <code>%s</code>\n"+
-				"📦 Контейнер: <code>%s</code> — %s\n"+
-				"📦 EE: <code>%s</code>",
-			proxy.IP, proxy.Port, proxy.Secret, containerName, containerStatus,
-			fmt.Sprintf(docker.UserContainerNameEE, user.TGID),
+				"🔌 EE порт 1: <code>%d</code> 🔑 <code>%s</code>\n📦 <code>%s</code> — %s\n"+
+				"🔌 EE порт 2: <code>%d</code> 🔑 <code>%s</code>\n📦 <code>%s</code> — %s",
+			proxy.IP, proxy.Port, proxy.Secret, n1, st1,
+			proxy.Port+10000, proxy.SecretEE, n2, st2,
 		)
 	}
 
@@ -2919,12 +3183,12 @@ func (h *BotHandler) HandlePremiumInfo(ctx context.Context, b *bot.Bot, update *
 			"👤 TG ID: <code>%d</code>\n"+
 			"📅 Подписка до: %s\n\n"+
 			"%s\n"+
-			"🔌 DD порт: <code>%d</code>\n🔑 DD секрет: <code>%s</code>\n\n"+
-			"🛡 EE порт: <code>%d</code>\n🔑 EE секрет: <code>%s</code>\n"+
+			"🔌 EE порт 1: <code>%d</code>\n🔑 Secret 1: <code>%s</code>\n\n"+
+			"🔌 EE порт 2: <code>%d</code>\n🔑 Secret 2: <code>%s</code>\n"+
 			"%s",
 		tgID, premUntil, typeBlock,
-		ddPort, proxy.Secret,
-		eePort, proxy.SecretEE,
+		portEE1, proxy.Secret,
+		portEE2, proxy.SecretEE,
 		premiumServerLine,
 	))
 }
@@ -2967,11 +3231,11 @@ func (h *BotHandler) HandleReplaceIP(ctx context.Context, b *bot.Bot, update *mo
 
 	// Старые значения для обновления user_proxies.
 	oldIP := proxy.IP
-	ddPort := proxy.Port
-	eePort := proxy.Port + 10000
+	port1 := proxy.Port
+	port2 := proxy.Port + 10000
 	if isTimeweb {
-		ddPort = domain.PremiumPortDD
-		eePort = domain.PremiumPortEE
+		port1 = domain.PremiumPortEE1
+		port2 = domain.PremiumPortEE2
 	}
 	oldDDSecret := proxy.Secret
 	oldEESecret := proxy.SecretEE
@@ -2980,7 +3244,22 @@ func (h *BotHandler) HandleReplaceIP(ctx context.Context, b *bot.Bot, update *mo
 
 	newIP, newFloatingID, err := h.premiumProvisioner.ReplaceFloatingIP(ctx, user, proxy)
 	if err != nil {
-		h.sendText(ctx, b, update, "❌ Ошибка replace_ip: "+err.Error())
+		ex := ""
+		if proxy.TimewebFloatingIPID != "" {
+			ex = "fip_id=" + proxy.TimewebFloatingIPID
+		}
+		h.techReport(ctx, alert.Report{
+			Type:     "replace_floating_ip_failed",
+			Source:   "handler/HandleReplaceIP",
+			UserTGID: tgID,
+			Username: user.Username,
+			Tariff:   "premium",
+			ProxyID:  proxy.ID,
+			IP:       proxy.IP,
+			Extra:    ex,
+			ErrText:  err.Error(),
+		})
+		h.sendText(ctx, b, update, "❌ Замена IP не выполнена. Подробности — в служебном чате ошибок.")
 		return
 	}
 
@@ -2991,12 +3270,12 @@ func (h *BotHandler) HandleReplaceIP(ctx context.Context, b *bot.Bot, update *mo
 	_ = h.proxyRepo.Update(proxy)
 
 	// Удаляем старые записи прокси в «Мои прокси».
-	_ = h.userProxyRepo.DeleteByIPPortSecret(oldIP, ddPort, oldDDSecret)
+	_ = h.userProxyRepo.DeleteByIPPortSecret(oldIP, port1, oldDDSecret)
 	if oldEESecret != "" {
-		_ = h.userProxyRepo.DeleteByIPPortSecret(oldIP, eePort, oldEESecret)
+		_ = h.userProxyRepo.DeleteByIPPortSecret(oldIP, port2, oldEESecret)
 	}
 
-	// Отправляем пользователю dd+ee (и создаём новые user_proxies).
+	// Отправляем пользователю два ee-прокси (и создаём новые user_proxies).
 	h.SendPremiumProxyToUser(ctx, b, tgID, user, proxy)
 
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ IP заменён: <code>%s</code> → <code>%s</code>", oldIP, newIP))
@@ -3154,6 +3433,59 @@ func (h *BotHandler) HandleRevokePremium(ctx context.Context, b *bot.Bot, update
 		return
 	}
 	h.sendText(ctx, b, update, fmt.Sprintf("✅ Премиум отозван у %d", tgID))
+}
+
+// HandleReissuePremium полностью перевыпускает Premium-прокси (только админ).
+func (h *BotHandler) HandleReissuePremium(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+	args := strings.Fields(update.Message.Text)
+	if len(args) < 2 {
+		h.sendText(ctx, b, update, "❌ Использование: /reissue_premium <tg_id>")
+		return
+	}
+	tgID, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		h.sendText(ctx, b, update, "❌ Неверный tg_id")
+		return
+	}
+	user, err := h.userRepo.GetByTGID(tgID)
+	if err != nil || user == nil {
+		h.sendText(ctx, b, update, "❌ Пользователь не найден")
+		return
+	}
+	if !user.IsPremiumActive() {
+		h.sendText(ctx, b, update, "❌ У пользователя нет активного Premium")
+		return
+	}
+	h.sendText(ctx, b, update, "⏳ Перевыпускаем Premium-прокси (может занять до нескольких минут)…")
+	proxy, err := h.userUC.ReissuePremiumProxy(tgID)
+	if err != nil {
+		h.techReport(ctx, alert.Report{
+			Type:     "premium_reissue_failed",
+			Source:   "handler/HandleReissuePremium",
+			UserTGID: tgID,
+			Username: user.Username,
+			Tariff:   "premium",
+			ErrText:  err.Error(),
+		})
+		h.sendText(ctx, b, update, "❌ Перевыпуск не выполнен. Подробности — в служебном чате ошибок.")
+		return
+	}
+	if proxy == nil {
+		h.techReport(ctx, alert.Report{
+			Type:     "premium_reissue_nil_proxy",
+			Source:   "handler/HandleReissuePremium",
+			UserTGID: tgID,
+			Username: user.Username,
+			Tariff:   "premium",
+			ErrText:  "proxy is nil after ReissuePremiumProxy",
+		})
+		h.sendText(ctx, b, update, "❌ Прокси не получен после перевыпуска. Подробности — в служебном чате ошибок.")
+		return
+	}
+	h.sendText(ctx, b, update, fmt.Sprintf("✅ Premium-прокси перевыпущен для <code>%d</code>.\nIP: <code>%s</code>\nОтправьте пользователю новые ключи через «Получить Premium proxy» или вручную.", tgID, proxy.IP))
 }
 
 // HandleGrantPro выдать Pro вручную (админ)
@@ -3706,8 +4038,8 @@ func (h *BotHandler) HandleOPChannelInput(ctx context.Context, b *bot.Bot, updat
 func (h *BotHandler) HandleCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
 	adminID := chatID(update)
 	cancelled := false
-	if h.broadcastState.IsAwaiting(adminID) {
-		h.broadcastState.Clear(adminID)
+	if h.broadcastState.IsAwaitingMessage(adminID) || h.broadcastState.IsPreview(adminID) {
+		h.discardBroadcastSession(adminID)
 		cancelled = true
 	}
 	if st := h.getVPSSetup(adminID); st != nil && st.Step != VPSSetupIdle {
@@ -3728,6 +4060,9 @@ func (h *BotHandler) HandleCancel(ctx context.Context, b *bot.Bot, update *model
 	}
 	if h.isInstrAwaitingPhoto(adminID) {
 		h.setInstrAwaitingPhoto(adminID, false)
+		cancelled = true
+	}
+	if h.clearSupportAwaiting(adminID) {
 		cancelled = true
 	}
 	if cancelled {
@@ -3773,20 +4108,20 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		msg := fmt.Sprintf("⚡ <b>Pro</b> — быстрые прокси без рекламы на %d дн.\n\n"+
 			"• Максимальная скорость\n"+
 			"• Без рекламы\n"+
-			"• Два варианта: dd (стандарт) + ee/fake-TLS (маскировка)\n"+
+			"• Два ee-прокси (nineseconds) на разных портах\n"+
 			"• Общий выделенный сервер (стабильно)\n\n"+
 			"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 			days, priceRub, usdt, stars)
-		var rows [][]models.InlineKeyboardButton
+		var rows [][]telegramx.InlineKeyboardButton
 		if h.isYooKassaConfigured() {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
+			rows = append(rows, []telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", priceRub), CallbackData: "buy_pro_rub"}})
 		}
 		rows = append(rows,
-			[]models.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_pro_usdt"}},
-			[]models.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", stars), CallbackData: "buy_pro_stars"}},
-			[]models.InlineKeyboardButton{{Text: "◀️ Назад", CallbackData: "cancel_payment"}},
+			[]telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_pro_usdt"}},
+			[]telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", stars), CallbackData: "buy_pro_stars"}},
+			[]telegramx.InlineKeyboardButton{h.cb("payment_back", h.txt("payment_back", "◀️ Назад"), "cancel_payment")},
 		)
-		kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+		kb := &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}
 		h.sendOrEdit(ctx, b, chatID, msg, kb)
 	case "buy_pro_rub":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
@@ -3967,7 +4302,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:    chatID,
 				ParseMode: models.ParseModeHTML,
-				Text:      "⏳ <b>Ещё выполняется настройка</b>.\n\nПовторите запрос через пару минут — как только контейнеры будут готовы, мы сразу пришлём dd+ee.",
+				Text:      "⏳ <b>Ещё выполняется настройка</b>.\n\nПовторите запрос через пару минут — как только контейнеры будут готовы, мы сразу пришлём два ee-прокси.",
 			})
 			return
 		}
@@ -4040,6 +4375,32 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		}
 		msg, kb := h.mainMenuContent(user)
 		h.sendOrEdit(ctx, b, chatID, msg, kb)
+	case "support_menu":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		msg := "🛟 <b>Поддержка</b>\n\nВыберите тему:"
+		h.sendOrEdit(ctx, b, chatID, msg, h.buildSupportMenuKeyboard())
+	case "support_proxy_issue":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		txt := h.supportTextOrPlaceholder(domain.SettingSupportProxyNotWorkingText)
+		kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "◀️ Назад", CallbackData: "support_menu"}}}}
+		h.sendOrEdit(ctx, b, chatID, txt, kb)
+	case "support_payment":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
+		txt := h.supportTextOrPlaceholder(domain.SettingSupportPaymentIssueText)
+		kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: "◀️ Назад", CallbackData: "support_menu"}}}}
+		h.sendOrEdit(ctx, b, chatID, txt, kb)
+	case "support_partner_missing":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: cqID,
+			Text:            "Ссылка не настроена администратором.",
+			ShowAlert:       true,
+		})
+	case "support_other_missing":
+		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: cqID,
+			Text:            "Ссылка не настроена администратором.",
+			ShowAlert:       true,
+		})
 	case "reminder_later":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 			CallbackQueryID: cqID,

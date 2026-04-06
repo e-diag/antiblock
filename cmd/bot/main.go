@@ -20,10 +20,12 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/yourusername/antiblock/internal/botbuttons"
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/handler"
 	"github.com/yourusername/antiblock/internal/handler/middleware"
 	"github.com/yourusername/antiblock/internal/handler/webhook"
+	"github.com/yourusername/antiblock/internal/infrastructure/alert"
 	"github.com/yourusername/antiblock/internal/infrastructure/config"
 	"github.com/yourusername/antiblock/internal/infrastructure/database"
 	"github.com/yourusername/antiblock/internal/infrastructure/docker"
@@ -150,6 +152,25 @@ func main() {
 	broadcastState := handler.NewBroadcastState()
 	broadcastMediaGroup := handler.NewBroadcastMediaGroupBuffer()
 	adComposeState := handler.NewAdComposeState()
+
+	btnCatalog, errCat := botbuttons.Load(filepath.Join("assets", "bot_buttons.json"))
+	if errCat != nil {
+		log.Printf("bot_buttons.json: %v — подписи кнопок из кода", errCat)
+		btnCatalog = nil
+	}
+
+	paidOps := &usecase.PaidOps{
+		Settings:        settingsRepo,
+		Users:           userRepo,
+		Proxies:         proxyRepo,
+		Subs:            proSubRepo,
+		ProxyUC:         proxyUC,
+		ProUC:           proUC,
+		Docker:          proDockerMgr,
+		PremiumServerIP: proServerIP,
+		Provisioner:     premiumProvisioner,
+	}
+
 	botHandler := handler.NewBotHandler(
 		userUC, proxyUC, proUC, paymentUC,
 		userRepo, userProxyRepo,
@@ -172,6 +193,10 @@ func main() {
 		cfg.YooKassa.ShopID,
 		cfg.YooKassa.SecretKey,
 		cfg.YooKassa.ReturnURL,
+		db.DB,
+		paidOps,
+		cfg.Telegram.GetManagerProgressChatID(),
+		btnCatalog,
 	)
 	adminMiddleware := middleware.AdminMiddleware(cfg.Telegram.GetAdminIDs())
 	rateMW := middleware.NewRateLimiter(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.BurstSize).Middleware
@@ -190,6 +215,8 @@ func main() {
 		log.Fatalf("Failed to create bot: %v", err)
 	}
 	botHandler.SetBot(b)
+	techAlerts := alert.NewTelegramAlerter(b, cfg.Telegram.GetErrorLogChatID())
+	botHandler.SetTechAlerts(techAlerts)
 
 	proUC.SetOnProRotated(func(tgID int64, g *domain.ProGroup) {
 		if g == nil {
@@ -209,14 +236,14 @@ func main() {
 			ChatID:    tgID,
 			ParseMode: models.ParseModeHTML,
 			Text: "⏳ <b>Настраиваем ваш Premium proxy</b>\n\n" +
-				"Это может занять несколько минут. Ключи dd + ee пришлю сюда, как только будет готово.",
+				"Это может занять несколько минут. Два ee-ключа пришлю сюда, как только будет готово.",
 		})
 		if msg != nil {
 			botHandler.RegisterWaitingMessage(tgID, msg.ID)
 		}
 	})
 
-	// После успешного асинхронного создания премиум-прокси отправляем dd+ee (через общий helper в handler).
+	// После успешного асинхронного создания премиум-прокси отправляем два ee-прокси (через общий helper в handler).
 	usecase.SetOnPremiumProxyReady(userUC, func(tgID int64, proxy *domain.ProxyNode) {
 		if proxy == nil {
 			return
@@ -246,18 +273,22 @@ func main() {
 		case errors.Is(err, usecase.ErrFloatingIPNoBalanceForMonth):
 			// Важно: пользователю не показываем внутренние причины/детали (например требуемые балансы).
 			msg = "⚠️ Premium временно недоступен. Попробуйте получить Premium proxy позже — как только будет возможность, мы сразу всё настроим."
-			for _, adminID := range cfg.Telegram.GetAdminIDs() {
-				_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
-					ChatID: adminID,
-					ParseMode: models.ParseModeHTML,
-					Text: fmt.Sprintf(
-						"💎 TimeWeb Premium: ошибка при создании floating IP (tg_id=%d).\nПричина: <code>%s</code>",
-						tgID, err.Error(),
-					),
-				})
-			}
+			techAlerts.Send(context.Background(), alert.Report{
+				Type:     "timeweb_fip_no_balance",
+				Source:   "usecase/SetOnPremiumProxyFailed",
+				UserTGID: tgID,
+				Tariff:   "premium",
+				ErrText:  err.Error(),
+			})
 		default:
 			msg = "⚠️ Премиум активирован, но создание прокси не удалось. Нажмите «Получить Premium proxy» в меню для повторной попытки."
+			techAlerts.Send(context.Background(), alert.Report{
+				Type:     "premium_provision_failed",
+				Source:   "usecase/SetOnPremiumProxyFailed",
+				UserTGID: tgID,
+				Tariff:   "premium",
+				ErrText:  err.Error(),
+			})
 		}
 		_, _ = b.SendMessage(context.Background(), &bot.SendMessageParams{
 			ChatID: tgID, Text: msg, ParseMode: models.ParseModeHTML,
@@ -319,6 +350,7 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/subs", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSubs))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/grantpremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleGrantPremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepremium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePremium))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/reissue_premium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleReissuePremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/grantpro", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleGrantPro))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/revokepro", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleRevokePro))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/premium_info", bot.MatchTypePrefix, adminMiddleware(botHandler.HandlePremiumInfo))
@@ -334,10 +366,15 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/setprice_rub_premium", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleSetPriceRubPremium))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_text", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionText))
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/set_instruction_photo", bot.MatchTypeExact, adminMiddleware(botHandler.HandleSetInstructionPhoto))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/ops_help", bot.MatchTypeExact, adminMiddleware(botHandler.HandleOpsHelp))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/ops_tariff_apply", bot.MatchTypeExact, adminMiddleware(botHandler.HandleOpsTariffApply))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/ops_tariff_notify", bot.MatchTypeExact, adminMiddleware(botHandler.HandleOpsTariffNotify))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/ops_proxy_migrate", bot.MatchTypeExact, adminMiddleware(botHandler.HandleOpsProxyMigrate))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/ops_proxy_migrate_reset", bot.MatchTypeExact, adminMiddleware(botHandler.HandleOpsProxyMigrateReset))
 
 	// Callback-кнопки
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "mgr_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
-	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_audience_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "broadcast_", bot.MatchTypePrefix, adminMiddleware(botHandler.HandleManagerCallback))
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro_usdt", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "buy_pro_stars", bot.MatchTypeExact, botHandler.HandleCallback)
@@ -355,6 +392,7 @@ func main() {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "check_sub_forced", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cancel_payment", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "show_instructions", bot.MatchTypeExact, botHandler.HandleCallback)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "support_", bot.MatchTypePrefix, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "back_to_main", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "reminder_later", bot.MatchTypeExact, botHandler.HandleCallback)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "ad_click_", bot.MatchTypePrefix, botHandler.HandleCallback)
@@ -367,11 +405,11 @@ func main() {
 		return update.Message != nil && update.Message.SuccessfulPayment != nil
 	}, botHandler.HandleSuccessfulPayment)
 
-	healthCheckWorker := worker.NewHealthCheckWorker(proxyUC, b, cfg.Telegram.GetAdminIDs(), cfg.Workers.HealthCheck)
-	premiumHealthCheckWorker := worker.NewPremiumHealthCheckWorker(b, proxyUC, cfg.Telegram.GetAdminIDs(), cfg.Workers.PremiumHealthCheck)
-	subscriptionWorker := worker.NewSubscriptionWorker(userUC, cfg.Workers.SubscriptionChecker)
-	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, cfg.Workers.PremiumReminder)
-	dockerMonitorWorker := worker.NewDockerMonitorWorker(b, cfg.Telegram.GetAdminIDs(), cfg.Workers.DockerMonitor, proDockerMgr)
+	healthCheckWorker := worker.NewHealthCheckWorker(proxyUC, techAlerts, cfg.Workers.HealthCheck)
+	premiumHealthCheckWorker := worker.NewPremiumHealthCheckWorker(proxyUC, techAlerts, cfg.Workers.PremiumHealthCheck)
+	subscriptionWorker := worker.NewSubscriptionWorker(userUC, techAlerts, cfg.Workers.SubscriptionChecker)
+	premiumReminderWorker := worker.NewPremiumReminderWorker(b, userUC, paymentUC, settingsRepo, techAlerts, cfg.Workers.PremiumReminder)
+	dockerMonitorWorker := worker.NewDockerMonitorWorker(techAlerts, cfg.Workers.DockerMonitor, proDockerMgr)
 	adRePinWorker := worker.NewAdRePinWorker(b, adRepo, adPinRepo, cfg.Workers.AdRePin)
 	invoiceCleanupWorker := worker.NewInvoiceCleanupWorker(b, invoiceRepo, paymentUC, cfg.Workers.InvoiceCleanup)
 	yooKassaCleanupWorker := worker.NewYooKassaCleanupWorker(b, paymentUC, cfg.Workers.InvoiceCleanup)
@@ -573,5 +611,9 @@ func main() {
 	}()
 
 	log.Println("Bot started successfully!")
+	go func() {
+		time.Sleep(2 * time.Second)
+		botHandler.SendDeployOpsHintIfNeeded(context.Background(), b)
+	}()
 	b.Start(ctx)
 }

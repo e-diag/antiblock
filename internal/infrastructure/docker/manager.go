@@ -18,12 +18,17 @@ import (
 )
 
 const (
-	imageNameDD         = "p3terx/mtg"
-	imageNameEE         = "nineseconds/mtg:2"
-	UserContainerNameDD = "mtg-user-%d-dd"
-	UserContainerNameEE = "mtg-user-%d-ee"
-	ProContainerNameDD  = "mtg-pro-%d-dd"
-	ProContainerNameEE  = "mtg-pro-%d-ee"
+	imageNameEE = "nineseconds/mtg:2"
+	// Legacy (p3terx) — только для удаления старых контейнеров при миграции.
+	imageNameLegacyDD         = "p3terx/mtg"
+	UserContainerNameEE1      = "mtg-user-%d-ee1"
+	UserContainerNameEE2      = "mtg-user-%d-ee2"
+	UserContainerNameLegacyDD = "mtg-user-%d-dd"
+	UserContainerNameLegacyEE = "mtg-user-%d-ee"
+	ProContainerNameEE1       = "mtg-pro-%d-ee1"
+	ProContainerNameEE2       = "mtg-pro-%d-ee2"
+	ProContainerNameLegacyDD  = "mtg-pro-%d-dd"
+	ProContainerNameLegacyEE  = "mtg-pro-%d-ee"
 	// Старое имя оставляем для обратной совместимости (используется в старых записях/командах).
 	UserContainerName = "mtg-user-%d"
 )
@@ -166,98 +171,25 @@ func NewManagerTLS(host string, port int, certPath string) (*Manager, error) {
 	return &Manager{cli: cli}, nil
 }
 
-// CreateUserContainer запускает контейнер p3terx/mtg для пользователя:
-// NetworkMode: host (производительность, BBR), Cmd: run <secret> -b 0.0.0.0:<port> -t 127.0.0.1:0.
-// Перед созданием существующий контейнер с тем же именем удаляется (Force: true).
-func (m *Manager) CreateUserContainer(
-	ctx context.Context,
-	userTGID int64,
-	proxy *domain.ProxyNode,
-) error {
-	if proxy == nil {
-		return fmt.Errorf("proxy is nil")
+// createUserEEOnPort — nineseconds/mtg:2 на host network (legacy Premium на одном сервере).
+func (m *Manager) createUserEEOnPort(ctx context.Context, containerName string, port int, secret string) error {
+	if secret == "" {
+		return fmt.Errorf("empty ee secret")
 	}
+	_ = m.cli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true, RemoveVolumes: true})
 
-	name := fmt.Sprintf(UserContainerNameDD, userTGID)
-	portStr := fmt.Sprintf("%d", proxy.Port)
-
-	// Удаляем контейнер с таким именем, если уже существует (Force: true).
-	if err := m.cli.ContainerRemove(ctx, name, container.RemoveOptions{
-		Force:         true,
-		RemoveVolumes: true,
-	}); err != nil {
-		if !client.IsErrNotFound(err) {
-			log.Printf("[Docker] remove existing container %s failed: %v", name, err)
-			return fmt.Errorf("remove existing container %s: %w", name, err)
-		}
-	}
-
-	// Подтянуть образ (если его нет)
-	rc, err := m.cli.ImagePull(ctx, imageNameDD, image.PullOptions{})
+	rc, err := m.cli.ImagePull(ctx, imageNameEE, image.PullOptions{})
 	if err == nil {
 		_, _ = io.Copy(io.Discard, rc)
 		rc.Close()
 	} else {
-		log.Printf("[Docker] image pull %s: %v (continuing with existing image)", imageNameDD, err)
+		log.Printf("[Docker] image pull %s: %v (continuing)", imageNameEE, err)
 	}
 
-	// run <secret> -b 0.0.0.0:<port> -t 127.0.0.1:0 — stats на случайном порту, без конфликта 3129.
-	cfg := &container.Config{
-		Image: imageNameDD,
-		Cmd:   []string{"run", proxy.Secret, "-b", "0.0.0.0:" + portStr, "-t", "127.0.0.1:0"},
-	}
-
-	hostCfg := &container.HostConfig{
-		NetworkMode: "host",
-		LogConfig: container.LogConfig{
-			Type: "json-file",
-			Config: map[string]string{
-				"max-size": "1m",
-				"max-file": "1",
-			},
-		},
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
-		},
-	}
-
-	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
-	if err != nil {
-		log.Printf("[Docker] container create failed name=%s: %v", name, err)
-		return fmt.Errorf("create container: %w", err)
-	}
-
-	if err := m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		log.Printf("[Docker] container start failed id=%s: %v", resp.ID[:12], err)
-		_ = m.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{
-			Force:         true,
-			RemoveVolumes: true,
-		})
-		return fmt.Errorf("start container: %w", err)
-	}
-	return nil
-}
-
-// CreateUserContainerEE создаёт ee-контейнер nineseconds/mtg:2 с ee-секретом на порту (ddPort + 10000).
-func (m *Manager) CreateUserContainerEE(ctx context.Context, userTGID int64, proxy *domain.ProxyNode) error {
-	if proxy == nil || proxy.SecretEE == "" {
-		return fmt.Errorf("proxy or SecretEE is nil")
-	}
-
-	name := fmt.Sprintf(UserContainerNameEE, userTGID)
-	bind := fmt.Sprintf("0.0.0.0:%d", proxy.Port+10000)
-
-	_ = m.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true, RemoveVolumes: true})
-
-	rc, err := m.cli.ImagePull(ctx, imageNameEE, image.PullOptions{})
-	if err == nil {
-		_, _ = io.Copy(io.Discard, rc)
-		rc.Close()
-	}
-
+	bind := fmt.Sprintf("0.0.0.0:%d", port)
 	cfg := &container.Config{
 		Image: imageNameEE,
-		Cmd:   []string{"simple-run", bind, proxy.SecretEE},
+		Cmd:   []string{"simple-run", bind, secret},
 	}
 	hostCfg := &container.HostConfig{
 		NetworkMode: "host",
@@ -270,71 +202,64 @@ func (m *Manager) CreateUserContainerEE(ctx context.Context, userTGID int64, pro
 		},
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 	}
-	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
+	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, containerName)
 	if err != nil {
-		return fmt.Errorf("create ee container: %w", err)
+		return fmt.Errorf("create ee container %s: %w", containerName, err)
 	}
 	if err := m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		_ = m.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-		return fmt.Errorf("start ee container: %w", err)
+		return fmt.Errorf("start ee container %s: %w", containerName, err)
 	}
 	return nil
 }
 
-// RemoveUserContainerEE удаляет ee-контейнер пользователя.
+// CreateUserPremiumEEContainers — два ee-прокси (nineseconds) для legacy Premium: proxy.Port и proxy.Port+10000.
+func (m *Manager) CreateUserPremiumEEContainers(ctx context.Context, userTGID int64, proxy *domain.ProxyNode) error {
+	if proxy == nil || proxy.Secret == "" || proxy.SecretEE == "" {
+		return fmt.Errorf("proxy or ee secrets empty")
+	}
+	if err := m.createUserEEOnPort(ctx, fmt.Sprintf(UserContainerNameEE1, userTGID), proxy.Port, proxy.Secret); err != nil {
+		return err
+	}
+	return m.createUserEEOnPort(ctx, fmt.Sprintf(UserContainerNameEE2, userTGID), proxy.Port+10000, proxy.SecretEE)
+}
+
+// RemoveUserPremiumEEContainers удаляет ee1/ee2 и старые dd/ee контейнеры пользователя (миграция).
+func (m *Manager) RemoveUserPremiumEEContainers(ctx context.Context, userTGID int64) {
+	for _, name := range []string{
+		fmt.Sprintf(UserContainerNameEE1, userTGID),
+		fmt.Sprintf(UserContainerNameEE2, userTGID),
+		fmt.Sprintf(UserContainerNameLegacyDD, userTGID),
+		fmt.Sprintf(UserContainerNameLegacyEE, userTGID),
+	} {
+		_ = m.RemoveUserContainer(ctx, name)
+	}
+}
+
+// RemoveUserContainerEE удаляет старый ee-контейнер mtg-user-{id}-ee.
 func (m *Manager) RemoveUserContainerEE(ctx context.Context, userTGID int64) error {
-	name := fmt.Sprintf(UserContainerNameEE, userTGID)
+	name := fmt.Sprintf(UserContainerNameLegacyEE, userTGID)
 	return m.RemoveUserContainer(ctx, name)
 }
 
-// CreateProContainerDD создаёт dd-контейнер для Pro-группы на Pro-сервере.
-func (m *Manager) CreateProContainerDD(group *domain.ProGroup) error {
+// CreateProGroupEEContainers поднимает два ee-контейнера Pro-группы (nineseconds).
+// Поля PortDD/SecretDD и PortEE/SecretEE — два слота ee (имена колонок исторические).
+func (m *Manager) CreateProGroupEEContainers(group *domain.ProGroup) error {
 	if group == nil {
 		return fmt.Errorf("group is nil")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	name := group.ContainerDD
-	_ = m.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
-
-	rc, err := m.cli.ImagePull(ctx, imageNameDD, image.PullOptions{})
-	if err == nil {
-		_, _ = io.Copy(io.Discard, rc)
-		rc.Close()
+	if err := m.createProEEContainer(ctx, group.ContainerDD, group.PortDD, group.SecretDD); err != nil {
+		return fmt.Errorf("pro ee slot 1: %w", err)
 	}
-
-	cfg := &container.Config{
-		Image: imageNameDD,
-		Cmd:   []string{"run", group.SecretDD, "-b", fmt.Sprintf("0.0.0.0:%d", group.PortDD), "-t", "127.0.0.1:0"},
+	if err := m.createProEEContainer(ctx, group.ContainerEE, group.PortEE, group.SecretEE); err != nil {
+		return fmt.Errorf("pro ee slot 2: %w", err)
 	}
-	hostCfg := &container.HostConfig{
-		NetworkMode: "host",
-		LogConfig: container.LogConfig{
-			Type: "json-file",
-			Config: map[string]string{
-				"max-size": "1m",
-				"max-file": "1",
-			},
-		},
-		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
-	}
-	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
-	if err != nil {
-		return err
-	}
-	return m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{})
+	return nil
 }
 
-// CreateProContainerEE создаёт ee-контейнер для Pro-группы.
-func (m *Manager) CreateProContainerEE(group *domain.ProGroup) error {
-	if group == nil {
-		return fmt.Errorf("group is nil")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	name := group.ContainerEE
+func (m *Manager) createProEEContainer(ctx context.Context, name string, port int, secret string) error {
 	_ = m.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 
 	rc, err := m.cli.ImagePull(ctx, imageNameEE, image.PullOptions{})
@@ -343,10 +268,10 @@ func (m *Manager) CreateProContainerEE(group *domain.ProGroup) error {
 		rc.Close()
 	}
 
-	bind := fmt.Sprintf("0.0.0.0:%d", group.PortEE)
+	bind := fmt.Sprintf("0.0.0.0:%d", port)
 	cfg := &container.Config{
 		Image: imageNameEE,
-		Cmd:   []string{"simple-run", bind, group.SecretEE},
+		Cmd:   []string{"simple-run", bind, secret},
 	}
 	hostCfg := &container.HostConfig{
 		NetworkMode: "host",
