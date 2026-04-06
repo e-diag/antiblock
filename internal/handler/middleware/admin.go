@@ -17,8 +17,9 @@ func AdminMiddleware(adminIDs []int64) func(bot.HandlerFunc) bot.HandlerFunc {
 	return func(next bot.HandlerFunc) bot.HandlerFunc {
 		return func(ctx context.Context, b *bot.Bot, update *models.Update) {
 			var userID int64
-			if update.Message != nil {
-				userID = update.Message.Chat.ID
+			if update.Message != nil && update.Message.From != nil {
+				// В группах/супергруппах Chat.ID — это id чата (-100…), не пользователя.
+				userID = update.Message.From.ID
 			} else if update.CallbackQuery != nil {
 				userID = update.CallbackQuery.From.ID
 			}
