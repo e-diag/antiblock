@@ -20,6 +20,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/yourusername/antiblock/assets"
 	"github.com/yourusername/antiblock/internal/botbuttons"
 	"github.com/yourusername/antiblock/internal/domain"
 	"github.com/yourusername/antiblock/internal/handler"
@@ -155,8 +156,14 @@ func main() {
 
 	btnCatalog, errCat := botbuttons.Load(filepath.Join("assets", "bot_buttons.json"))
 	if errCat != nil {
-		log.Printf("bot_buttons.json: %v — подписи кнопок из кода", errCat)
-		btnCatalog = nil
+		log.Printf("bot_buttons.json (fs): %v — пробуем встроенный JSON", errCat)
+		btnCatalog, errCat = botbuttons.Parse(assets.BotButtonsJSON)
+		if errCat != nil {
+			log.Printf("bot_buttons.json (embed): %v — подписи кнопок из кода", errCat)
+			btnCatalog = nil
+		} else {
+			log.Println("bot_buttons.json: загружен из встроенного embed")
+		}
 	}
 
 	paidOps := &usecase.PaidOps{
@@ -613,7 +620,7 @@ func main() {
 	log.Println("Bot started successfully!")
 	go func() {
 		time.Sleep(2 * time.Second)
-		botHandler.SendDeployOpsHintIfNeeded(context.Background(), b)
+		botHandler.SendManagerStartupNotification(context.Background(), b)
 	}()
 	b.Start(ctx)
 }

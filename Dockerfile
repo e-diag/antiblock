@@ -17,14 +17,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bot ./cmd/bot
 FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates tzdata
-WORKDIR /root/
+WORKDIR /app
 
-# Копируем бинарник из builder stage
-COPY --from=builder /app/bot .
-COPY --from=builder /app/config.yaml .
+# Бинарник, конфиг и assets (fallback если не используется embed JSON)
+COPY --from=builder /app/bot /app/bot
+COPY --from=builder /app/config.yaml /app/config.yaml
+COPY --from=builder /app/assets /app/assets
 
-# Устанавливаем переменные окружения по умолчанию
 ENV TZ=UTC
 
-# Запускаем приложение
-CMD ["./bot"]
+CMD ["/app/bot"]

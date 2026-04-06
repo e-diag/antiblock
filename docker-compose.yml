@@ -44,6 +44,11 @@ services:
       TELEGRAM_ADMIN_ID_5: ${TELEGRAM_ADMIN_ID_5:-}
       # Альтернатива: один список через запятую (перекрывает/дополняет к одиночным TELEGRAM_ADMIN_ID_*)
       TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:-}
+
+      # Служебные чаты (задайте в .env рядом с compose — иначе в контейнер не попадут)
+      TELEGRAM_ERROR_LOG_CHAT_ID: ${TELEGRAM_ERROR_LOG_CHAT_ID:-}
+      TELEGRAM_MANAGER_PROGRESS_CHAT_ID: ${TELEGRAM_MANAGER_PROGRESS_CHAT_ID:-}
+      OPS_CONTOUR: ${OPS_CONTOUR:-}
       
       # Database (значения без кавычек — иначе в контейнер попадёт "5432" и т.д.)
       DB_HOST: postgres

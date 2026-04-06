@@ -15,47 +15,61 @@ import (
 )
 
 const (
-	envSendOpsHintOnStart = "SEND_OPS_HINT_ON_START"
-	envOpsContour         = "OPS_CONTOUR"
+	envOpsContour = "OPS_CONTOUR"
 
-	opsMigrateStepDelay       = 5 * time.Second
-	opsMigrateReportEvery     = 10 * time.Minute
-	opsCompensateNotifyDelay  = 2 * time.Second
+	opsMigrateStepDelay      = 5 * time.Second
+	opsMigrateReportEvery    = 10 * time.Minute
+	opsCompensateNotifyDelay = 2 * time.Second
 )
 
-// SendDeployOpsHintIfNeeded — после деплоя: одно сообщение менеджеру со списком команд (env SEND_OPS_HINT_ON_START=1).
-func (h *BotHandler) SendDeployOpsHintIfNeeded(ctx context.Context, b *bot.Bot) {
-	if b == nil || strings.TrimSpace(os.Getenv(envSendOpsHintOnStart)) == "" {
+// SendManagerStartupNotification — после старта бота: одно сообщение в чат прогресса (TELEGRAM_MANAGER_PROGRESS_CHAT_ID) со списком /ops_*.
+func (h *BotHandler) SendManagerStartupNotification(ctx context.Context, b *bot.Bot) {
+	if b == nil {
 		return
 	}
-	text := strings.TrimSpace(`🚀 <b>Деплой:</b> одноразовая подсказка по операциям.
+	when := time.Now().UTC().Format(time.RFC3339)
+	contour := strings.TrimSpace(os.Getenv(envOpsContour))
+	if contour == "" {
+		contour = "bot"
+	}
+	text := strings.TrimSpace(fmt.Sprintf(`✅ <b>Бот запущен</b> (UTC: <code>%s</code>, контур отчётов: <code>%s</code>)
 
-<b>Тарифы (+14 дн. и рассылка текста компенсации)</b>
-<code>/ops_tariff_apply</code> — начислить +14 дн. и сформировать очередь TG (один раз)
-<code>/ops_tariff_notify</code> — разослать очередь уведомлений (текст из бизнес-правила)
+<b>Тарифы (+14 дн. и рассылка компенсации)</b>
+<code>/ops_tariff_apply</code> — начислить +14 дн. и очередь TG (один раз)
+<code>/ops_tariff_notify</code> — разослать очередь уведомлений
 
 <b>Пересоздание прокси (Pro + Premium + legacy)</b>
-<code>/ops_proxy_migrate</code> — фон: пошаговая миграция dd→ee, <b>без</b> уведомлений пользователям о процессе
-<code>/ops_proxy_migrate_reset</code> — сбросить состояние миграции v2 (только если нужен повтор полного прогона)
+<code>/ops_proxy_migrate</code> — фон: миграция dd→ee (без писем пользователям о процессе)
+<code>/ops_proxy_migrate_reset</code> — сброс v2 перед повторным полным прогоном
 
-<code>/ops_help</code> — эта справка
+<code>/ops_help</code> — краткая справка
 
-Контур в отчётах: переменная <code>OPS_CONTOUR</code> (иначе <code>bot</code>).`)
+<i>Команды вводятся в личке с ботом под админским аккаунтом.</i>`, when, contour))
+	if h.managerProgressChatID == 0 {
+		log.Println("[ops] TELEGRAM_MANAGER_PROGRESS_CHAT_ID не задан — текст уходит в личку всем TELEGRAM_ADMIN_ID_*")
+	} else {
+		log.Printf("[ops] стартовое уведомление → manager progress chat_id=%d", h.managerProgressChatID)
+	}
 	h.sendOpsToManagers(ctx, b, text)
-	log.Printf("[ops] deploy hint sent (unset %s for next restarts)", envSendOpsHintOnStart)
 }
 
 func (h *BotHandler) sendOpsToManagers(ctx context.Context, b *bot.Bot, html string) {
 	if h.managerProgressChatID != 0 {
-		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: h.managerProgressChatID, Text: html, ParseMode: models.ParseModeHTML,
 		})
+		if err != nil {
+			log.Printf("[ops] SendMessage manager progress chat_id=%d: %v", h.managerProgressChatID, err)
+		}
 		return
 	}
 	for _, id := range h.adminIDs {
-		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: id, Text: html, ParseMode: models.ParseModeHTML,
 		})
+		if err != nil {
+			log.Printf("[ops] SendMessage admin tg_id=%d: %v", id, err)
+		}
 	}
 }
 
