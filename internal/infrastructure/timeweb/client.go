@@ -241,10 +241,24 @@ type ServerIP struct {
 	Type   string `json:"type,omitempty"`
 	IP     string `json:"ip,omitempty"`
 	IsMain bool   `json:"is_main,omitempty"`
+	// IsFloating — если API отмечает привязанный к серверу floating (не основной NIC).
+	IsFloating bool `json:"is_floating,omitempty"`
+}
+
+func serverIPLooksFloating(ip ServerIP) bool {
+	if ip.IsFloating {
+		return true
+	}
+	t := strings.ToLower(strings.TrimSpace(ip.Type))
+	if t == "float" || strings.Contains(t, "floating") {
+		return true
+	}
+	return false
 }
 
 // ExtractMainIPv4 возвращает публичный IPv4 для SSH/API (только v4, без IPv6).
-// Сначала главный (is_main) IPv4 в public-сети, иначе любой IPv4 в public.
+// Предпочитает is_main; floating-адреса в списке сети пропускает; если main нет и несколько
+// кандидатов — берёт минимальный по байтам IPv4 (стабильнее, чем порядок в JSON).
 func ExtractMainIPv4(srv *Server) string {
 	if srv == nil {
 		return ""
@@ -253,23 +267,66 @@ func ExtractMainIPv4(srv *Server) string {
 		if !strings.EqualFold(n.Type, "public") {
 			continue
 		}
-		var anyV4 string
+		var mains, rest []string
 		for _, ip := range n.Ips {
 			if ip.IP == "" || !parseableIPv4(ip.IP) {
 				continue
 			}
-			if ip.IsMain {
-				return ip.IP
+			if serverIPLooksFloating(ip) {
+				continue
 			}
-			if anyV4 == "" {
-				anyV4 = ip.IP
+			if ip.IsMain {
+				mains = append(mains, ip.IP)
+			} else {
+				rest = append(rest, ip.IP)
 			}
 		}
-		if anyV4 != "" {
-			return anyV4
+		if len(mains) > 0 {
+			return pickSmallestIPv4(mains)
+		}
+		if len(rest) == 1 {
+			return rest[0]
+		}
+		if len(rest) > 1 {
+			return pickSmallestIPv4(rest)
 		}
 	}
 	return ""
+}
+
+func pickSmallestIPv4(ips []string) string {
+	if len(ips) == 0 {
+		return ""
+	}
+	best := ips[0]
+	bestAddr := net.ParseIP(strings.TrimSpace(best))
+	for _, s := range ips[1:] {
+		a := net.ParseIP(strings.TrimSpace(s))
+		if a == nil || bestAddr == nil {
+			continue
+		}
+		a4, b4 := a.To4(), bestAddr.To4()
+		if a4 == nil || b4 == nil {
+			continue
+		}
+		if bytesCompareIP(a4, b4) < 0 {
+			best = s
+			bestAddr = a
+		}
+	}
+	return best
+}
+
+func bytesCompareIP(a, b net.IP) int {
+	for i := range a {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
 }
 
 func parseableIPv4(s string) bool {
