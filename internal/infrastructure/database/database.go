@@ -48,6 +48,12 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", dbRetryAttempts, err)
 	}
 
+	// Снимаем старые имена уникальности по owner_id до AutoMigrate — иначе GORM может выполнить
+	// ALTER TABLE ... DROP CONSTRAINT "uni_proxy_nodes_owner_id" без IF EXISTS и упасть (SQLSTATE 42704).
+	if err := preAutoMigrateProxyNodes(db); err != nil {
+		return nil, fmt.Errorf("pre-migrate proxy_nodes: %w", err)
+	}
+
 	// Автомиграция моделей (без потери данных)
 	if err := db.AutoMigrate(
 		&domain.User{},
@@ -77,8 +83,43 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 	return &DB{DB: db}, nil
 }
 
+// preAutoMigrateProxyNodes убирает ограничения/индексы по owner_id, которые GORM мог создать под другими именами.
+func preAutoMigrateProxyNodes(db *gorm.DB) error {
+	var exists bool
+	if err := db.Raw(`
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = current_schema() AND table_name = 'proxy_nodes'
+		)`).Scan(&exists).Error; err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	stmts := []string{
+		`ALTER TABLE proxy_nodes DROP CONSTRAINT IF EXISTS uni_proxy_nodes_owner_id`,
+		`ALTER TABLE proxy_nodes DROP CONSTRAINT IF EXISTS proxy_nodes_owner_id_key`,
+		`DROP INDEX IF EXISTS idx_premium_owner`,
+	}
+	for _, q := range stmts {
+		if err := db.Exec(q).Error; err != nil {
+			return fmt.Errorf("%s: %w", q, err)
+		}
+	}
+	return nil
+}
+
 // runMigrations выполняет безопасные миграции данных поверх AutoMigrate.
 func runMigrations(db *gorm.DB) error {
+	// Один премиум-прокси на пользователя (частичный UNIQUE; не через тег GORM — см. preAutoMigrateProxyNodes).
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_premium_owner
+		ON proxy_nodes (owner_id)
+		WHERE type = 'premium' AND owner_id IS NOT NULL
+	`).Error; err != nil {
+		return err
+	}
+
 	// Удаляем старый уникальный индекс по порту: у free-прокси порты могут повторяться, уникальна комбинация (ip, port, secret).
 	if err := db.Exec("DROP INDEX IF EXISTS idx_proxy_nodes_port").Error; err != nil {
 		return err

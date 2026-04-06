@@ -49,8 +49,9 @@ type ProxyNode struct {
 	// PremiumServerID — сервер в TimeWeb, к которому привязан floating IP.
 	PremiumServerID *uint `gorm:"index" json:"premium_server_id,omitempty"`
 
-	// OwnerID задает владельца премиум-прокси (один прокси на пользователя)
-	OwnerID       *uint       `gorm:"uniqueIndex:idx_premium_owner,where:type = 'premium'" json:"owner_id,omitempty"`
+	// OwnerID — владелец премиум-прокси. Частичный UNIQUE (только type=premium) задаётся в database.runMigrations,
+	// иначе GORM при AutoMigrate генерирует DROP CONSTRAINT uni_proxy_nodes_owner_id и падает, если имени нет в БД.
+	OwnerID *uint `gorm:"index" json:"owner_id,omitempty"`
 	ContainerName string      `gorm:"size:255" json:"container_name"`
 	Status        ProxyStatus `gorm:"type:varchar(20);default:'active'" json:"status"`
 	Load          int         `gorm:"default:0" json:"load"` // текущее количество пользователей (для free-прокси)
