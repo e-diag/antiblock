@@ -2,33 +2,62 @@ package database
 
 import (
 	"fmt"
-	"reflect"
 
-	"github.com/yourusername/antiblock/internal/domain"
 	"gorm.io/gorm"
 )
 
-// ensureProxyNodesSchema поддерживает таблицу proxy_nodes без db.AutoMigrate(&ProxyNode{}):
-// GORM при AutoMigrate генерирует ALTER TABLE ... DROP CONSTRAINT "uni_proxy_nodes_owner_id"
-// без IF EXISTS и падает (SQLSTATE 42704), если такого ограничения в БД никогда не было.
+// ensureProxyNodesSchema создаёт/дополняет proxy_nodes только через SQL — без Migrator.CreateTable/AddColumn
+// и без db.AutoMigrate(&ProxyNode{}): иначе GORM на PostgreSQL может выполнить
+// ALTER TABLE ... DROP CONSTRAINT "uni_proxy_nodes_owner_id" без IF EXISTS (SQLSTATE 42704).
+
+// ProxyNodesSchemaVersion метка для логов при старте (проверка, что образ не старый).
+const ProxyNodesSchemaVersion = "proxy_nodes_schema_v3_raw_sql"
+
 func ensureProxyNodesSchema(db *gorm.DB) error {
-	probe := &domain.ProxyNode{}
-	if !db.Migrator().HasTable(probe) {
-		return db.Migrator().CreateTable(probe)
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS proxy_nodes (
+			id BIGSERIAL PRIMARY KEY,
+			ip VARCHAR(255) NOT NULL,
+			port INTEGER NOT NULL,
+			secret VARCHAR(255) NOT NULL,
+			secret_ee VARCHAR(255),
+			type VARCHAR(20) NOT NULL,
+			floating_ip VARCHAR(45),
+			timeweb_floating_ip_id VARCHAR(64) DEFAULT '',
+			premium_server_id BIGINT,
+			owner_id BIGINT,
+			container_name VARCHAR(255),
+			status VARCHAR(20) NOT NULL DEFAULT 'active',
+			load INTEGER NOT NULL DEFAULT 0,
+			last_rtt_ms INTEGER,
+			unreachable_since TIMESTAMPTZ,
+			last_check TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		// Очень старые схемы: дозаполняем базовые колонки.
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS ip VARCHAR(255) NOT NULL DEFAULT ''`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS port INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS secret VARCHAR(255) NOT NULL DEFAULT ''`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'free'`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS load INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+		// Старые БД без части колонок — добавляем безопасно.
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS secret_ee VARCHAR(255)`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS floating_ip VARCHAR(45)`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS timeweb_floating_ip_id VARCHAR(64) DEFAULT ''`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS premium_server_id BIGINT`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS owner_id BIGINT`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS container_name VARCHAR(255)`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS last_rtt_ms INTEGER`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS unreachable_since TIMESTAMPTZ`,
+		`ALTER TABLE proxy_nodes ADD COLUMN IF NOT EXISTS last_check TIMESTAMPTZ`,
 	}
-	t := reflect.TypeOf(domain.ProxyNode{})
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		if f.Tag.Get("gorm") == "-" {
-			continue
-		}
-		if !db.Migrator().HasColumn(probe, f.Name) {
-			if err := db.Migrator().AddColumn(probe, f.Name); err != nil {
-				return fmt.Errorf("proxy_nodes add column %s: %w", f.Name, err)
-			}
+	for _, q := range stmts {
+		if err := db.Exec(q).Error; err != nil {
+			return fmt.Errorf("%s: %w", q, err)
 		}
 	}
 	return nil

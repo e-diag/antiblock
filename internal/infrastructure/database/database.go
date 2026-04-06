@@ -48,7 +48,13 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", dbRetryAttempts, err)
 	}
 
-	// Автомиграция моделей (без потери данных). proxy_nodes не через AutoMigrate — см. ensureProxyNodesSchema.
+	// proxy_nodes только SQL (см. ProxyNodesSchemaVersion) — до AutoMigrate, без GORM Migrator.
+	if err := ensureProxyNodesSchema(db); err != nil {
+		return nil, fmt.Errorf("proxy_nodes schema: %w", err)
+	}
+	log.Printf("[database] proxy_nodes OK (%s)", ProxyNodesSchemaVersion)
+
+	// Автомиграция моделей (без потери данных). &domain.ProxyNode{} сюда не передаём.
 	if err := db.AutoMigrate(
 		&domain.User{},
 		&domain.UserProxy{},
@@ -66,10 +72,6 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.MaintenanceWaitUser{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	if err := ensureProxyNodesSchema(db); err != nil {
-		return nil, fmt.Errorf("proxy_nodes schema: %w", err)
 	}
 
 	// Дополнительные миграции данных (обновление значений type/status в proxy_nodes и т.п.)
