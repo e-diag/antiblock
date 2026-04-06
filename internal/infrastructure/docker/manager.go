@@ -225,12 +225,14 @@ func (m *Manager) CreateUserPremiumEEContainers(ctx context.Context, userTGID in
 }
 
 // RemoveUserPremiumEEContainers удаляет ee1/ee2 и старые dd/ee контейнеры пользователя (миграция).
+// Включая bare mtg-user-{id} (старые p3terx до схемы с суффиксами) — иначе порт остаётся занят.
 func (m *Manager) RemoveUserPremiumEEContainers(ctx context.Context, userTGID int64) {
 	for _, name := range []string{
 		fmt.Sprintf(UserContainerNameEE1, userTGID),
 		fmt.Sprintf(UserContainerNameEE2, userTGID),
 		fmt.Sprintf(UserContainerNameLegacyDD, userTGID),
 		fmt.Sprintf(UserContainerNameLegacyEE, userTGID),
+		fmt.Sprintf(UserContainerName, userTGID),
 	} {
 		_ = m.RemoveUserContainer(ctx, name)
 	}

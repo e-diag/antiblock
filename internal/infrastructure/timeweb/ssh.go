@@ -350,8 +350,9 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 	name2 := fmt.Sprintf("mtg-user-%d-ee2", tgID)
 	legacyEE := fmt.Sprintf("mtg-user-%d-ee", tgID)
 	legacyDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
+	legacyBare := fmt.Sprintf("mtg-user-%d", tgID)
 
-	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s 2>/dev/null || true", name1, name2, legacyEE, legacyDD))
+	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true", name1, name2, legacyEE, legacyDD, legacyBare))
 
 	cmd1 := fmt.Sprintf(
 		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s simple-run 0.0.0.0:8443 %s",
@@ -378,6 +379,7 @@ func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
 	name2 := fmt.Sprintf("mtg-user-%d-ee2", tgID)
 	legacyEE := fmt.Sprintf("mtg-user-%d-ee", tgID)
 	legacyDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
+	legacyBare := fmt.Sprintf("mtg-user-%d", tgID)
 	log.Printf("[SSH] StopPremiumContainers tg_id=%d host=%s", tgID, s.host)
-	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s 2>/dev/null || true", name1, name2, legacyEE, legacyDD))
+	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true", name1, name2, legacyEE, legacyDD, legacyBare))
 }
