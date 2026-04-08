@@ -164,6 +164,18 @@ func main() {
 		} else {
 			log.Println("bot_buttons.json: загружен из встроенного embed")
 		}
+	} else {
+		log.Println("bot_buttons.json: загружен с диска")
+	}
+	if btnCatalog != nil {
+		for _, k := range []string{"main_buy_premium", "main_get_premium_proxy", "main_extend_premium"} {
+			if def, ok := btnCatalog.Def(k); ok {
+				log.Printf("bot_buttons premium key=%s text=%q icon_custom_emoji_id=%q", k, def.Text, def.IconID())
+			} else {
+				log.Printf("bot_buttons premium key=%s: MISSING", k)
+			}
+		}
+		log.Println("bot_buttons note: icon_custom_emoji_id может не отображаться, если у владельца бота нет Telegram Premium")
 	}
 
 	paidOps := &usecase.PaidOps{

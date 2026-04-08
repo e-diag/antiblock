@@ -72,6 +72,15 @@ func (c *Catalog) Text(key string) string {
 	return ""
 }
 
+// Def возвращает полное описание кнопки по ключу.
+func (c *Catalog) Def(key string) (ButtonDef, bool) {
+	if c == nil {
+		return ButtonDef{}, false
+	}
+	def, ok := c.byKey[key]
+	return def, ok
+}
+
 // Format форматирует text кнопки как fmt.Sprintf, если в каталоге есть шаблон.
 func (c *Catalog) Format(key string, args ...any) string {
 	t := c.Text(key)
