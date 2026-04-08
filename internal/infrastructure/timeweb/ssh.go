@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -342,6 +343,12 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 	if floatingIP == "" || secretEE1 == "" || secretEE2 == "" {
 		return fmt.Errorf("StartPremiumContainers: empty params")
 	}
+	if net.ParseIP(strings.TrimSpace(floatingIP)) == nil {
+		return fmt.Errorf("StartPremiumContainers: invalid floating IP")
+	}
+	if !isSafeEESecret(secretEE1) || !isSafeEESecret(secretEE2) {
+		return fmt.Errorf("StartPremiumContainers: invalid secret format")
+	}
 
 	log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s…",
 		tgID, s.host, floatingIP, secretEE1, secretEE2)
@@ -352,11 +359,12 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 	legacyDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
 	legacyBare := fmt.Sprintf("mtg-user-%d", tgID)
 
-	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true", name1, name2, legacyEE, legacyDD, legacyBare))
+	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true",
+		shellQuote(name1), shellQuote(name2), shellQuote(legacyEE), shellQuote(legacyDD), shellQuote(legacyBare)))
 
 	cmd1 := fmt.Sprintf(
 		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s simple-run 0.0.0.0:8443 %s",
-		name1, floatingIP, DockerImagePremiumEE, secretEE1,
+		shellQuote(name1), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE1),
 	)
 	if _, err := s.RunCommand(ctx, cmd1); err != nil {
 		return fmt.Errorf("start ee container 8443: %w", err)
@@ -364,7 +372,7 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 
 	cmd2 := fmt.Sprintf(
 		"docker run -d --name %s --restart unless-stopped -p %s:443:443 %s simple-run 0.0.0.0:443 %s",
-		name2, floatingIP, DockerImagePremiumEE, secretEE2,
+		shellQuote(name2), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE2),
 	)
 	if _, err := s.RunCommand(ctx, cmd2); err != nil {
 		return fmt.Errorf("start ee container 443: %w", err)
@@ -381,5 +389,29 @@ func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
 	legacyDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
 	legacyBare := fmt.Sprintf("mtg-user-%d", tgID)
 	log.Printf("[SSH] StopPremiumContainers tg_id=%d host=%s", tgID, s.host)
-	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true", name1, name2, legacyEE, legacyDD, legacyBare))
+	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true",
+		shellQuote(name1), shellQuote(name2), shellQuote(legacyEE), shellQuote(legacyDD), shellQuote(legacyBare)))
+}
+
+func shellQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
+}
+
+func isSafeEESecret(v string) bool {
+	s := strings.TrimSpace(v)
+	if !strings.HasPrefix(s, "ee") || len(s) < 16 {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case '-', '_', '.', ':':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }

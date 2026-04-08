@@ -64,6 +64,8 @@ func New(cfg *config.DatabaseConfig) (*DB, error) {
 		&domain.StarPayment{},
 		&domain.YooKassaPayment{},
 		&domain.YooKassaInvoice{},
+		&domain.PaymentEvent{},
+		&domain.OpsLock{},
 		&domain.AppSetting{},
 		&domain.ProGroup{},
 		&domain.ProSubscription{},
@@ -136,6 +138,44 @@ func runMigrations(db *gorm.DB) error {
 	if err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_user_proxies_unique
 		ON user_proxies (user_id, ip, port, secret)
+	`).Error; err != nil {
+		return err
+	}
+
+	// Жёсткая идемпотентность платёжных событий на уровне БД (непустые external charge id).
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_yookassa_payments_provider_charge_unique
+		ON yookassa_payments (provider_payment_charge_id)
+		WHERE provider_payment_charge_id IS NOT NULL AND provider_payment_charge_id <> ''
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_star_payments_telegram_charge_unique
+		ON star_payments (telegram_payment_charge_id)
+		WHERE telegram_payment_charge_id IS NOT NULL AND telegram_payment_charge_id <> ''
+	`).Error; err != nil {
+		return err
+	}
+
+	// Payment processing gate для retry-safe webhook/payment orchestration.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_events_provider_external
+		ON payment_events (provider, external_id)
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_payment_events_status_updated
+		ON payment_events (status, updated_at)
+	`).Error; err != nil {
+		return err
+	}
+
+	// Межпроцессные блокировки paid operations.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_ops_locks_expires_at
+		ON ops_locks (expires_at)
 	`).Error; err != nil {
 		return err
 	}

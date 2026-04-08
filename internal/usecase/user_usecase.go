@@ -68,7 +68,7 @@ func (uc *userUseCase) clearTimewebFloatingStateAfterDeprovision(proxy *domain.P
 		return
 	}
 	changed := false
-	if strings.TrimSpace(proxy.TimewebFloatingIPID) != "" {
+	if IsTimewebFloatingIDSet(proxy.TimewebFloatingIPID) {
 		proxy.TimewebFloatingIPID = ""
 		changed = true
 	}
@@ -150,13 +150,19 @@ func premiumTimewebProxyReadyToShow(p *domain.ProxyNode) bool {
 		return false
 	}
 	fipID := strings.TrimSpace(p.TimewebFloatingIPID)
-	if fipID == "" || fipID == "0" {
+	if !IsTimewebFloatingIDSet(fipID) {
 		return false
 	}
 	if p.Status != domain.ProxyStatusActive {
 		return false
 	}
-	if strings.TrimSpace(p.Secret) == "" || strings.TrimSpace(p.SecretEE) == "" {
+	sec1 := strings.TrimSpace(p.Secret)
+	sec2 := strings.TrimSpace(p.SecretEE)
+	if sec1 == "" || sec2 == "" {
+		return false
+	}
+	// Для TimeWeb показываем «уже готово» только если оба секрета ee.
+	if !strings.HasPrefix(strings.ToLower(sec1), "ee") || !strings.HasPrefix(strings.ToLower(sec2), "ee") {
 		return false
 	}
 	clientIP := strings.TrimSpace(p.FloatingIP)
@@ -231,8 +237,12 @@ func (uc *userUseCase) isLegacyPremiumRecord(p *domain.ProxyNode) bool {
 		return false
 	}
 	fip := strings.TrimSpace(p.TimewebFloatingIPID)
-	if fip != "" && fip != "0" {
+	if IsTimewebFloatingIDSet(fip) {
 		return false
+	}
+	// TimeWeb premium всегда на портах 8443/443; всё остальное считаем legacy.
+	if p.Port != domain.PremiumPortEE1 && p.Port != domain.PremiumPortEE2 {
+		return true
 	}
 	if p.PremiumServerID != nil && *p.PremiumServerID != 0 {
 		return false
@@ -292,7 +302,24 @@ func (uc *userUseCase) premiumTimeWebActivateOrRenew(ctx context.Context, tgID i
 	log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d user_id=%d has_row=%v legacy=%v fip_id=%q premium_srv=%v status=%s",
 		tgID, user.ID, existing != nil, isLeg, fipID, psid, st)
 
-	if existing != nil && strings.TrimSpace(existing.TimewebFloatingIPID) != "" {
+	if existing != nil && IsTimewebFloatingIDSet(existing.TimewebFloatingIPID) {
+		// Если исторически остались dd-секреты, перед показом/рестартом конвертируем их в ee.
+		sec1 := strings.TrimSpace(existing.Secret)
+		sec2 := strings.TrimSpace(existing.SecretEE)
+		if (!strings.HasPrefix(strings.ToLower(sec1), "ee") || !strings.HasPrefix(strings.ToLower(sec2), "ee")) &&
+			uc.proxyUC != nil && uc.dockerMgr != nil {
+			clientIP := strings.TrimSpace(existing.FloatingIP)
+			if clientIP == "" {
+				clientIP = strings.TrimSpace(existing.IP)
+			}
+			if clientIP != "" {
+				if updated, upErr := uc.proxyUC.EnsurePremiumProxyForUser(user, clientIP, uc.dockerMgr); upErr != nil {
+					log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: ee upgrade skipped: %v", tgID, upErr)
+				} else if updated != nil {
+					existing = updated
+				}
+			}
+		}
 		if premiumTimewebProxyReadyToShow(existing) {
 			log.Printf("[Premium] premiumTimeWebActivateOrRenew tg_id=%d: path=already active (same keys), skip SSH", tgID)
 			return existing, nil

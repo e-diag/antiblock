@@ -38,8 +38,12 @@ type PaymentUseCase interface {
 		providerChargeID string,
 	) error
 	HasYooKassaPayment(providerChargeID string) (bool, error)
+	TryStartPaymentEvent(provider, externalID string) (bool, error)
+	MarkPaymentEventSucceeded(provider, externalID string) error
+	MarkPaymentEventFailed(provider, externalID string) error
 	// CreateYooKassaInvoice сохраняет pending запись для Smart Payment (для clean-up висящих платежей).
 	CreateYooKassaInvoice(inv *domain.YooKassaInvoice) error
+	GetYooKassaInvoice(paymentID string) (*domain.YooKassaInvoice, error)
 	MarkYooKassaInvoicePaid(paymentID string) error
 	ListPendingYooKassaInvoicesOlderThan(cutoff time.Time) ([]*domain.YooKassaInvoice, error)
 	DeleteYooKassaInvoice(paymentID string) error
@@ -54,6 +58,7 @@ type paymentUseCase struct {
 	starPaymentRepo       StarPaymentRepository
 	yooKassaPaymentRepo   YooKassaPaymentRepository
 	yooKassaInvoiceRepo   YooKassaInvoiceRepository
+	paymentEventRepo      PaymentEventRepository
 	yooKassaShopID        string
 	yooKassaSecretKey     string
 }
@@ -81,10 +86,17 @@ type YooKassaPaymentRepository interface {
 
 type YooKassaInvoiceRepository interface {
 	Create(inv *domain.YooKassaInvoice) error
+	GetByPaymentID(paymentID string) (*domain.YooKassaInvoice, error)
 	ListPendingOlderThan(cutoff time.Time) ([]*domain.YooKassaInvoice, error)
 	MarkPaid(paymentID string) error
 	MarkCancelled(paymentID string) error
 	DeleteByPaymentID(paymentID string) error
+}
+
+type PaymentEventRepository interface {
+	TryStart(provider, externalID string) (started bool, err error)
+	MarkSucceeded(provider, externalID string) error
+	MarkFailed(provider, externalID string) error
 }
 
 // NewPaymentUseCase создает новый use case для платежей
@@ -94,6 +106,7 @@ func NewPaymentUseCase(
 	starPaymentRepo StarPaymentRepository,
 	yooKassaPaymentRepo YooKassaPaymentRepository,
 	yooKassaInvoiceRepo YooKassaInvoiceRepository,
+	paymentEventRepo PaymentEventRepository,
 	yooKassaShopID string,
 	yooKassaSecretKey string,
 ) PaymentUseCase {
@@ -105,6 +118,7 @@ func NewPaymentUseCase(
 		starPaymentRepo:       starPaymentRepo,
 		yooKassaPaymentRepo:   yooKassaPaymentRepo,
 		yooKassaInvoiceRepo:   yooKassaInvoiceRepo,
+		paymentEventRepo:      paymentEventRepo,
 		yooKassaShopID:        yooKassaShopID,
 		yooKassaSecretKey:     yooKassaSecretKey,
 	}
@@ -327,7 +341,11 @@ func (uc *paymentUseCase) RecordStarPayment(tgID int64, amountTotal int64, curre
 		DaysGranted:             daysGranted,
 		TelegramPaymentChargeID: telegramPaymentChargeID,
 	}
-	return uc.starPaymentRepo.Create(p)
+	err := uc.starPaymentRepo.Create(p)
+	if isDuplicateKeyError(err) {
+		return nil
+	}
+	return err
 }
 
 func (uc *paymentUseCase) RecordYooKassaPayment(
@@ -349,7 +367,11 @@ func (uc *paymentUseCase) RecordYooKassaPayment(
 		TelegramPaymentChargeID:   telegramChargeID,
 		ProviderPaymentChargeID:   providerChargeID,
 	}
-	return uc.yooKassaPaymentRepo.Create(p)
+	err := uc.yooKassaPaymentRepo.Create(p)
+	if isDuplicateKeyError(err) {
+		return nil
+	}
+	return err
 }
 
 func (uc *paymentUseCase) HasYooKassaPayment(providerChargeID string) (bool, error) {
@@ -359,11 +381,39 @@ func (uc *paymentUseCase) HasYooKassaPayment(providerChargeID string) (bool, err
 	return uc.yooKassaPaymentRepo.ExistsByProviderPaymentChargeID(providerChargeID)
 }
 
+func (uc *paymentUseCase) TryStartPaymentEvent(provider, externalID string) (bool, error) {
+	if uc.paymentEventRepo == nil {
+		return true, nil
+	}
+	return uc.paymentEventRepo.TryStart(provider, externalID)
+}
+
+func (uc *paymentUseCase) MarkPaymentEventSucceeded(provider, externalID string) error {
+	if uc.paymentEventRepo == nil {
+		return nil
+	}
+	return uc.paymentEventRepo.MarkSucceeded(provider, externalID)
+}
+
+func (uc *paymentUseCase) MarkPaymentEventFailed(provider, externalID string) error {
+	if uc.paymentEventRepo == nil {
+		return nil
+	}
+	return uc.paymentEventRepo.MarkFailed(provider, externalID)
+}
+
 func (uc *paymentUseCase) CreateYooKassaInvoice(inv *domain.YooKassaInvoice) error {
 	if uc.yooKassaInvoiceRepo == nil || inv == nil {
 		return nil
 	}
 	return uc.yooKassaInvoiceRepo.Create(inv)
+}
+
+func (uc *paymentUseCase) GetYooKassaInvoice(paymentID string) (*domain.YooKassaInvoice, error) {
+	if uc.yooKassaInvoiceRepo == nil || strings.TrimSpace(paymentID) == "" {
+		return nil, nil
+	}
+	return uc.yooKassaInvoiceRepo.GetByPaymentID(paymentID)
 }
 
 func (uc *paymentUseCase) MarkYooKassaInvoicePaid(paymentID string) error {

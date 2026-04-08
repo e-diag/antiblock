@@ -16,8 +16,11 @@ func TestIsLegacyPremiumProxy(t *testing.T) {
 		t.Fatal("with fip => not legacy")
 	}
 	ps := uint(1)
-	if isLegacyPremiumProxy(&domain.ProxyNode{PremiumServerID: &ps}) {
-		t.Fatal("with premium server => not legacy")
+	if isLegacyPremiumProxy(&domain.ProxyNode{PremiumServerID: &ps, Port: domain.PremiumPortEE1}) {
+		t.Fatal("timeweb port + premium server => not legacy")
+	}
+	if !isLegacyPremiumProxy(&domain.ProxyNode{PremiumServerID: &ps, Port: 20011}) {
+		t.Fatal("legacy port 20000+ should be treated as legacy even with stale premium server id")
 	}
 }
 

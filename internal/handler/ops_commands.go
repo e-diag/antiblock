@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -106,6 +107,10 @@ func (h *BotHandler) HandleOpsTariffApply(ctx context.Context, b *bot.Bot, updat
 		return
 	}
 	if err := usecase.Compensate14DaysTransactional(h.gormDB, h.paidOps); err != nil {
+		if errors.Is(err, usecase.ErrOpsLockBusy) {
+			h.sendText(ctx, b, update, "⏳ Компенсация уже выполняется в другом процессе.")
+			return
+		}
 		if err == usecase.ErrPaidCompensationAlreadyDone {
 			h.sendText(ctx, b, update, "ℹ️ Компенсация +14 дн. уже была применена ранее.")
 			return
@@ -200,6 +205,13 @@ func (h *BotHandler) runProxyMigrateDaemon(b *bot.Bot, triggerChatID int64, cont
 	for {
 		st, cont, err := h.paidOps.MigrationV2OneStep(ctx)
 		if err != nil {
+			if errors.Is(err, usecase.ErrOpsLockBusy) {
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: dest, ParseMode: models.ParseModeHTML,
+					Text:   "⏳ Миграция уже выполняется в другом процессе.",
+				})
+				return
+			}
 			if err == usecase.ErrMigrationV2AlreadyDone {
 				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 					ChatID: dest, ParseMode: models.ParseModeHTML,

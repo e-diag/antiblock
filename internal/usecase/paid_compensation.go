@@ -14,6 +14,7 @@ import (
 
 // Ключ очереди уведомлений после атомарной компенсации (JSON []int64 tg_id).
 const SettingCompensationNoticeQueueV1 = "compensation_notice_queue_v1"
+const paidOpsCompensationLockKey = "paidops:compensation:apply"
 
 // TextCompensation14Days — текст извинений и уведомления о продлении на 14 дней.
 const TextCompensation14Days = "Мы понимаем, что последнюю неделю все прокси были недоступны. Продлеваем вашу подписку на <b>14 дней</b> — спасибо, что остаетесь с нами!"
@@ -23,6 +24,13 @@ const TextCompensation14Days = "Мы понимаем, что последнюю
 func Compensate14DaysTransactional(db *gorm.DB, p *PaidOps) error {
 	if db == nil || p == nil || p.Settings == nil {
 		return fmt.Errorf("db and paid ops required")
+	}
+	lockOwner := p.effectiveLockOwner()
+	if p.Locker != nil {
+		if err := p.Locker.Acquire(paidOpsCompensationLockKey, lockOwner, 20*time.Minute); err != nil {
+			return err
+		}
+		defer p.Locker.Release(paidOpsCompensationLockKey, lockOwner)
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		sr := repository.NewSettingsRepository(tx)

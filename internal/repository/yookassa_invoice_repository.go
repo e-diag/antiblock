@@ -31,6 +31,9 @@ func (r *yooKassaInvoiceRepository) Create(inv *domain.YooKassaInvoice) error {
 func (r *yooKassaInvoiceRepository) GetByPaymentID(paymentID string) (*domain.YooKassaInvoice, error) {
 	var inv domain.YooKassaInvoice
 	if err := r.db.Where("payment_id = ?", paymentID).First(&inv).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &inv, nil

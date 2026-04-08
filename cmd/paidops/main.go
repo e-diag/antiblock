@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -58,6 +59,7 @@ func main() {
 	defer db.Close()
 
 	settingsRepo := repository.NewSettingsRepository(db.DB)
+	opsLockRepo := repository.NewOpsLockRepository(db.DB)
 	userRepo := repository.NewUserRepository(db.DB)
 	proxyRepo := repository.NewProxyRepository(db.DB)
 	proGroupRepo := repository.NewProGroupRepository(db.DB)
@@ -111,6 +113,8 @@ func main() {
 		Docker:          proDocker,
 		PremiumServerIP: premiumServerIP,
 		Provisioner:     premiumProvisioner,
+		Locker:          usecase.NewOpsLocker(opsLockRepo),
+		LockOwner:       "paidops-cli",
 	}
 
 	token := cfg.Telegram.BotToken
@@ -129,6 +133,10 @@ func main() {
 
 	if *compensate {
 		if err := usecase.Compensate14DaysTransactional(db.DB, ops); err != nil {
+			if errors.Is(err, usecase.ErrOpsLockBusy) {
+				log.Println("компенсация уже выполняется в другом процессе")
+				os.Exit(0)
+			}
 			if err == usecase.ErrPaidCompensationAlreadyDone {
 				log.Println("компенсация уже была применена (маркер в app_settings)")
 				os.Exit(0)
@@ -162,6 +170,10 @@ func main() {
 		}
 		st, cont, err := ops.MigrationV2OneStep(ctx)
 		if err != nil {
+			if errors.Is(err, usecase.ErrOpsLockBusy) {
+				log.Println("миграция уже выполняется в другом процессе")
+				os.Exit(0)
+			}
 			if err == usecase.ErrMigrationV2AlreadyDone {
 				log.Println("миграция v2 уже завершена (маркер paid_migration_v2_done)")
 				os.Exit(0)
@@ -184,6 +196,11 @@ func main() {
 		for {
 			st, cont, err := ops.MigrationV2OneStep(ctx)
 			if err != nil {
+				if errors.Is(err, usecase.ErrOpsLockBusy) {
+					log.Println("миграция уже выполняется в другом процессе")
+					time.Sleep(*stepDelay)
+					continue
+				}
 				if err == usecase.ErrMigrationV2AlreadyDone {
 					log.Println("миграция v2 уже завершена")
 					os.Exit(0)

@@ -133,6 +133,7 @@ type YooKassaConfig struct {
 	SecretKey     string `yaml:"secret_key"`
 	ReturnURL     string `yaml:"return_url"`
 	WebhookPort   string `yaml:"webhook_port"`
+	WebhookToken  string `yaml:"webhook_token"`
 }
 
 // XRocketConfig — настройки интеграции с xRocket Pay API (TON).
@@ -243,6 +244,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.YooKassa.WebhookPort == "" {
 		cfg.YooKassa.WebhookPort = getEnv("YOOKASSA_WEBHOOK_PORT", "8082")
+	}
+	if cfg.YooKassa.WebhookToken == "" {
+		cfg.YooKassa.WebhookToken = getEnv("YOOKASSA_WEBHOOK_TOKEN", "")
 	}
 
 	// TimeWeb Premium (условно включаем по TIMEWEB_API_TOKEN).

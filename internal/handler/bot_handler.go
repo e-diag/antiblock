@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -1131,7 +1132,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 	}
 	h.clearWaitingMessages(ctx, b, chatID)
 
-	isTimeweb := proxy.TimewebFloatingIPID != ""
+	isTimeweb := usecase.IsTimewebFloatingIDSet(proxy.TimewebFloatingIPID)
 	port1 := proxy.Port
 	port2 := proxy.Port + 10000
 	if isTimeweb {
@@ -2968,11 +2969,16 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 				h.sendText(ctx, b, update, fmt.Sprintf("❌ Текст слишком длинный (макс. %d символов). Сократите или разбейте на части.", maxSupportHTMLRunes))
 				return
 			}
+			if err := validateSupportHTMLText(text); err != nil {
+				h.sendText(ctx, b, update, fmt.Sprintf("❌ Некорректный support-текст: %v", err))
+				return
+			}
 		}
-		if (key == domain.SettingSupportPartnershipLink || key == domain.SettingSupportOtherQuestionLink) &&
-			!strings.HasPrefix(strings.ToLower(text), "http://") && !strings.HasPrefix(strings.ToLower(text), "https://") {
-			h.sendText(ctx, b, update, "❌ Нужна ссылка, начинающаяся с http:// или https://")
-			return
+		if key == domain.SettingSupportPartnershipLink || key == domain.SettingSupportOtherQuestionLink {
+			if err := validateSupportLink(text); err != nil {
+				h.sendText(ctx, b, update, fmt.Sprintf("❌ Некорректная ссылка: %v", err))
+				return
+			}
 		}
 		if h.settingsRepo == nil {
 			h.sendText(ctx, b, update, "❌ Хранилище настроек недоступно.")
@@ -3147,7 +3153,7 @@ func (h *BotHandler) HandlePremiumInfo(ctx context.Context, b *bot.Bot, update *
 		return
 	}
 
-	hasFloat := proxy.TimewebFloatingIPID != ""
+	hasFloat := usecase.IsTimewebFloatingIDSet(proxy.TimewebFloatingIPID)
 	hasPremiumSrv := proxy.PremiumServerID != nil && *proxy.PremiumServerID != 0
 	portEE1 := proxy.Port
 	portEE2 := proxy.Port + 10000
@@ -3265,7 +3271,7 @@ func (h *BotHandler) HandleReplaceIP(ctx context.Context, b *bot.Bot, update *mo
 		return
 	}
 
-	isTimeweb := proxy.TimewebFloatingIPID != "" || proxy.PremiumServerID != nil
+	isTimeweb := usecase.IsTimewebFloatingIDSet(proxy.TimewebFloatingIPID) || proxy.PremiumServerID != nil
 	if proxy.PremiumServerID == nil {
 		h.sendText(ctx, b, update, "❌ PremiumServerID отсутствует в proxy_nodes.")
 		return
@@ -3287,7 +3293,7 @@ func (h *BotHandler) HandleReplaceIP(ctx context.Context, b *bot.Bot, update *mo
 	newIP, newFloatingID, err := h.premiumProvisioner.ReplaceFloatingIP(ctx, user, proxy)
 	if err != nil {
 		ex := ""
-		if proxy.TimewebFloatingIPID != "" {
+		if usecase.IsTimewebFloatingIDSet(proxy.TimewebFloatingIPID) {
 			ex = "fip_id=" + proxy.TimewebFloatingIPID
 		}
 		h.techReport(ctx, alert.Report{
@@ -4745,8 +4751,27 @@ func (h *BotHandler) HandlePreCheckout(ctx context.Context, b *bot.Bot, update *
 	if update.PreCheckoutQuery == nil {
 		return
 	}
+	pc := update.PreCheckoutQuery
+	kind, days, userID, ok := parsePaymentPayload(pc.InvoicePayload)
+	if !ok || userID <= 0 || days <= 0 {
+		_, _ = b.AnswerPreCheckoutQuery(ctx, &bot.AnswerPreCheckoutQueryParams{
+			PreCheckoutQueryID: pc.ID,
+			OK:                 false,
+			ErrorMessage:       "Платеж не прошел проверку. Попробуйте создать новый счет.",
+		})
+		return
+	}
+	if !h.isValidPreCheckout(kind, days, pc.Currency, pc.TotalAmount) {
+		_, _ = b.AnswerPreCheckoutQuery(ctx, &bot.AnswerPreCheckoutQueryParams{
+			PreCheckoutQueryID: pc.ID,
+			OK:                 false,
+			ErrorMessage:       "Счет устарел или не прошел проверку. Создайте новый платеж.",
+		})
+		return
+	}
+
 	_, _ = b.AnswerPreCheckoutQuery(ctx, &bot.AnswerPreCheckoutQueryParams{
-		PreCheckoutQueryID: update.PreCheckoutQuery.ID,
+		PreCheckoutQueryID: pc.ID,
 		OK:                 true,
 	})
 }
@@ -4757,111 +4782,100 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 		return
 	}
 	sp := update.Message.SuccessfulPayment
-	payload := sp.InvoicePayload
+	kind, days, userID, ok := parsePaymentPayload(sp.InvoicePayload)
+	if !ok || userID <= 0 || days <= 0 {
+		return
+	}
 
 	// Telegram Stars (XTR)
 	if sp.Currency == "XTR" {
-		kind := ""
-		if strings.HasPrefix(payload, "premium_") {
-			kind = "premium"
-			payload = strings.TrimPrefix(payload, "premium_")
-		} else if strings.HasPrefix(payload, "pro_") {
-			kind = "pro"
-			payload = strings.TrimPrefix(payload, "pro_")
-		} else {
-			return
-		}
-
-		parts := strings.SplitN(payload, "_", 2)
-		if len(parts) != 2 {
-			return
-		}
-		days, err1 := strconv.Atoi(parts[0])
-		userID, err2 := strconv.ParseInt(parts[1], 10, 64)
-		if err1 != nil || err2 != nil || days < 1 {
-			return
-		}
-		_ = h.paymentUC.RecordStarPayment(userID, int64(sp.TotalAmount), sp.Currency, days, sp.TelegramPaymentChargeID)
-
+		expDays := h.getPremiumDays()
+		expAmount := h.getPremiumStars()
 		if kind == "pro" {
-			if err := h.activateProAndSend(ctx, b, userID, days); err != nil {
-				log.Printf("HandleSuccessfulPayment ActivatePro tg_id=%d days=%d: %v", userID, days, err)
-				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации Pro. Попробуйте позже или обратитесь в поддержку.",
-				})
-			}
+			expDays = h.getProDays()
+			expAmount = h.getProStars()
+		}
+		if days != expDays || int(sp.TotalAmount) != expAmount {
 			return
 		}
-
-		err := h.userUC.ActivatePremium(userID, days)
+		orchestrator := usecase.NewPaymentOrchestrator(
+			h.paymentUC,
+			func(tgID int64, d int) error { return h.userUC.ActivatePremium(tgID, d) },
+			func(tgID int64, d int) error { return h.activateProAndSend(ctx, b, tgID, d) },
+			func(in usecase.PaymentEventInput) error {
+				return h.paymentUC.RecordStarPayment(in.TGID, int64(sp.TotalAmount), in.Currency, in.Days, sp.TelegramPaymentChargeID)
+			},
+			nil,
+		)
+		res, err := orchestrator.ProcessPaidEvent(usecase.PaymentEventInput{
+			Provider:   "telegram",
+			ExternalID: sp.TelegramPaymentChargeID,
+			TGID:       userID,
+			Tariff:     kind,
+			Days:       days,
+			Currency:   sp.Currency,
+		})
 		if err != nil {
-			log.Printf("HandleSuccessfulPayment ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
+			log.Printf("HandleSuccessfulPayment orchestration tg_id=%d days=%d: %v", userID, days, err)
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
 			})
 			return
 		}
-		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID,
-			Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", days),
-		})
+		if res != nil && res.Status == usecase.PaymentAlreadyProcessed {
+			return
+		}
+		if kind == "premium" {
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: update.Message.Chat.ID,
+				Text:   fmt.Sprintf("✅ Оплата получена! Премиум на %d дн. активирован. Когда прокси будет готов, вы получите отдельное сообщение.", days),
+			})
+		}
 		return
 	}
 
 	// ЮKassa (RUB)
 	if sp.Currency == "RUB" {
-		if strings.HasPrefix(payload, "pro_") {
-			p := strings.TrimPrefix(payload, "pro_")
-			parts := strings.SplitN(p, "_", 2)
-			if len(parts) != 2 {
-				return
-			}
-			days, err1 := strconv.Atoi(parts[0])
-			userID, err2 := strconv.ParseInt(parts[1], 10, 64)
-			if err1 != nil || err2 != nil || days < 1 {
-				return
-			}
-			_ = h.paymentUC.RecordYooKassaPayment(
-				userID, "pro",
-				sp.TotalAmount/100,
-				days,
-				sp.TelegramPaymentChargeID,
-				sp.ProviderPaymentChargeID,
-			)
-			if err := h.activateProAndSend(ctx, b, userID, days); err != nil {
-				log.Printf("[YooKassa] ActivatePro tg_id=%d days=%d: %v", userID, days, err)
-				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: update.Message.Chat.ID, Text: "❌ Ошибка активации. Обратитесь в поддержку.",
-				})
-			}
+		expDays := h.getPremiumDays()
+		expAmount := h.getPremiumPriceRub() * 100
+		if kind == "pro" {
+			expDays = h.getProDays()
+			expAmount = h.getProPriceRub() * 100
+		}
+		if days != expDays || int(sp.TotalAmount) != expAmount {
 			return
 		}
-
-		if strings.HasPrefix(payload, "premium_") {
-			p := strings.TrimPrefix(payload, "premium_")
-			parts := strings.SplitN(p, "_", 2)
-			if len(parts) != 2 {
-				return
-			}
-			days, err1 := strconv.Atoi(parts[0])
-			userID, err2 := strconv.ParseInt(parts[1], 10, 64)
-			if err1 != nil || err2 != nil || days < 1 {
-				return
-			}
-			_ = h.paymentUC.RecordYooKassaPayment(
-				userID, "premium",
-				sp.TotalAmount/100,
-				days,
-				sp.TelegramPaymentChargeID,
-				sp.ProviderPaymentChargeID,
-			)
-			if err := h.userUC.ActivatePremium(userID, days); err != nil {
-				log.Printf("[YooKassa] ActivatePremium tg_id=%d days=%d: %v", userID, days, err)
-				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
-				})
-				return
-			}
+		orchestrator := usecase.NewPaymentOrchestrator(
+			h.paymentUC,
+			func(tgID int64, d int) error { return h.userUC.ActivatePremium(tgID, d) },
+			func(tgID int64, d int) error { return h.activateProAndSend(ctx, b, tgID, d) },
+			func(in usecase.PaymentEventInput) error {
+				return h.paymentUC.RecordYooKassaPayment(
+					in.TGID, in.Tariff, in.AmountRub, in.Days, sp.TelegramPaymentChargeID, sp.ProviderPaymentChargeID,
+				)
+			},
+			nil,
+		)
+		res, err := orchestrator.ProcessPaidEvent(usecase.PaymentEventInput{
+			Provider:   "telegram_rub",
+			ExternalID: sp.ProviderPaymentChargeID,
+			TGID:       userID,
+			Tariff:     kind,
+			Days:       days,
+			AmountRub:  sp.TotalAmount / 100,
+			Currency:   sp.Currency,
+		})
+		if err != nil {
+			log.Printf("[YooKassa] orchestration tg_id=%d days=%d: %v", userID, days, err)
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: update.Message.Chat.ID, Text: "❌ Временная ошибка при активации. Попробуйте позже или обратитесь в поддержку.",
+			})
+			return
+		}
+		if res != nil && res.Status == usecase.PaymentAlreadyProcessed {
+			return
+		}
+		if kind == "premium" {
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:    update.Message.Chat.ID,
 				ParseMode: models.ParseModeHTML,
@@ -4869,4 +4883,80 @@ func (h *BotHandler) HandleSuccessfulPayment(ctx context.Context, b *bot.Bot, up
 			})
 		}
 	}
+}
+
+func parsePaymentPayload(payload string) (kind string, days int, userID int64, ok bool) {
+	s := strings.TrimSpace(payload)
+	switch {
+	case strings.HasPrefix(s, "premium_"):
+		kind = "premium"
+		s = strings.TrimPrefix(s, "premium_")
+	case strings.HasPrefix(s, "pro_"):
+		kind = "pro"
+		s = strings.TrimPrefix(s, "pro_")
+	default:
+		return "", 0, 0, false
+	}
+	parts := strings.SplitN(s, "_", 2)
+	if len(parts) != 2 {
+		return "", 0, 0, false
+	}
+	d, errD := strconv.Atoi(parts[0])
+	u, errU := strconv.ParseInt(parts[1], 10, 64)
+	if errD != nil || errU != nil || d < 1 || u < 1 {
+		return "", 0, 0, false
+	}
+	return kind, d, u, true
+}
+
+func (h *BotHandler) isValidPreCheckout(kind string, days int, currency string, totalAmount int) bool {
+	switch currency {
+	case "XTR":
+		expDays := h.getPremiumDays()
+		expAmount := h.getPremiumStars()
+		if kind == "pro" {
+			expDays = h.getProDays()
+			expAmount = h.getProStars()
+		}
+		return days == expDays && totalAmount == expAmount
+	case "RUB":
+		expDays := h.getPremiumDays()
+		expAmount := h.getPremiumPriceRub() * 100
+		if kind == "pro" {
+			expDays = h.getProDays()
+			expAmount = h.getProPriceRub() * 100
+		}
+		return days == expDays && totalAmount == expAmount
+	default:
+		return false
+	}
+}
+
+func validateSupportHTMLText(text string) error {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "<script") {
+		return fmt.Errorf("script-теги запрещены")
+	}
+	if strings.Contains(lower, "<a ") || strings.Contains(lower, "<a>") {
+		return fmt.Errorf("HTML-ссылки запрещены, используйте отдельное поле ссылки")
+	}
+	return nil
+}
+
+func validateSupportLink(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("только http/https")
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("пустой host")
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo в URL запрещен")
+	}
+	return nil
 }

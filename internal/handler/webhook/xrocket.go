@@ -158,13 +158,41 @@ func XRocketWebhook(
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
-			group, extendedOnly, err := activatePro(userID, days)
+			var group *domain.ProGroup
+			var extendedOnly bool
+			orchestrator := usecase.NewPaymentOrchestrator(
+				paymentUC,
+				activatePremium,
+				func(tgID int64, d int) error {
+					g, ext, err := activatePro(tgID, d)
+					if err != nil {
+						return err
+					}
+					group = g
+					extendedOnly = ext
+					return nil
+				},
+				nil,
+				func(_ usecase.PaymentEventInput) error {
+					return paymentUC.MarkInvoicePaid(invoiceID)
+				},
+			)
+			res, err := orchestrator.ProcessPaidEvent(usecase.PaymentEventInput{
+				Provider:   "xrocket",
+				ExternalID: fmt.Sprintf("invoice:%d", invoiceID),
+				TGID:       userID,
+				Tariff:     "pro",
+				Days:       days,
+			})
 			if err != nil {
-				log.Printf("[webhook] xRocket ActivatePro error: %v", err)
+				log.Printf("[webhook] xRocket pro orchestration error: %v", err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
-			_ = paymentUC.MarkInvoicePaid(invoiceID)
+			if res != nil && res.Status == usecase.PaymentAlreadyProcessed {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 
 			if telegramBot != nil && group != nil {
 				if chatID, msgID, ok := paymentUC.GetInvoiceMessageInfo(invoiceID); ok && chatID != 0 && msgID != 0 {
@@ -201,13 +229,30 @@ func XRocketWebhook(
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if err := activatePremium(userID, days); err != nil {
-			log.Printf("[webhook] xRocket ActivatePremium error: %v", err)
+		orchestrator := usecase.NewPaymentOrchestrator(
+			paymentUC,
+			activatePremium,
+			func(int64, int) error { return nil },
+			nil,
+			func(_ usecase.PaymentEventInput) error {
+				return paymentUC.MarkInvoicePaid(invoiceID)
+			},
+		)
+		res, err := orchestrator.ProcessPaidEvent(usecase.PaymentEventInput{
+			Provider:   "xrocket",
+			ExternalID: fmt.Sprintf("invoice:%d", invoiceID),
+			TGID:       userID,
+			Tariff:     "premium",
+			Days:       days,
+		})
+		if err != nil {
+			log.Printf("[webhook] xRocket premium orchestration error: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if err := paymentUC.MarkInvoicePaid(invoiceID); err != nil {
-			log.Printf("[webhook] xRocket MarkInvoicePaid error: %v", err)
+		if res != nil && res.Status == usecase.PaymentAlreadyProcessed {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 
 		// Уведомление пользователю и удаление сообщения с инвойсом

@@ -24,11 +24,20 @@ func YooKassaWebhook(
 	activatePro func(tgID int64, days int) (*domain.ProGroup, bool, error),
 	paymentUC usecase.PaymentUseCase,
 	telegramBot *bot.Bot,
+	webhookToken string,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		const maxWebhookBodyBytes = 1 << 20 // 1 MiB
+		r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
+		if strings.TrimSpace(webhookToken) != "" {
+			if strings.TrimSpace(r.Header.Get("X-AntiBlock-Webhook-Token")) != strings.TrimSpace(webhookToken) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 		}
 
 		var payload struct {
@@ -49,7 +58,7 @@ func YooKassaWebhook(
 			return
 		}
 
-		if payload.Event != "payment.succeeded" && payload.Object.Status != "succeeded" {
+		if payload.Event != "payment.succeeded" || payload.Object.Status != "succeeded" || !payload.Object.Paid {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -59,13 +68,18 @@ func YooKassaWebhook(
 		}
 
 		paymentID := payload.Object.ID
-		already, err := paymentUC.HasYooKassaPayment(paymentID)
+		expected, err := paymentUC.GetYooKassaInvoice(paymentID)
 		if err != nil {
-			log.Printf("[webhook] YooKassa idempotency check error: %v", err)
+			log.Printf("[webhook] YooKassa load invoice error: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if already {
+		if expected == nil {
+			log.Printf("[webhook] YooKassa unknown payment_id=%q", paymentID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.TrimSpace(expected.Status) == "paid" || strings.TrimSpace(expected.Status) == "cancelled" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -81,20 +95,52 @@ func YooKassaWebhook(
 		}
 
 		amountRub := parseRubToInt(payload.Object.Amount.Value)
-		if err := paymentUC.RecordYooKassaPayment(tgID, tariff, amountRub, days, "", paymentID); err != nil {
-			log.Printf("[webhook] YooKassa RecordYooKassaPayment error: %v", err)
+		if expected.TGID != tgID || expected.DaysGranted != days || strings.ToLower(expected.TariffType) != tariff || expected.AmountRub != amountRub {
+			log.Printf("[webhook] YooKassa mismatch invoice/payment payment_id=%s", paymentID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var proGroup *domain.ProGroup
+		var extendedOnly bool
+		orchestrator := usecase.NewPaymentOrchestrator(
+			paymentUC,
+			activatePremium,
+			func(tgID int64, days int) error {
+				group, ext, err := activatePro(tgID, days)
+				if err != nil {
+					return err
+				}
+				proGroup = group
+				extendedOnly = ext
+				return nil
+			},
+			func(in usecase.PaymentEventInput) error {
+				return paymentUC.RecordYooKassaPayment(in.TGID, in.Tariff, in.AmountRub, in.Days, "", in.ExternalID)
+			},
+			func(in usecase.PaymentEventInput) error {
+				return paymentUC.MarkYooKassaInvoicePaid(in.ExternalID)
+			},
+		)
+		res, err := orchestrator.ProcessPaidEvent(usecase.PaymentEventInput{
+			Provider:   "yookassa",
+			ExternalID: paymentID,
+			TGID:       tgID,
+			Tariff:     tariff,
+			Days:       days,
+			AmountRub:  amountRub,
+			Currency:   "RUB",
+		})
+		if err != nil {
+			log.Printf("[webhook] YooKassa orchestration error: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		_ = paymentUC.MarkYooKassaInvoicePaid(paymentID)
+		if res == nil || res.Status == usecase.PaymentAlreadyProcessed || res.Status == usecase.PaymentValidationFailed {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
 		if tariff == "pro" {
-			group, extendedOnly, err := activatePro(tgID, days)
-			if err != nil {
-				log.Printf("[webhook] YooKassa ActivatePro error: %v", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
 			if telegramBot != nil {
 				// Поведение как у xRocket webhook: при продлении (extendedOnly) — уведомление,
 				// при новой группе — два ee-прокси (nineseconds).
@@ -104,9 +150,9 @@ func YooKassaWebhook(
 						ParseMode: models.ParseModeHTML,
 						Text:      fmt.Sprintf("✅ <b>Pro продлён</b> на %d дн.", days),
 					})
-				} else if group != nil {
+				} else if proGroup != nil {
 					tgCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-					botmessage.SendProGroupTwoEE(tgCtx, telegramBot, tgID, group, botmessage.ProGroupStylePayment)
+					botmessage.SendProGroupTwoEE(tgCtx, telegramBot, tgID, proGroup, botmessage.ProGroupStylePayment)
 					cancel()
 				}
 			}
@@ -114,11 +160,6 @@ func YooKassaWebhook(
 			return
 		}
 
-		if err := activatePremium(tgID, days); err != nil {
-			log.Printf("[webhook] YooKassa ActivatePremium error: %v", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
 		if telegramBot != nil {
 			_, _ = telegramBot.SendMessage(r.Context(), &bot.SendMessageParams{
 				ChatID:    tgID,

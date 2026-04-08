@@ -17,6 +17,7 @@ import (
 const (
 	SettingPaidMigrationV2State = "paid_migration_v2_state"
 	SettingPaidMigrationV2Done  = "paid_migration_v2_done"
+	paidOpsMigrationLockKey     = "paidops:migration:v2:step"
 )
 
 // MigrationV2State — прогресс пошаговой миграции dd→ee (resume после сбоя).
@@ -109,6 +110,13 @@ func (p *PaidOps) migrationV2Save(st *MigrationV2State) error {
 
 // MigrationV2OneStep выполняет ровно одну единицу работы (одна Pro-группа или один Premium-пользователь).
 func (p *PaidOps) MigrationV2OneStep(ctx context.Context) (*MigrationV2State, bool, error) {
+	lockOwner := p.effectiveLockOwner()
+	if p != nil && p.Locker != nil {
+		if err := p.Locker.Acquire(paidOpsMigrationLockKey, lockOwner, 30*time.Minute); err != nil {
+			return nil, false, err
+		}
+		defer p.Locker.Release(paidOpsMigrationLockKey, lockOwner)
+	}
 	st, err := p.migrationV2Load(ctx)
 	if err != nil {
 		return nil, false, err
@@ -121,8 +129,10 @@ func (p *PaidOps) MigrationV2OneStep(ctx context.Context) (*MigrationV2State, bo
 	case "pro_groups":
 		if st.ProIdx >= len(st.ProGroupIDs) {
 			st.Phase = "legacy_premium"
-			_ = p.migrationV2Save(st)
-			return p.MigrationV2OneStep(ctx)
+			if err := p.migrationV2Save(st); err != nil {
+				return st, true, err
+			}
+			return st, true, nil
 		}
 		gid := st.ProGroupIDs[st.ProIdx]
 		g, err := p.ProUC.GetGroupByID(gid)
@@ -144,8 +154,10 @@ func (p *PaidOps) MigrationV2OneStep(ctx context.Context) (*MigrationV2State, bo
 	case "legacy_premium":
 		if st.LegacyIdx >= len(st.LegacyUserIDs) {
 			st.Phase = "timeweb_premium"
-			_ = p.migrationV2Save(st)
-			return p.MigrationV2OneStep(ctx)
+			if err := p.migrationV2Save(st); err != nil {
+				return st, true, err
+			}
+			return st, true, nil
 		}
 		uid := st.LegacyUserIDs[st.LegacyIdx]
 		u, err := p.Users.GetByID(uid)

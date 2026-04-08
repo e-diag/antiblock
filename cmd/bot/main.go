@@ -80,9 +80,11 @@ func main() {
 	starPaymentRepo := repository.NewStarPaymentRepository(db.DB)
 	yooKassaPaymentRepo := repository.NewYooKassaPaymentRepository(db.DB)
 	yooKassaInvoiceRepo := repository.NewYooKassaInvoiceRepository(db.DB)
+	paymentEventRepo := repository.NewPaymentEventRepository(db.DB)
 	settingsRepo := repository.NewSettingsRepository(db.DB)
 	maintenanceWaitRepo := repository.NewMaintenanceWaitRepository(db.DB)
 	opStatsRepo := repository.NewOPStatsRepository(db.DB)
+	opsLockRepo := repository.NewOpsLockRepository(db.DB)
 
 	proxyUC := usecase.NewProxyUseCase(proxyRepo, userProxyRepo)
 	proGroupRepo := repository.NewProGroupRepository(db.DB)
@@ -146,6 +148,7 @@ func main() {
 		invoiceRepo, starPaymentRepo,
 		yooKassaPaymentRepo,
 		yooKassaInvoiceRepo,
+		paymentEventRepo,
 		cfg.YooKassa.ShopID,
 		cfg.YooKassa.SecretKey,
 	)
@@ -188,6 +191,8 @@ func main() {
 		Docker:          proDockerMgr,
 		PremiumServerIP: proServerIP,
 		Provisioner:     premiumProvisioner,
+		Locker:          usecase.NewOpsLocker(opsLockRepo),
+		LockOwner:       "bot-main",
 	}
 
 	botHandler := handler.NewBotHandler(
@@ -509,7 +514,7 @@ func main() {
 		port, _ := strconv.Atoi(cfg.YooKassa.WebhookPort)
 		if port > 0 {
 			mux := http.NewServeMux()
-			mux.HandleFunc("/webhook/yookassa", webhook.YooKassaWebhook(activatePremium, activatePro, paymentUC, b))
+			mux.HandleFunc("/webhook/yookassa", webhook.YooKassaWebhook(activatePremium, activatePro, paymentUC, b, cfg.YooKassa.WebhookToken))
 			srv := &http.Server{
 				Addr:              ":" + cfg.YooKassa.WebhookPort,
 				Handler:           mux,
