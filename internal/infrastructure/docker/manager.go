@@ -213,15 +213,12 @@ func (m *Manager) createUserEEOnPort(ctx context.Context, containerName string, 
 	return nil
 }
 
-// CreateUserPremiumEEContainers — два ee-прокси (nineseconds) для legacy Premium: proxy.Port и proxy.Port+10000.
+// CreateUserPremiumEEContainers — один ee-прокси (nineseconds) для legacy Premium на исходном порту.
 func (m *Manager) CreateUserPremiumEEContainers(ctx context.Context, userTGID int64, proxy *domain.ProxyNode) error {
-	if proxy == nil || proxy.Secret == "" || proxy.SecretEE == "" {
-		return fmt.Errorf("proxy or ee secrets empty")
+	if proxy == nil || proxy.Secret == "" {
+		return fmt.Errorf("proxy or ee secret empty")
 	}
-	if err := m.createUserEEOnPort(ctx, fmt.Sprintf(UserContainerNameEE1, userTGID), proxy.Port, proxy.Secret); err != nil {
-		return err
-	}
-	return m.createUserEEOnPort(ctx, fmt.Sprintf(UserContainerNameEE2, userTGID), proxy.Port+10000, proxy.SecretEE)
+	return m.createUserEEOnPort(ctx, fmt.Sprintf(UserContainerNameEE1, userTGID), proxy.Port, proxy.Secret)
 }
 
 // RemoveUserPremiumEEContainers удаляет ee1/ee2 и старые dd/ee контейнеры пользователя (миграция).

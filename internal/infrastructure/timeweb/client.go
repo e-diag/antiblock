@@ -35,12 +35,15 @@ var ErrFloatingIPNotFound = errors.New("timeweb: floating ip not found")
 type Client struct {
 	token      string
 	httpClient *http.Client
+	limiter    <-chan time.Time
 }
 
 func NewClient(token string) *Client {
 	return &Client{
 		token:      token,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
+		// TimeWeb API limit: не более 20 запросов в секунду.
+		limiter: time.NewTicker(50 * time.Millisecond).C,
 	}
 }
 
@@ -50,6 +53,13 @@ func (c *Client) IsConfigured() bool {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any) ([]byte, int, error) {
+	if c != nil && c.limiter != nil {
+		select {
+		case <-c.limiter:
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		}
+	}
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)

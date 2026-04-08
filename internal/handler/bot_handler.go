@@ -1122,7 +1122,9 @@ func premiumTimewebClientIP(p *domain.ProxyNode) string {
 	return strings.TrimSpace(p.IP)
 }
 
-// sendPremiumProxyToUser отправляет два ee-прокси (nineseconds): TimeWeb — 8443 и 443, legacy — proxy.Port и +10000.
+// sendPremiumProxyToUser:
+// - TimeWeb: два ee-прокси (8443 и 443),
+// - legacy Premium: один ee-прокси на исходном порту proxy.Port.
 func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, chatID int64, user *domain.User, proxy *domain.ProxyNode) {
 	if proxy == nil || user == nil {
 		return
@@ -1134,7 +1136,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 
 	isTimeweb := usecase.IsTimewebFloatingIDSet(proxy.TimewebFloatingIPID)
 	port1 := proxy.Port
-	port2 := proxy.Port + 10000
+	port2 := 0
 	if isTimeweb {
 		port1 = domain.PremiumPortEE1
 		port2 = domain.PremiumPortEE2
@@ -1171,8 +1173,12 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 			ChatID: chatID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,
 		})
 	}
-	sendEE("Ваш Premium proxy (1/2)", port1, proxy.Secret, proxy.SecretEE != "")
-	if proxy.SecretEE != "" {
+	title1 := "Ваш Premium proxy"
+	if isTimeweb {
+		title1 = "Ваш Premium proxy (1/2)"
+	}
+	sendEE(title1, port1, proxy.Secret, isTimeweb && proxy.SecretEE != "")
+	if isTimeweb && proxy.SecretEE != "" {
 		sendEE("Ваш Premium proxy (2/2)", port2, proxy.SecretEE, false)
 	}
 
