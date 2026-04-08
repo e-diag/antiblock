@@ -16,115 +16,115 @@
   "buttons": [
     {
       "key": "main_get_proxy",
-      "text": "🔗 Получить прокси",
+      "text": " Получить прокси",
       "callback_data": "get_proxy",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5778168620278354602"
     },
     {
       "key": "main_get_proxy_extra",
-      "text": "➕ Получить дополнительный free прокси",
+      "text": " Получить дополнительный free прокси",
       "callback_data": "get_proxy",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5902453596456227896"
     },
     {
       "key": "main_buy_pro",
-      "text": "⚡ Купить Pro на %d дн.",
+      "text": " Купить Pro на %d дн.",
       "callback_data": "buy_pro",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5323761960829862762"
     },
     {
       "key": "main_buy_premium",
-      "text": "💎 Купить Premium на %d дн.",
+      "text": " Купить Premium на %d дн.",
       "callback_data": "buy_premium",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5343636681473935403"
     },
     {
       "key": "main_get_pro_proxy",
-      "text": "⚡ Получить Pro proxy",
+      "text": " Получить Pro proxy",
       "callback_data": "get_pro_proxy",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5935795874251674052"
     },
     {
       "key": "main_get_premium_proxy",
-      "text": "🔐 Получить Premium proxy",
+      "text": " Получить Premium proxy",
       "callback_data": "get_premium_proxy",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5807499888245612254"
     },
     {
       "key": "main_extend_pro",
-      "text": "⚡ Продлить Pro",
+      "text": " Продлить Pro",
       "callback_data": "buy_pro",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5323761960829862762"
     },
     {
       "key": "main_extend_premium",
-      "text": "💎 Продлить Premium",
+      "text": " Продлить Premium",
       "callback_data": "buy_premium",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5343636681473935403"
     },
     {
       "key": "main_my_proxies",
-      "text": "📋 Мои прокси",
+      "text": " Мои прокси",
       "callback_data": "my_proxies",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5956561916573782596"
     },
     {
       "key": "main_instructions",
-      "text": "📖 Инструкция",
+      "text": " Инструкция",
       "callback_data": "show_instructions",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "6028435952299413210"
     },
     {
       "key": "main_support",
-      "text": "🛟 Поддержка",
+      "text": " Поддержка",
       "callback_data": "support_menu",
       "screen": "Главное меню",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5873121512445187130"
     },
     {
       "key": "support_proxy_issue",
-      "text": "🔌 Не работает прокси",
+      "text": " Не работает прокси",
       "callback_data": "support_proxy_issue",
       "screen": "Поддержка",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5260730055880876557"
     },
     {
       "key": "support_payment",
-      "text": "💳 Проблема с оплатой",
+      "text": " Проблема с оплатой",
       "callback_data": "support_payment",
       "screen": "Поддержка",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5927169041595634481"
     },
     {
       "key": "support_partnership",
-      "text": "🤝 Вопрос сотрудничества",
+      "text": " Вопрос сотрудничества",
       "url": "(задаётся менеджером: support_partnership_link)",
       "screen": "Поддержка",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5175176802720547704"
     },
     {
       "key": "support_other",
-      "text": "✉️ Другой вопрос",
+      "text": " Другой вопрос",
       "url": "(задаётся менеджером: support_other_question_link)",
       "screen": "Поддержка",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5994297722574737553"
     },
     {
       "key": "support_back_main",
-      "text": "◀️ В главное меню",
+      "text": " В главное меню",
       "callback_data": "back_to_main",
       "screen": "Поддержка",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5877629862306385808"
     },
     {
       "key": "payment_back",
@@ -289,10 +289,10 @@
     },
     {
       "key": "forced_sub_check",
-      "text": "✅ Проверить подписку",
+      "text": " Проверить подписку",
       "callback_data": "check_sub_forced",
       "screen": "Обязательная подписка",
-      "paid_emoji_id": ""
+      "paid_emoji_id": "5123248930124989216"
     },
     {
       "key": "proxies_filter_free",
