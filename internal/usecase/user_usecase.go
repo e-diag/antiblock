@@ -233,21 +233,7 @@ func (uc *userUseCase) ActivatePremium(tgID int64, durationDays int) error {
 }
 
 func (uc *userUseCase) isLegacyPremiumRecord(p *domain.ProxyNode) bool {
-	if p == nil || p.Type != domain.ProxyTypePremium {
-		return false
-	}
-	fip := strings.TrimSpace(p.TimewebFloatingIPID)
-	if IsTimewebFloatingIDSet(fip) {
-		return false
-	}
-	// TimeWeb premium всегда на портах 8443/443; всё остальное считаем legacy.
-	if p.Port != domain.PremiumPortEE1 && p.Port != domain.PremiumPortEE2 {
-		return true
-	}
-	if p.PremiumServerID != nil && *p.PremiumServerID != 0 {
-		return false
-	}
-	return true
+	return domain.IsLegacyPremiumProxy(p)
 }
 
 func (uc *userUseCase) isLegacyPremiumActive(p *domain.ProxyNode) bool {
@@ -875,10 +861,15 @@ func (uc *userUseCase) ensurePremiumContainer(tgID int64, user *domain.User) err
 
 	ee1, _ := uc.dockerMgr.IsContainerRunning(ctx, fmt.Sprintf(docker.UserContainerNameEE1, tgID))
 	ee2, _ := uc.dockerMgr.IsContainerRunning(ctx, fmt.Sprintf(docker.UserContainerNameEE2, tgID))
-	if ee1 && ee2 && proxy.SecretEE != "" {
+	// Legacy Premium: один контейнер ee1; ee2 — только хвост старой схемы, удаляем.
+	if ee1 && strings.TrimSpace(proxy.Secret) != "" {
+		if ee2 {
+			_ = uc.dockerMgr.RemoveUserContainer(ctx, fmt.Sprintf(docker.UserContainerNameEE2, tgID))
+		}
 		return nil
 	}
 
+	uc.dockerMgr.RemoveUserPremiumEEContainers(ctx, tgID)
 	if err := uc.dockerMgr.CreateUserPremiumEEContainers(ctx, tgID, proxy); err != nil {
 		log.Printf("[Premium] ensurePremiumContainer tg_id=%d CreateUserPremiumEEContainers port=%d: %v", tgID, proxy.Port, err)
 		return err

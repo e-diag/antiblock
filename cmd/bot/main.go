@@ -86,7 +86,6 @@ func main() {
 	opStatsRepo := repository.NewOPStatsRepository(db.DB)
 	opsLockRepo := repository.NewOpsLockRepository(db.DB)
 
-	proxyUC := usecase.NewProxyUseCase(proxyRepo, userProxyRepo)
 	proGroupRepo := repository.NewProGroupRepository(db.DB)
 	proSubRepo := repository.NewProSubscriptionRepository(db.DB)
 	proUC := usecase.NewProUseCase(proGroupRepo, proSubRepo, proxyRepo, userRepo)
@@ -118,6 +117,8 @@ func main() {
 		}
 	}
 	proServerIP := pd.ServerIP
+
+	proxyUC := usecase.NewProxyUseCase(proxyRepo, userProxyRepo, proDockerMgr, userRepo)
 
 	var twClient *timeweb.Client
 	var premiumProvisioner *usecase.PremiumProvisioner

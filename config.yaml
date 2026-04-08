@@ -67,6 +67,7 @@ workers:
     enabled: true
     interval_seconds: 900   # 15 мин — проверка всех активных премиум-прокси
     unreachable_recheck_seconds: 300  # 5 мин — перепроверка недоступных до восстановления
+    unreachable_alert_cooldown_seconds: 14400  # 4 ч — повторный алерт «недоступен» для того же прокси
 
 proxy:
   default_secret_length: 32

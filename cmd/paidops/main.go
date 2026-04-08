@@ -64,7 +64,7 @@ func main() {
 	proxyRepo := repository.NewProxyRepository(db.DB)
 	proGroupRepo := repository.NewProGroupRepository(db.DB)
 	proSubRepo := repository.NewProSubscriptionRepository(db.DB)
-	proxyUC := usecase.NewProxyUseCase(proxyRepo, repository.NewUserProxyRepository(db.DB))
+	proxyUC := usecase.NewProxyUseCase(proxyRepo, repository.NewUserProxyRepository(db.DB), nil, nil)
 	proUC := usecase.NewProUseCase(proGroupRepo, proSubRepo, proxyRepo, userRepo)
 
 	pd := cfg.ProDocker

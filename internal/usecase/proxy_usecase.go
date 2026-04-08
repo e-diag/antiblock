@@ -53,6 +53,8 @@ type ProxyStats struct {
 type proxyUseCase struct {
 	proxyRepo     repository.ProxyRepository
 	userProxyRepo repository.UserProxyRepository
+	legacyDocker  *docker.Manager // Pro Docker; для реконсиляции legacy после ручного удаления контейнеров
+	userRepo      repository.UserRepository
 }
 
 // ErrNoMoreFreeProxiesForUser возвращается, когда пользователь уже получил все доступные бесплатные прокси.
@@ -88,8 +90,14 @@ func validateSecret(secret string) error {
 }
 
 // NewProxyUseCase создает новый use case для прокси. userProxyRepo опционален: если задан, при выдаче free-прокси исключаются уже выданные этому пользователю.
-func NewProxyUseCase(proxyRepo repository.ProxyRepository, userProxyRepo repository.UserProxyRepository) ProxyUseCase {
-	return &proxyUseCase{proxyRepo: proxyRepo, userProxyRepo: userProxyRepo}
+// legacyDocker и userRepo опциональны: если оба заданы, при падении TCP legacy-премиума проверяется Docker; при отсутствии контейнеров mtg-user-{tg}-* запись в БД переводится в inactive (без спама алертами).
+func NewProxyUseCase(proxyRepo repository.ProxyRepository, userProxyRepo repository.UserProxyRepository, legacyDocker *docker.Manager, userRepo repository.UserRepository) ProxyUseCase {
+	return &proxyUseCase{
+		proxyRepo:     proxyRepo,
+		userProxyRepo: userProxyRepo,
+		legacyDocker:  legacyDocker,
+		userRepo:      userRepo,
+	}
 }
 
 func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*domain.ProxyNode, error) {
@@ -332,6 +340,12 @@ func (uc *proxyUseCase) CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bo
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxy.IP, proxy.Port), timeout)
 	if err != nil {
+		reconcileCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		reconciled := uc.tryReconcileRemovedLegacyPremium(reconcileCtx, proxy)
+		cancel()
+		if reconciled {
+			return false, nil
+		}
 		now := time.Now()
 		// Устанавливаем UnreachableSince только при первом переходе в недоступное состояние, чтобы сохранить время первой потери связи.
 		if proxy.UnreachableSince == nil {
@@ -355,6 +369,50 @@ func (uc *proxyUseCase) CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bo
 		return true, err
 	}
 	return true, nil
+}
+
+// tryReconcileRemovedLegacyPremium: TCP не отвечает, legacy Premium, на Pro Docker нет ни одного mtg-user-{tg_id}-*
+// — считаем, что контейнеры сняты вручную; переводим proxy_nodes в inactive и чистим user_proxies, чтобы не спамили алерты.
+func (uc *proxyUseCase) tryReconcileRemovedLegacyPremium(ctx context.Context, proxy *domain.ProxyNode) bool {
+	if uc.legacyDocker == nil || uc.legacyDocker.GetClient() == nil || uc.userRepo == nil {
+		return false
+	}
+	if proxy == nil || proxy.OwnerID == nil || !domain.IsLegacyPremiumProxy(proxy) {
+		return false
+	}
+	user, err := uc.userRepo.GetByID(*proxy.OwnerID)
+	if err != nil || user == nil {
+		return false
+	}
+	hasAny, err := uc.legacyDocker.HasAnyMtgUserContainer(ctx, user.TGID)
+	if err != nil {
+		log.Printf("[Premium] legacy reconcile: docker list tg_id=%d: %v", user.TGID, err)
+		return false
+	}
+	if hasAny {
+		return false
+	}
+
+	if uc.userProxyRepo != nil {
+		ddPort, eePort := proxy.Port, proxy.Port+10000
+		_ = uc.userProxyRepo.DeleteByIPPortSecret(proxy.IP, ddPort, proxy.Secret)
+		if proxy.SecretEE != "" {
+			_ = uc.userProxyRepo.DeleteByIPPortSecret(proxy.IP, eePort, proxy.SecretEE)
+		}
+	}
+
+	now := time.Now()
+	proxy.Status = domain.ProxyStatusInactive
+	proxy.UnreachableSince = nil
+	proxy.LastRTTMs = nil
+	proxy.LastCheck = &now
+	if err := uc.proxyRepo.Update(proxy); err != nil {
+		log.Printf("[Premium] legacy reconcile: Update proxy_id=%d: %v", proxy.ID, err)
+		return false
+	}
+	log.Printf("[Premium] legacy reconcile: нет контейнеров mtg-user-%d-*, proxy_id=%d → inactive (запись приведена в соответствие с Docker)",
+		user.TGID, proxy.ID)
+	return true
 }
 
 // EnsurePremiumProxyForUser гарантирует персональный премиум-прокси: два ee-секрета (nineseconds),

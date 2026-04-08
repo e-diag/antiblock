@@ -338,6 +338,17 @@ func (s *SSHClient) GenerateEESecret(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("ee secret not found in output")
 }
 
+// removeAllPremiumMtgContainers удаляет на VPS все контейнеры mtg-user-{tgID} и mtg-user-{tgID}-*
+// (p3terx -dd, старые -ee, ee1/ee2) — надёжнее фиксированного списка имён.
+func (s *SSHClient) removeAllPremiumMtgContainers(ctx context.Context, tgID int64) {
+	log.Printf("[SSH] removeAllPremiumMtgContainers tg_id=%d host=%s", tgID, s.host)
+	cmd := fmt.Sprintf(
+		`sh -c 'for c in $(docker ps -aq); do n=$(docker inspect --format "{{.Name}}" "$c" 2>/dev/null || true); n=${n#/}; case "$n" in mtg-user-%[1]d|mtg-user-%[1]d-*) docker rm -f "$c";; esac; done'`,
+		tgID,
+	)
+	_, _ = s.RunCommand(ctx, cmd)
+}
+
 // StartPremiumContainers запускает два ee-контейнера (8443 и 443), nineseconds/mtg:2.
 func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floatingIP, secretEE1, secretEE2 string) error {
 	if floatingIP == "" || secretEE1 == "" || secretEE2 == "" {
@@ -353,15 +364,10 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 	log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s…",
 		tgID, s.host, floatingIP, secretEE1, secretEE2)
 
+	s.removeAllPremiumMtgContainers(ctx, tgID)
+
 	name1 := fmt.Sprintf("mtg-user-%d-ee1", tgID)
 	name2 := fmt.Sprintf("mtg-user-%d-ee2", tgID)
-	legacyEE := fmt.Sprintf("mtg-user-%d-ee", tgID)
-	legacyDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
-	legacyBare := fmt.Sprintf("mtg-user-%d", tgID)
-
-	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true",
-		shellQuote(name1), shellQuote(name2), shellQuote(legacyEE), shellQuote(legacyDD), shellQuote(legacyBare)))
-
 	cmd1 := fmt.Sprintf(
 		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s simple-run 0.0.0.0:8443 %s",
 		shellQuote(name1), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE1),
@@ -383,14 +389,8 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 
 // StopPremiumContainers останавливает контейнеры юзера.
 func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
-	name1 := fmt.Sprintf("mtg-user-%d-ee1", tgID)
-	name2 := fmt.Sprintf("mtg-user-%d-ee2", tgID)
-	legacyEE := fmt.Sprintf("mtg-user-%d-ee", tgID)
-	legacyDD := fmt.Sprintf("mtg-user-%d-dd", tgID)
-	legacyBare := fmt.Sprintf("mtg-user-%d", tgID)
 	log.Printf("[SSH] StopPremiumContainers tg_id=%d host=%s", tgID, s.host)
-	_, _ = s.RunCommand(ctx, fmt.Sprintf("docker rm -f %s %s %s %s %s 2>/dev/null || true",
-		shellQuote(name1), shellQuote(name2), shellQuote(legacyEE), shellQuote(legacyDD), shellQuote(legacyBare)))
+	s.removeAllPremiumMtgContainers(ctx, tgID)
 }
 
 func shellQuote(v string) string {

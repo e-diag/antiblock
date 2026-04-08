@@ -339,6 +339,28 @@ func (m *Manager) RemoveUserContainer(ctx context.Context, name string) error {
 	return nil
 }
 
+// HasAnyMtgUserContainer возвращает true, если на хосте есть контейнер с именем mtg-user-{tgID} или mtg-user-{tgID}-*
+// (в любом состоянии). Если контейнеров нет — пользователь мог вручную удалить инстансы.
+func (m *Manager) HasAnyMtgUserContainer(ctx context.Context, tgID int64) (bool, error) {
+	if m == nil || m.cli == nil {
+		return false, nil
+	}
+	prefix := fmt.Sprintf("mtg-user-%d", tgID)
+	list, err := m.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return false, err
+	}
+	for _, c := range list {
+		for _, name := range c.Names {
+			n := strings.TrimPrefix(name, "/")
+			if n == prefix || strings.HasPrefix(n, prefix+"-") {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // IsContainerRunning проверяет, запущен ли контейнер.
 func (m *Manager) IsContainerRunning(ctx context.Context, name string) (bool, error) {
 	if name == "" {

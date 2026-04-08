@@ -164,6 +164,8 @@ type PremiumHealthCheckConfig struct {
 	Enabled                   bool `yaml:"enabled"`
 	IntervalSeconds           int  `yaml:"interval_seconds"`            // полная проверка активных премиум (например 900 = 15 мин)
 	UnreachableRecheckSeconds int  `yaml:"unreachable_recheck_seconds"` // перепроверка недоступных (например 300 = 5 мин)
+	// UnreachableAlertCooldownSeconds — не чаще одного алерта «прокси недоступен» на один proxy_id, пока не восстановится (0 = 4 ч).
+	UnreachableAlertCooldownSeconds int `yaml:"unreachable_alert_cooldown_seconds"`
 }
 
 type WorkerConfig struct {
