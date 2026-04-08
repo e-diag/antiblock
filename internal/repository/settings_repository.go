@@ -26,12 +26,12 @@ func NewSettingsRepository(db *gorm.DB) SettingsRepository {
 
 func (r *settingsRepository) Get(key string) (string, error) {
 	var s domain.AppSetting
-	err := r.db.Where("key = ?", key).First(&s).Error
-	if err == gorm.ErrRecordNotFound {
-		return "", nil
+	tx := r.db.Where("key = ?", key).Limit(1).Find(&s)
+	if tx.Error != nil {
+		return "", tx.Error
 	}
-	if err != nil {
-		return "", err
+	if tx.RowsAffected == 0 || s.Key == "" {
+		return "", nil
 	}
 	return s.Value, nil
 }

@@ -236,6 +236,36 @@ func (m *Manager) RemoveUserPremiumEEContainers(ctx context.Context, userTGID in
 	} {
 		_ = m.RemoveUserContainer(ctx, name)
 	}
+	m.removeP3terxContainersForUser(ctx, userTGID)
+}
+
+// removeP3terxContainersForUser удаляет любые контейнеры с образом p3terx/mtg, чьё имя связано с tg_id
+// (старые схемы имён, не только mtg-user-{id}-dd).
+func (m *Manager) removeP3terxContainersForUser(ctx context.Context, userTGID int64) {
+	if m == nil || m.cli == nil {
+		return
+	}
+	prefix := fmt.Sprintf("mtg-user-%d", userTGID)
+	list, err := m.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		log.Printf("[Docker] ContainerList (p3terx cleanup tg=%d): %v", userTGID, err)
+		return
+	}
+	for _, c := range list {
+		img := strings.ToLower(c.Image)
+		if !strings.Contains(img, "p3terx") {
+			continue
+		}
+		for _, name := range c.Names {
+			n := strings.TrimPrefix(name, "/")
+			if strings.HasPrefix(n, prefix) {
+				if err := m.RemoveUserContainer(ctx, n); err != nil {
+					log.Printf("[Docker] remove p3terx container %s: %v", n, err)
+				}
+				break
+			}
+		}
+	}
 }
 
 // RemoveUserContainerEE удаляет старый ee-контейнер mtg-user-{id}-ee.

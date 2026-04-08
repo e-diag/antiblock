@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -37,6 +39,9 @@ import (
 const broadcastDelayMs = 50 // ~20 сообщений в секунду (лимит Telegram ~30/сек)
 
 const proxiesPerPage = 10
+
+// Макс. длина HTML-текстов поддержки (руны); дальше Telegram всё равно режется по частям при показе.
+const maxSupportHTMLRunes = 120000
 
 // VPSSetupStep — состояние пошагового диалога создания Premium VPS.
 type VPSSetupStep int
@@ -666,7 +671,37 @@ func (h *BotHandler) send(ctx context.Context, b *bot.Bot, update *models.Update
 
 // sendOrEdit редактирует последнее сообщение бота пользователю, если есть сохранённый messageID.
 // При неудаче отправляет новое. НЕ использовать для сообщений с прокси и объявлений.
+// Длинный HTML (> лимита Telegram) режется на несколько сообщений; клавиатура — только на последнем.
 func (h *BotHandler) sendOrEdit(ctx context.Context, b *bot.Bot, userID int64, text string, replyMarkup models.ReplyMarkup) {
+	const chunkRunes = 3800 // запас под «часть N/M» и разметку
+	parts := telegramx.SplitMessageRunes(text, chunkRunes)
+	if len(parts) == 0 {
+		return
+	}
+	if len(parts) == 1 {
+		h.sendOrEditOne(ctx, b, userID, parts[0], replyMarkup)
+		return
+	}
+	for i, p := range parts {
+		chunk := p + fmt.Sprintf("\n\n<i>часть %d из %d</i>", i+1, len(parts))
+		var kb models.ReplyMarkup
+		if i == len(parts)-1 {
+			kb = replyMarkup
+		}
+		if i == 0 {
+			h.sendOrEditOne(ctx, b, userID, chunk, kb)
+			continue
+		}
+		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      userID,
+			Text:        chunk,
+			ParseMode:   models.ParseModeHTML,
+			ReplyMarkup: kb,
+		})
+	}
+}
+
+func (h *BotHandler) sendOrEditOne(ctx context.Context, b *bot.Bot, userID int64, text string, replyMarkup models.ReplyMarkup) {
 	if msgID, ok := h.msgState.Get(userID); ok {
 		_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:      userID,
@@ -2114,10 +2149,11 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 			if t == "" {
 				return "(пусто)"
 			}
-			if len(t) > max {
-				return t[:max] + "…"
+			rs := []rune(t)
+			if len(rs) > max {
+				t = string(rs[:max]) + "…"
 			}
-			return t
+			return html.EscapeString(t)
 		}
 		msg := fmt.Sprintf(
 			"🛟 <b>Поддержка (тексты и ссылки)</b>\n\n"+
@@ -2926,6 +2962,12 @@ func (h *BotHandler) DefaultHandler(ctx context.Context, b *bot.Bot, update *mod
 		if text == "" {
 			h.sendText(ctx, b, update, "❌ Значение не может быть пустым. Отправьте текст или /cancel.")
 			return
+		}
+		if key == domain.SettingSupportProxyNotWorkingText || key == domain.SettingSupportPaymentIssueText {
+			if utf8.RuneCountInString(text) > maxSupportHTMLRunes {
+				h.sendText(ctx, b, update, fmt.Sprintf("❌ Текст слишком длинный (макс. %d символов). Сократите или разбейте на части.", maxSupportHTMLRunes))
+				return
+			}
 		}
 		if (key == domain.SettingSupportPartnershipLink || key == domain.SettingSupportOtherQuestionLink) &&
 			!strings.HasPrefix(strings.ToLower(text), "http://") && !strings.HasPrefix(strings.ToLower(text), "https://") {

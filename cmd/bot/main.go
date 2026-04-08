@@ -222,7 +222,12 @@ func main() {
 		log.Fatalf("Failed to create bot: %v", err)
 	}
 	botHandler.SetBot(b)
-	techAlerts := alert.NewTelegramAlerter(b, cfg.Telegram.GetErrorLogChatID())
+	// Критические алерты (health, премиум и т.д.): в приоритете чат менеджеров, иначе TELEGRAM_ERROR_LOG_CHAT_ID.
+	alertChatID := cfg.Telegram.GetManagerProgressChatID()
+	if alertChatID == 0 {
+		alertChatID = cfg.Telegram.GetErrorLogChatID()
+	}
+	techAlerts := alert.NewTelegramAlerter(b, alertChatID)
 	botHandler.SetTechAlerts(techAlerts)
 
 	proUC.SetOnProRotated(func(tgID int64, g *domain.ProGroup) {
