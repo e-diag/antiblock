@@ -147,8 +147,9 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*do
 				needVariant = "ee"
 			}
 
+			allAvailable := proxies
 			var filtered []*domain.ProxyNode
-			for _, p := range proxies {
+			for _, p := range allAvailable {
 				// Не выдаём повторно прокси (по ip:port).
 				if _, ok := issuedSet[fmt.Sprintf("%s:%d", p.IP, p.Port)]; ok {
 					continue
@@ -170,8 +171,34 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*do
 			}
 			proxies = filtered
 			if len(proxies) == 0 {
-				// Если нужного типа ключей больше нет — считаем, что для пользователя бесплатные прокси закончились.
-				return nil, ErrNoMoreFreeProxiesForUser
+				// Fallback: если "Мои прокси" у пользователя пустые (history lost),
+				// разрешаем повторную выдачу подходящего free-прокси вместо тупика.
+				hasSavedFree := false
+				for _, up := range issued {
+					if up.ProxyType == domain.ProxyTypeFree {
+						hasSavedFree = true
+						break
+					}
+				}
+				if !hasSavedFree {
+					for _, p := range allAvailable {
+						switch needVariant {
+						case "dd":
+							if !strings.HasPrefix(p.Secret, "dd") {
+								continue
+							}
+						case "ee":
+							if !strings.HasPrefix(p.Secret, "ee") {
+								continue
+							}
+						}
+						proxies = append(proxies, p)
+					}
+				}
+				if len(proxies) == 0 {
+					// Если нужного типа ключей больше нет — считаем, что для пользователя бесплатные прокси закончились.
+					return nil, ErrNoMoreFreeProxiesForUser
+				}
 			}
 		}
 	}
