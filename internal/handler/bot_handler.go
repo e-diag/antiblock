@@ -1177,6 +1177,11 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 	}
 
 	if h.userProxyRepo != nil {
+		// Premium: всегда синхронизируем "Мои прокси" с актуальными ключами из proxy_nodes.
+		// Иначе при ротации секрета в user_proxies остаются старые записи (другой secret, тот же ip:port),
+		// и пользователь может открыть нерабочий старый ключ.
+		_ = h.userProxyRepo.DeleteByUserIDAndProxyType(user.ID, domain.ProxyTypePremium)
+
 		if port1 > 0 && proxy.Secret != "" {
 			if existing, _ := h.userProxyRepo.GetByUserIDAndProxy(user.ID, clientIP, port1, proxy.Secret); existing == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
