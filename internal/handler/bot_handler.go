@@ -1067,15 +1067,9 @@ func (h *BotHandler) sendProxyToUser(ctx context.Context, b *bot.Bot, chatID int
 		return
 	}
 	proxyURL := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", proxy.IP, proxy.Port, proxy.Secret)
-	var keyKind string
-	if strings.HasPrefix(proxy.Secret, "dd") {
-		keyKind = "dd"
-	} else if strings.HasPrefix(proxy.Secret, "ee") {
-		keyKind = "ee"
-	}
 	prefixLine := ""
-	if proxy.Type == domain.ProxyTypeFree && keyKind != "" {
-		prefixLine = fmt.Sprintf("🆓 <b>Free proxy:</b> %s\n\n", keyKind)
+	if proxy.Type == domain.ProxyTypeFree {
+		prefixLine = "🆓 <b>Free proxy</b>\n\n"
 	}
 	msg := fmt.Sprintf("✅ Ваш прокси-сервер:\n\n%s"+
 		"🌐 IP: <code>%s</code>\n"+

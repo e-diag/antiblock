@@ -126,25 +126,28 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*do
 		return nil, err
 	}
 
-	// Для free-прокси исключаем те, что пользователь уже получал (не выдаём один и тот же бесплатный прокси повторно).
+	// Для free-прокси:
+	// - выдаём только ee-секреты (dd больше не используем);
+	// - исключаем уже выданные пользователю ip:port;
+	// - если история user_proxies потеряна, разрешаем повторную выдачу ee, чтобы не загонять в тупик.
 	if proxyType == domain.ProxyTypeFree && uc.userProxyRepo != nil {
+		var eeAvailable []*domain.ProxyNode
+		for _, p := range proxies {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.Secret)), "ee") {
+				eeAvailable = append(eeAvailable, p)
+			}
+		}
+		proxies = eeAvailable
+
 		issued, errIssued := uc.userProxyRepo.ListByUserID(user.ID)
 		if errIssued == nil {
 			issuedSet := make(map[string]struct{})
-			issuedFreeCount := 0
+			hasSavedFree := false
 			for _, up := range issued {
 				if up.ProxyType == domain.ProxyTypeFree {
-					issuedFreeCount++
+					hasSavedFree = true
 					issuedSet[fmt.Sprintf("%s:%d", up.IP, up.Port)] = struct{}{}
 				}
-			}
-
-			// Чередование выдачи free dd/ee:
-			// - 1-й free (issuedFreeCount=0) => dd
-			// - 2-й free (issuedFreeCount=1) => ee
-			needVariant := "dd"
-			if issuedFreeCount%2 == 1 {
-				needVariant = "ee"
 			}
 
 			allAvailable := proxies
@@ -154,49 +157,16 @@ func (uc *proxyUseCase) GetProxyForUser(user *domain.User, preferFree bool) (*do
 				if _, ok := issuedSet[fmt.Sprintf("%s:%d", p.IP, p.Port)]; ok {
 					continue
 				}
-
-				// Выбираем прокси нужного типа ключа (по префиксу секрета).
-				switch needVariant {
-				case "dd":
-					if !strings.HasPrefix(p.Secret, "dd") {
-						continue
-					}
-				case "ee":
-					if !strings.HasPrefix(p.Secret, "ee") {
-						continue
-					}
-				}
-
 				filtered = append(filtered, p)
 			}
 			proxies = filtered
 			if len(proxies) == 0 {
-				// Fallback: если "Мои прокси" у пользователя пустые (history lost),
-				// разрешаем повторную выдачу подходящего free-прокси вместо тупика.
-				hasSavedFree := false
-				for _, up := range issued {
-					if up.ProxyType == domain.ProxyTypeFree {
-						hasSavedFree = true
-						break
-					}
-				}
+				// Если список "Мои прокси" пуст (история утеряна) — разрешаем повторно выдать ee.
 				if !hasSavedFree {
-					for _, p := range allAvailable {
-						switch needVariant {
-						case "dd":
-							if !strings.HasPrefix(p.Secret, "dd") {
-								continue
-							}
-						case "ee":
-							if !strings.HasPrefix(p.Secret, "ee") {
-								continue
-							}
-						}
-						proxies = append(proxies, p)
-					}
+					proxies = allAvailable
 				}
 				if len(proxies) == 0 {
-					// Если нужного типа ключей больше нет — считаем, что для пользователя бесплатные прокси закончились.
+					// Реально закончились доступные free ee-прокси.
 					return nil, ErrNoMoreFreeProxiesForUser
 				}
 			}
