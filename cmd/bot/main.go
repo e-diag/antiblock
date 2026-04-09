@@ -136,6 +136,7 @@ func main() {
 			cfg.Timeweb.SSHKeyPath,
 			cfg.Timeweb.SSHKeyID,
 			cfg.Timeweb.AvailabilityZone,
+			time.Duration(cfg.Timeweb.PremiumSSHMinIntervalSeconds)*time.Second,
 		)
 		log.Println("TimeWeb Premium provisioner initialized")
 	} else {

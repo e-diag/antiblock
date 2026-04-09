@@ -89,3 +89,5 @@ timeweb:
   ssh_key_path: "/antiblock/premium-keys/premium_bot_key"
   # 0 = авто: Ubuntu 24.04 из GET /api/v1/os/servers; иначе явный os_id (TIMEWEB_PREMIUM_OS_ID)
   premium_server_os_id: 0
+  # Пауза между SSH-сессиями к одному и тому же VPS (сек). 0 = выключить. Env: TIMEWEB_PREMIUM_SSH_MIN_INTERVAL_SEC
+  premium_ssh_min_interval_seconds: 40

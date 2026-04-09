@@ -143,6 +143,75 @@ func (s *SSHClient) RunCommand(ctx context.Context, cmd string) (string, error) 
 	return string(out), err
 }
 
+// isTransientSSHDialErr — обрыв TCP/handshake при частых параллельных SSH с бота; имеет смысл повторить команду.
+// isLikelyDockerPortBindConflict — удалённый docker run часто выходит с 125 при занятом порте или имени контейнера.
+func isLikelyDockerPortBindConflict(err error, remoteOut string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error() + "\n" + remoteOut)
+	if !strings.Contains(msg, "125") && !strings.Contains(msg, "exit status 125") {
+		return false
+	}
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "port is already allocated") ||
+		strings.Contains(msg, "already in use") ||
+		strings.Contains(msg, "name is already in use") ||
+		strings.Contains(msg, "bind") && strings.Contains(msg, "failed")
+}
+
+func isTransientSSHDialErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "ssh dial") ||
+		strings.Contains(s, "handshake failed") ||
+		strings.Contains(s, "connection reset by peer") ||
+		strings.Contains(s, "i/o timeout") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "eof")
+}
+
+// runCommandWithSSHRetries повторяет RunCommand при транзиентных сбоях соединения (разные TCP-сессии на каждую попытку).
+func (s *SSHClient) runCommandWithSSHRetries(ctx context.Context, cmd string, maxAttempts int) (string, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var lastOut string
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return lastOut, ctx.Err()
+		default:
+		}
+		lastOut, lastErr = s.RunCommand(ctx, cmd)
+		if lastErr == nil {
+			return lastOut, nil
+		}
+		if !isTransientSSHDialErr(lastErr) || attempt == maxAttempts {
+			return lastOut, lastErr
+		}
+		log.Printf("[SSH] transient dial/handshake, retry %d/%d host=%s: %v", attempt, maxAttempts, s.host, lastErr)
+		backoff := time.Duration(attempt) * 5 * time.Second
+		select {
+		case <-ctx.Done():
+			return lastOut, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return lastOut, lastErr
+}
+
+// premiumMtgUserCleanupShell — удаление контейнеров mtg-user-{tgID} и mtg-user-{tgID}-* на хосте.
+func premiumMtgUserCleanupShell(tgID int64) string {
+	return fmt.Sprintf(
+		`for c in $(docker ps -aq); do n=$(docker inspect --format "{{.Name}}" "$c" 2>/dev/null || true); n=${n#/}; case "$n" in mtg-user-%[1]d|mtg-user-%[1]d-*) docker rm -f "$c" 2>/dev/null || true;; esac; done`,
+		tgID,
+	)
+}
+
 // WaitSSHReady ждёт пока SSH станет доступен (сервер загружается).
 func (s *SSHClient) WaitSSHReady(ctx context.Context) error {
 	deadline := time.NewTimer(5 * time.Minute)
@@ -340,16 +409,16 @@ func (s *SSHClient) GenerateEESecret(ctx context.Context) (string, error) {
 
 // removeAllPremiumMtgContainers удаляет на VPS все контейнеры mtg-user-{tgID} и mtg-user-{tgID}-*
 // (p3terx -dd, старые -ee, ee1/ee2) — надёжнее фиксированного списка имён.
-func (s *SSHClient) removeAllPremiumMtgContainers(ctx context.Context, tgID int64) {
+func (s *SSHClient) removeAllPremiumMtgContainers(ctx context.Context, tgID int64) error {
 	log.Printf("[SSH] removeAllPremiumMtgContainers tg_id=%d host=%s", tgID, s.host)
-	cmd := fmt.Sprintf(
-		`sh -c 'for c in $(docker ps -aq); do n=$(docker inspect --format "{{.Name}}" "$c" 2>/dev/null || true); n=${n#/}; case "$n" in mtg-user-%[1]d|mtg-user-%[1]d-*) docker rm -f "$c";; esac; done'`,
-		tgID,
-	)
-	_, _ = s.RunCommand(ctx, cmd)
+	script := premiumMtgUserCleanupShell(tgID)
+	_, err := s.runCommandWithSSHRetries(ctx, "bash -lc "+shellQuote(script), 3)
+	return err
 }
 
 // StartPremiumContainers запускает два ee-контейнера (8443 и 443), nineseconds/mtg:2.
+// Очистка старых контейнеров и оба docker run выполняются в одной SSH-сессии: иначе при обрыве SSH
+// после «тихо» провалившегося rm контейнеры остаются, порты заняты — docker run даёт exit 125.
 func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floatingIP, secretEE1, secretEE2 string) error {
 	if floatingIP == "" || secretEE1 == "" || secretEE2 == "" {
 		return fmt.Errorf("StartPremiumContainers: empty params")
@@ -361,36 +430,50 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 		return fmt.Errorf("StartPremiumContainers: invalid secret format")
 	}
 
-	log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s…",
+	log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s… (single session cleanup+run)",
 		tgID, s.host, floatingIP, secretEE1, secretEE2)
-
-	s.removeAllPremiumMtgContainers(ctx, tgID)
 
 	name1 := fmt.Sprintf("mtg-user-%d-ee1", tgID)
 	name2 := fmt.Sprintf("mtg-user-%d-ee2", tgID)
-	cmd1 := fmt.Sprintf(
+	run1 := fmt.Sprintf(
 		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s simple-run 0.0.0.0:8443 %s",
 		shellQuote(name1), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE1),
 	)
-	if _, err := s.RunCommand(ctx, cmd1); err != nil {
-		return fmt.Errorf("start ee container 8443: %w", err)
-	}
-
-	cmd2 := fmt.Sprintf(
+	run2 := fmt.Sprintf(
 		"docker run -d --name %s --restart unless-stopped -p %s:443:443 %s simple-run 0.0.0.0:443 %s",
 		shellQuote(name2), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE2),
 	)
-	if _, err := s.RunCommand(ctx, cmd2); err != nil {
-		return fmt.Errorf("start ee container 443: %w", err)
+	script := "set -e\n" + premiumMtgUserCleanupShell(tgID) + "\n" + run1 + "\n" + run2
+	remote := "bash -lc " + shellQuote(script)
+	const sshAttemptsPerBatch = 3
+	const portConflictBatches = 3
+	var lastOut string
+	var lastErr error
+	for batch := 1; batch <= portConflictBatches; batch++ {
+		lastOut, lastErr = s.runCommandWithSSHRetries(ctx, remote, sshAttemptsPerBatch)
+		if lastErr == nil {
+			return nil
+		}
+		if !isLikelyDockerPortBindConflict(lastErr, lastOut) || batch == portConflictBatches {
+			return fmt.Errorf("start premium containers (cleanup + ee1 + ee2): %w", lastErr)
+		}
+		log.Printf("[SSH] StartPremiumContainers tg_id=%d: возможный конфликт порта/имени (batch %d/%d), пауза и повтор полного скрипта: %v",
+			tgID, batch, portConflictBatches, lastErr)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(8 * time.Second):
+		}
 	}
-
-	return nil
+	return fmt.Errorf("start premium containers (cleanup + ee1 + ee2): %w", lastErr)
 }
 
 // StopPremiumContainers останавливает контейнеры юзера.
 func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
 	log.Printf("[SSH] StopPremiumContainers tg_id=%d host=%s", tgID, s.host)
-	s.removeAllPremiumMtgContainers(ctx, tgID)
+	if err := s.removeAllPremiumMtgContainers(ctx, tgID); err != nil {
+		log.Printf("[SSH] StopPremiumContainers tg_id=%d: cleanup: %v", tgID, err)
+	}
 }
 
 func shellQuote(v string) string {

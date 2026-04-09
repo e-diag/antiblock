@@ -29,7 +29,7 @@ func main() {
 
 	migrateStep := flag.Bool("migrate-paid-ee-v2-step", false, "один шаг миграции v2 (resume-safe)")
 	migrateDaemon := flag.Bool("migrate-paid-ee-v2-daemon", false, "цикл: шаг + пауза; отчёт в чат менеджеров раз в 10 мин")
-	stepDelay := flag.Duration("migrate-step-delay", 5*time.Second, "пауза между шагами в daemon")
+	stepDelay := flag.Duration("migrate-step-delay", 30*time.Second, "пауза между шагами в daemon (один юзер за шаг)")
 	compensate := flag.Bool("compensate-14d", false, "атомарно начислить +14 дн. и поставить маркер + очередь TG")
 	compensateNotify := flag.Bool("compensate-notify-drain", false, "постепенно отправить очередь уведомлений о компенсации")
 	notifyDelay := flag.Duration("compensate-notify-delay", 2*time.Second, "пауза между сообщениями Telegram")
@@ -97,6 +97,7 @@ func main() {
 			cfg.Timeweb.SSHKeyPath,
 			cfg.Timeweb.SSHKeyID,
 			cfg.Timeweb.AvailabilityZone,
+			time.Duration(cfg.Timeweb.PremiumSSHMinIntervalSeconds)*time.Second,
 		)
 		log.Println("[paidops] TimeWeb PremiumProvisioner инициализирован")
 	} else {

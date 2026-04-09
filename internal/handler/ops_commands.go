@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +19,22 @@ import (
 const (
 	envOpsContour = "OPS_CONTOUR"
 
-	opsMigrateStepDelay      = 5 * time.Second
 	opsMigrateReportEvery    = 10 * time.Minute
 	opsCompensateNotifyDelay = 2 * time.Second
 )
+
+// opsMigrateStepPause — пауза между шагами миграции (один пользователь/группа за шаг). Env OPS_MIGRATE_STEP_DELAY_SEC, по умолчанию 30 с.
+func opsMigrateStepPause() time.Duration {
+	v := strings.TrimSpace(os.Getenv("OPS_MIGRATE_STEP_DELAY_SEC"))
+	if v == "" {
+		return 30 * time.Second
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(n) * time.Second
+}
 
 // SendManagerStartupNotification — после старта бота: одно сообщение в чат прогресса (TELEGRAM_MANAGER_PROGRESS_CHAT_ID) со списком /ops_*.
 func (h *BotHandler) SendManagerStartupNotification(ctx context.Context, b *bot.Bot) {
@@ -243,7 +256,7 @@ func (h *BotHandler) runProxyMigrateDaemon(b *bot.Bot, triggerChatID int64, cont
 			}
 			lastReport = time.Now()
 		}
-		time.Sleep(opsMigrateStepDelay)
+		time.Sleep(opsMigrateStepPause())
 	}
 }
 

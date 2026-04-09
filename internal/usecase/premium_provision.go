@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yourusername/antiblock/internal/domain"
@@ -46,6 +47,15 @@ type PremiumProvisioner struct {
 	sshKeyPath string
 	sshKeyID   int
 	zone       string
+
+	// sshMinInterval > 0: не начинать новую SSH-операцию к тому же VPS раньше, чем через этот интервал (снижает нагрузку на sshd).
+	sshMinInterval time.Duration
+	sshPaceByHost  sync.Map // IP VPS -> *sshHostPacer
+}
+
+type sshHostPacer struct {
+	mu   sync.Mutex
+	last time.Time
 }
 
 func NewPremiumProvisioner(
@@ -55,21 +65,53 @@ func NewPremiumProvisioner(
 	sshUser, sshKeyPath string,
 	sshKeyID int,
 	zone string,
+	sshMinInterval time.Duration,
 ) *PremiumProvisioner {
 	return &PremiumProvisioner{
-		twClient:         twClient,
-		serverRepo:       serverRepo,
-		provisionReqRepo: provisionReqRepo,
-		sshUser:          sshUser,
-		sshKeyPath:       sshKeyPath,
-		sshKeyID:         sshKeyID,
-		zone:             zone,
+		twClient:           twClient,
+		serverRepo:         serverRepo,
+		provisionReqRepo:   provisionReqRepo,
+		sshUser:            sshUser,
+		sshKeyPath:         sshKeyPath,
+		sshKeyID:           sshKeyID,
+		zone:               zone,
+		sshMinInterval:     sshMinInterval,
 	}
 }
 
 // IsConfigured true, если задан TimeWeb API client с токеном.
 func (p *PremiumProvisioner) IsConfigured() bool {
 	return p != nil && p.twClient != nil && p.twClient.IsConfigured()
+}
+
+// paceSSHHost выдерживает минимальный интервал между началом операций к одному IP VPS (разные пользователи / миграция).
+func (p *PremiumProvisioner) paceSSHHost(ctx context.Context, host string) {
+	if p == nil || p.sshMinInterval <= 0 {
+		return
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	v, _ := p.sshPaceByHost.LoadOrStore(host, &sshHostPacer{})
+	g := v.(*sshHostPacer)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.last.IsZero() {
+		wait := p.sshMinInterval - time.Since(g.last)
+		if wait > 0 {
+			log.Printf("[Premium] SSH: пауза %s до операции на VPS %s (мин. интервал %s)",
+				wait.Round(time.Second), host, p.sshMinInterval.Round(time.Second))
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+		}
+	}
+	g.last = time.Now()
 }
 
 // newSSHClient создаёт SSH клиент с верификацией host key.
@@ -309,6 +351,7 @@ func (p *PremiumProvisioner) ProvisionForUser(ctx context.Context, user *domain.
 		return nil, fmt.Errorf("ensure ssh root password: %w", err)
 	}
 
+	p.paceSSHHost(ctx, server.IP)
 	ownerID := user.ID
 	sshClient := p.newSSHClient(server)
 
@@ -422,6 +465,7 @@ func (p *PremiumProvisioner) ProvisionExistingProxyForUser(ctx context.Context, 
 		return nil, fmt.Errorf("ensure ssh root password: %w", err)
 	}
 
+	p.paceSSHHost(ctx, server.IP)
 	sshClient := p.newSSHClient(server)
 	if err := p.sshPreparePremiumHost(ctx, sshClient, "ProvisionExistingProxy"); err != nil {
 		log.Printf("[Premium] ProvisionExistingProxyForUser tg_id=%d: sshPreparePremiumHost FAILED: %v", tgID, err)
@@ -494,6 +538,7 @@ func (p *PremiumProvisioner) RestartContainersForUser(ctx context.Context, user 
 		return fmt.Errorf("ensure ssh root password: %w", err)
 	}
 
+	p.paceSSHHost(ctx, server.IP)
 	sshClient := p.newSSHClient(server)
 	if err := p.sshPreparePremiumHost(ctx, sshClient, "RestartContainers"); err != nil {
 		log.Printf("[Premium] RestartContainersForUser tg_id=%d: sshPreparePremiumHost FAILED: %v", tgID, err)
@@ -528,6 +573,7 @@ func (p *PremiumProvisioner) ReplaceFloatingIP(ctx context.Context, user *domain
 		return "", "", fmt.Errorf("ensure ssh root password: %w", err)
 	}
 
+	p.paceSSHHost(ctx, server.IP)
 	sshClient := p.newSSHClient(server)
 	if err := p.sshPreparePremiumHost(ctx, sshClient, "ReplaceFloatingIP"); err != nil {
 		return "", "", err
@@ -574,6 +620,7 @@ func (p *PremiumProvisioner) DeprovisionForUser(ctx context.Context, user *domai
 			if err := p.ensureSSHRootPassword(ctx, server); err != nil {
 				log.Printf("[Premium] DeprovisionForUser tg_id=%d: ensureSSHRootPassword failed, skip SSH stop: %v", tgID, err)
 			} else {
+				p.paceSSHHost(ctx, server.IP)
 				sshClient := p.newSSHClient(server)
 				sshClient.StopPremiumContainers(ctx, user.TGID)
 			}
@@ -738,6 +785,7 @@ func (p *PremiumProvisioner) CreateVPSFromRequest(ctx context.Context, req *doma
 		return nil, fmt.Errorf("ensure ssh root password: %w", err)
 	}
 
+	p.paceSSHHost(ctx, premiumServer.IP)
 	sshClient := p.newSSHClient(premiumServer)
 	if err := p.sshPreparePremiumHost(ctx, sshClient, "CreateVPSFromRequest"); err != nil {
 		return nil, err
