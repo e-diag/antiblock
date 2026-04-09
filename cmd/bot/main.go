@@ -187,6 +187,7 @@ func main() {
 		Settings:        settingsRepo,
 		Users:           userRepo,
 		Proxies:         proxyRepo,
+		UserProxies:     userProxyRepo,
 		Subs:            proSubRepo,
 		ProxyUC:         proxyUC,
 		ProUC:           proUC,

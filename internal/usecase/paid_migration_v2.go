@@ -256,6 +256,7 @@ func (p *PaidOps) migrateOnePremiumOrdered(ctx context.Context, u *domain.User, 
 	if err := p.Docker.CreateUserPremiumEEContainers(subCtx2, u.TGID, proxy2); err != nil {
 		return fmt.Errorf("CreateUserPremiumEEContainers: %w", err)
 	}
+	p.syncPremiumUserProxies(u, proxy2)
 	return nil
 }
 
@@ -282,7 +283,55 @@ func (p *PaidOps) migrateOneTimewebPremium(ctx context.Context, u *domain.User, 
 	if err := p.Provisioner.RestartContainersForUser(runCtx, u, proxy2); err != nil {
 		return fmt.Errorf("RestartContainersForUser: %w", err)
 	}
+	p.syncPremiumUserProxies(u, proxy2)
 	return nil
+}
+
+// syncPremiumUserProxies пересобирает «Мои прокси» для Premium-пользователя из актуальной записи proxy_nodes.
+// Это устраняет рассинхрон после миграций/рестартов, когда контейнеры уже с новыми ee-секретами,
+// а в user_proxies остаются старые dd/ee записи.
+func (p *PaidOps) syncPremiumUserProxies(u *domain.User, proxy *domain.ProxyNode) {
+	if p == nil || p.UserProxies == nil || u == nil || proxy == nil {
+		return
+	}
+	if proxy.Type != domain.ProxyTypePremium {
+		return
+	}
+	_ = p.UserProxies.DeleteByUserIDAndProxyType(u.ID, domain.ProxyTypePremium)
+
+	clientIP := strings.TrimSpace(proxy.FloatingIP)
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(proxy.IP)
+	}
+	if net.ParseIP(clientIP) == nil {
+		log.Printf("[PaidOps] syncPremiumUserProxies user_id=%d: invalid client ip %q", u.ID, clientIP)
+		return
+	}
+
+	port1 := proxy.Port
+	port2 := 0
+	if !isLegacyPremiumProxy(proxy) {
+		port1 = domain.PremiumPortEE1
+		port2 = domain.PremiumPortEE2
+	}
+	if port1 > 0 && strings.TrimSpace(proxy.Secret) != "" {
+		_ = p.UserProxies.Create(&domain.UserProxy{
+			UserID:    u.ID,
+			IP:        clientIP,
+			Port:      port1,
+			Secret:    proxy.Secret,
+			ProxyType: domain.ProxyTypePremium,
+		})
+	}
+	if port2 > 0 && strings.TrimSpace(proxy.SecretEE) != "" {
+		_ = p.UserProxies.Create(&domain.UserProxy{
+			UserID:    u.ID,
+			IP:        clientIP,
+			Port:      port2,
+			Secret:    proxy.SecretEE,
+			ProxyType: domain.ProxyTypePremium,
+		})
+	}
 }
 
 // MigrationV2ProgressReportHTML — текст для менеджерского чата (HTML).

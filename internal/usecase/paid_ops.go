@@ -30,6 +30,7 @@ type PaidOps struct {
 	Settings        repository.SettingsRepository
 	Users           repository.UserRepository
 	Proxies         repository.ProxyRepository
+	UserProxies     repository.UserProxyRepository
 	Subs            repository.ProSubscriptionRepository
 	ProxyUC         ProxyUseCase
 	ProUC           ProUseCase

@@ -45,7 +45,7 @@ func SendProGroupTwoEE(ctx context.Context, b *bot.Bot, tgID int64, group *domai
 			hint = "\n\n<i>Второй вариант — в следующем сообщении.</i>"
 		}
 		msg := fmt.Sprintf(
-			"%s <b>%s</b>\n\n🔐 <b>ee / fake-TLS (nineseconds)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>%s",
+			"%s <b>%s</b>\n\n🔐 <b>ee / fake-TLS</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>%s",
 			prefix, title, group.ServerIP, port, secret, hint,
 		)
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{

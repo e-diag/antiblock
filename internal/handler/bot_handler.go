@@ -1166,7 +1166,7 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 			hint = "\n\n<i>Второй вариант — в следующем сообщении.</i>"
 		}
 		msg := fmt.Sprintf(
-			"🛡 <b>%s</b>\n\n🔐 <b>ee / fake-TLS (nineseconds)</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>%s",
+			"🛡 <b>%s</b>\n\n🔐 <b>ee / fake-TLS</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>%s",
 			title, clientIP, port, secret, hint,
 		)
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
@@ -1423,7 +1423,7 @@ func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *m
 	usdt := h.getPremiumUSDT()
 	starsCount := h.getPremiumStars()
 	premiumPriceRub := h.getPremiumPriceRub()
-	msg := fmt.Sprintf("💎 <b>Premium</b> — два ee-прокси (nineseconds) на %d дн.\n\n"+
+	msg := fmt.Sprintf("💎 <b>Premium</b> — два ee-прокси на %d дн.\n\n"+
 		"• Минимальные риски блокировок\n"+
 		"• Индивидуальный сервер\n"+
 		"• 2 прокси: ee / fake-TLS (разные порты)\n"+
@@ -2750,7 +2750,7 @@ func (h *BotHandler) HandleAdminRebuild(ctx context.Context, b *bot.Bot, update 
 		return
 	}
 
-	h.sendText(ctx, b, update, "✅ Контейнеры пересозданы (ee + ee, nineseconds)")
+	h.sendText(ctx, b, update, "✅ Контейнеры пересозданы (ee + ee)")
 }
 
 // HandleBroadcast обрабатывает команду /broadcast (только для админов): выбор аудитории, затем сообщение
@@ -4162,7 +4162,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		msg := fmt.Sprintf("⚡ <b>Pro</b> — быстрые прокси без рекламы на %d дн.\n\n"+
 			"• Максимальная скорость\n"+
 			"• Без рекламы\n"+
-			"• Два ee-прокси (nineseconds) на разных портах\n"+
+			"• Два ee-прокси на разных портах\n"+
 			"• Общий выделенный сервер (стабильно)\n\n"+
 			"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
 			days, priceRub, usdt, stars)

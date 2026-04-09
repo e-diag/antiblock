@@ -108,6 +108,7 @@ func main() {
 		Settings:        settingsRepo,
 		Users:           userRepo,
 		Proxies:         proxyRepo,
+		UserProxies:     repository.NewUserProxyRepository(db.DB),
 		Subs:            proSubRepo,
 		ProxyUC:         proxyUC,
 		ProUC:           proUC,
