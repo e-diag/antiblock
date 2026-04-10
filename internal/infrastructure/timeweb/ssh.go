@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -314,21 +313,6 @@ func (s *SSHClient) PullPremiumMtgImages(ctx context.Context) error {
 	return nil
 }
 
-// PrepareForPremiumRestart — минимальная подготовка перед массовым пересозданием mtg: ping SSH, pull образа, ufw.
-// Не вызывает sysctl и не перезапускает Docker (в отличие от EnsurePremiumHostTuning), чтобы не рвать сессии sshd
-// и не останавливать уже работающие контейнеры из-за restart docker.
-func (s *SSHClient) PrepareForPremiumRestart(ctx context.Context) error {
-	log.Printf("[SSH] PrepareForPremiumRestart host=%s:%d", s.host, s.port)
-	if _, err := s.runCommandWithSSHRetries(ctx, "echo ok", 4); err != nil {
-		return fmt.Errorf("ssh ping: %w", err)
-	}
-	if err := s.PullPremiumMtgImages(ctx); err != nil {
-		return err
-	}
-	s.EnsurePremiumFirewallPorts(ctx)
-	return nil
-}
-
 // shellSingleQuote оборачивает строку в одинарные кавычки для безопасного bash (аргумент -ec).
 func shellSingleQuote(s string) string {
 	return `'` + strings.ReplaceAll(s, `'`, `'\''`) + `'`
@@ -435,8 +419,7 @@ func (s *SSHClient) removeAllPremiumMtgContainers(ctx context.Context, tgID int6
 // StartPremiumContainers запускает два ee-контейнера (8443 и 443), nineseconds/mtg:2.
 // Очистка старых контейнеров и оба docker run выполняются в одной SSH-сессии: иначе при обрыве SSH
 // после «тихо» провалившегося rm контейнеры остаются, порты заняты — docker run даёт exit 125.
-// upstreamProxy — опционально (например socks5://127.0.0.1:1080): передаётся в simple-run как --proxy=….
-func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floatingIP, secretEE1, secretEE2, upstreamProxy string) error {
+func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floatingIP, secretEE1, secretEE2 string) error {
 	if floatingIP == "" || secretEE1 == "" || secretEE2 == "" {
 		return fmt.Errorf("StartPremiumContainers: empty params")
 	}
@@ -446,28 +429,19 @@ func (s *SSHClient) StartPremiumContainers(ctx context.Context, tgID int64, floa
 	if !isSafeEESecret(secretEE1) || !isSafeEESecret(secretEE2) {
 		return fmt.Errorf("StartPremiumContainers: invalid secret format")
 	}
-	proxyFrag, err := premiumMtgProxyShellFragment(upstreamProxy)
-	if err != nil {
-		return fmt.Errorf("StartPremiumContainers: %w", err)
-	}
 
-	if proxyFrag == " " {
-		log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s… (single session cleanup+run)",
-			tgID, s.host, floatingIP, secretEE1, secretEE2)
-	} else {
-		log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s… upstream_proxy=on (single session cleanup+run)",
-			tgID, s.host, floatingIP, secretEE1, secretEE2)
-	}
+	log.Printf("[SSH] StartPremiumContainers tg_id=%d host=%s bind_ip=%s ee1=%.8s… ee2=%.8s… (single session cleanup+run)",
+		tgID, s.host, floatingIP, secretEE1, secretEE2)
 
 	name1 := fmt.Sprintf("mtg-user-%d-ee1", tgID)
 	name2 := fmt.Sprintf("mtg-user-%d-ee2", tgID)
 	run1 := fmt.Sprintf(
-		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s simple-run%s0.0.0.0:8443 %s",
-		shellQuote(name1), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), proxyFrag, shellQuote(secretEE1),
+		"docker run -d --name %s --restart unless-stopped -p %s:8443:8443 %s simple-run 0.0.0.0:8443 %s",
+		shellQuote(name1), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE1),
 	)
 	run2 := fmt.Sprintf(
-		"docker run -d --name %s --restart unless-stopped -p %s:443:443 %s simple-run%s0.0.0.0:443 %s",
-		shellQuote(name2), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), proxyFrag, shellQuote(secretEE2),
+		"docker run -d --name %s --restart unless-stopped -p %s:443:443 %s simple-run 0.0.0.0:443 %s",
+		shellQuote(name2), shellQuote(floatingIP), shellQuote(DockerImagePremiumEE), shellQuote(secretEE2),
 	)
 	script := "set -e\n" + premiumMtgUserCleanupShell(tgID) + "\n" + run1 + "\n" + run2
 	remote := "bash -lc " + shellQuote(script)
@@ -504,41 +478,6 @@ func (s *SSHClient) StopPremiumContainers(ctx context.Context, tgID int64) {
 
 func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
-}
-
-// premiumMtgProxyShellFragment — пробелы вокруг опционального фрагмента `--proxy='…'` для вставки между `simple-run` и bind.
-func premiumMtgProxyShellFragment(proxy string) (string, error) {
-	p := strings.TrimSpace(proxy)
-	if p == "" {
-		return " ", nil
-	}
-	if err := ValidateMtgUpstreamProxyURL(p); err != nil {
-		return "", err
-	}
-	return " --proxy=" + shellQuote(p) + " ", nil
-}
-
-// ValidateMtgUpstreamProxyURL проверяет URL для флага mtg simple-run --proxy=….
-func ValidateMtgUpstreamProxyURL(raw string) error {
-	if len(raw) > 2048 {
-		return fmt.Errorf("upstream proxy URL too long")
-	}
-	if strings.ContainsAny(raw, "\r\n\x00`$") {
-		return fmt.Errorf("upstream proxy URL contains forbidden characters")
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" {
-		return fmt.Errorf("invalid upstream proxy URL")
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "socks5", "socks5h", "http", "https":
-	default:
-		return fmt.Errorf("upstream proxy scheme must be socks5, socks5h, http or https")
-	}
-	if u.Host == "" {
-		return fmt.Errorf("upstream proxy URL must include host")
-	}
-	return nil
 }
 
 func isSafeEESecret(v string) bool {

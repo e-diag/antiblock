@@ -98,7 +98,6 @@ func main() {
 			cfg.Timeweb.SSHKeyID,
 			cfg.Timeweb.AvailabilityZone,
 			time.Duration(cfg.Timeweb.PremiumSSHMinIntervalSeconds)*time.Second,
-			cfg.Timeweb.PremiumMtgUpstreamProxy,
 		)
 		log.Println("[paidops] TimeWeb PremiumProvisioner инициализирован")
 	} else {
