@@ -284,6 +284,12 @@ func (p *PremiumProvisioner) sshPreparePremiumHost(ctx context.Context, sshClien
 	if err := sshClient.EnsureDockerInstalled(waitCtx); err != nil {
 		return fmt.Errorf("ensure docker (%s): %w", logTag, err)
 	}
+	// Пауза снижает риск RST/fail2ban при серии быстрых новых TCP+SSH (каждый RunCommand = новый Dial).
+	select {
+	case <-waitCtx.Done():
+		return fmt.Errorf("wait ctx (%s): %w", logTag, waitCtx.Err())
+	case <-time.After(3 * time.Second):
+	}
 	if err := sshClient.EnsurePremiumHostTuning(waitCtx); err != nil {
 		return fmt.Errorf("ensure premium host tuning (%s): %w", logTag, err)
 	}
@@ -899,8 +905,9 @@ func (p *PremiumProvisioner) RestartPremiumMtgBatchOnServer(ctx context.Context,
 	p.paceSSHHost(ctx, server.IP)
 	sshClient := p.newSSHClient(server)
 	tag := fmt.Sprintf("RestartMtgBatch server_id=%d ip=%s n=%d", server.ID, server.IP, len(items))
-	if err := p.sshPreparePremiumHost(ctx, sshClient, tag); err != nil {
-		return fmt.Errorf("prepare host %s: %w", server.IP, err)
+	// Только pull + ufw: без tuning (sysctl/restart docker), чтобы не душить sshd серией соединений и не ронять Docker посреди батча.
+	if err := sshClient.PrepareForPremiumRestart(ctx); err != nil {
+		return fmt.Errorf("prepare host %s (restart): %w", server.IP, err)
 	}
 	for i := range items {
 		u, px := items[i].User, items[i].Proxy

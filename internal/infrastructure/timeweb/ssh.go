@@ -246,7 +246,7 @@ func (s *SSHClient) SetupDocker(ctx context.Context) error {
 
 // EnsureDockerInstalled ставит Docker через SetupDocker, если бинарника ещё нет (idempotent).
 func (s *SSHClient) EnsureDockerInstalled(ctx context.Context) error {
-	if _, err := s.RunCommand(ctx, "docker --version"); err == nil {
+	if _, err := s.runCommandWithSSHRetries(ctx, "docker --version", 3); err == nil {
 		return nil
 	}
 	log.Printf("[SSH] EnsureDockerInstalled host=%s:%d — docker не найден, ставим", s.host, s.port)
@@ -287,7 +287,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl restart docker >/dev/null 2>&1 || true
 `
 	cmd := "bash -ec " + shellSingleQuote(inner)
-	if _, err := s.RunCommand(ctx, cmd); err != nil {
+	if _, err := s.runCommandWithSSHRetries(ctx, cmd, 5); err != nil {
 		return fmt.Errorf("ensure premium host tuning: %w", err)
 	}
 	return nil
@@ -298,7 +298,7 @@ func (s *SSHClient) EnsurePremiumFirewallPorts(ctx context.Context) {
 	log.Printf("[SSH] EnsurePremiumFirewallPorts host=%s:%d (443/tcp 8443/tcp если ufw active)", s.host, s.port)
 	// root по SSH — без sudo; если ufw не установлен или inactive — ничего не делаем.
 	cmd := `sh -c 'if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"; then ufw allow 443/tcp || true; ufw allow 8443/tcp || true; fi'`
-	if _, err := s.RunCommand(ctx, cmd); err != nil {
+	if _, err := s.runCommandWithSSHRetries(ctx, cmd, 3); err != nil {
 		log.Printf("[SSH] EnsurePremiumFirewallPorts host=%s:%d: %v", s.host, s.port, err)
 	}
 }
@@ -307,10 +307,25 @@ func (s *SSHClient) EnsurePremiumFirewallPorts(ctx context.Context) {
 func (s *SSHClient) PullPremiumMtgImages(ctx context.Context) error {
 	for _, img := range []string{DockerImagePremiumEE} {
 		log.Printf("[SSH] docker pull %s host=%s:%d", img, s.host, s.port)
-		if _, err := s.RunCommand(ctx, "docker pull "+img); err != nil {
+		if _, err := s.runCommandWithSSHRetries(ctx, "docker pull "+img, 4); err != nil {
 			return fmt.Errorf("docker pull %s: %w", img, err)
 		}
 	}
+	return nil
+}
+
+// PrepareForPremiumRestart — минимальная подготовка перед массовым пересозданием mtg: ping SSH, pull образа, ufw.
+// Не вызывает sysctl и не перезапускает Docker (в отличие от EnsurePremiumHostTuning), чтобы не рвать сессии sshd
+// и не останавливать уже работающие контейнеры из-за restart docker.
+func (s *SSHClient) PrepareForPremiumRestart(ctx context.Context) error {
+	log.Printf("[SSH] PrepareForPremiumRestart host=%s:%d", s.host, s.port)
+	if _, err := s.runCommandWithSSHRetries(ctx, "echo ok", 4); err != nil {
+		return fmt.Errorf("ssh ping: %w", err)
+	}
+	if err := s.PullPremiumMtgImages(ctx); err != nil {
+		return err
+	}
+	s.EnsurePremiumFirewallPorts(ctx)
 	return nil
 }
 
