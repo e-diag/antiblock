@@ -81,6 +81,9 @@ services:
       TIMEWEB_SSH_USER: ${TIMEWEB_SSH_USER:-root}
       TIMEWEB_SSH_KEY_ID: ${TIMEWEB_SSH_KEY_ID:-0}
       TIMEWEB_SSH_KEY_PATH: ${TIMEWEB_SSH_KEY_PATH:-/antiblock/premium-keys/premium_bot_key}
+      TIMEWEB_PREMIUM_MTG_PROXY: ${TIMEWEB_PREMIUM_MTG_PROXY:-}
+      TIMEWEB_PREMIUM_SSH_MIN_INTERVAL_SEC: ${TIMEWEB_PREMIUM_SSH_MIN_INTERVAL_SEC:-}
+
     ports:
       - "127.0.0.1:8081:8081"  # Webhook xRocket (доступен только localhost; туннель cloudflared/ngrok проксирует снаружи)
       - "127.0.0.1:8082:8082"  # Webhook ЮКассы
