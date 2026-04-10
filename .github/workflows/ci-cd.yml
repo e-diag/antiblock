@@ -91,4 +91,5 @@ jobs:
         run: |
           set -euo pipefail
           ssh -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" "set -e; cd '${APP_DIR}'; git pull; docker compose pull || docker-compose pull; docker compose up -d --build || docker-compose up -d --build"
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" "set -e; cd '${APP_DIR}'; docker compose run -T --rm bot /app/restart_premium_mtg || docker-compose run -T --rm bot /app/restart_premium_mtg"
 
