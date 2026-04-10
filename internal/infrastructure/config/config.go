@@ -43,6 +43,9 @@ type TimewebConfig struct {
 	PremiumServerOSID int `yaml:"premium_server_os_id"` // 0 = авто Ubuntu 24.04 из /os/servers
 	// PremiumSSHMinIntervalSeconds — минимум секунд между началом SSH-операций к одному VPS (0 = без паузы). Снижает нагрузку на sshd.
 	PremiumSSHMinIntervalSeconds int `yaml:"premium_ssh_min_interval_seconds"`
+	// PremiumMtgUpstreamProxy — опционально: исходящий прокси для контейнеров mtg на Premium VPS (флаг simple-run --proxy=…).
+	// Пример: socks5://127.0.0.1:1080 при локальном SSH-туннеле на зарубежный сервер. Пусто = без флага.
+	PremiumMtgUpstreamProxy string `yaml:"premium_mtg_upstream_proxy"`
 }
 
 type AppConfig struct {
@@ -284,6 +287,9 @@ func Load(path string) (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Timeweb.PremiumSSHMinIntervalSeconds = n
 		}
+	}
+	if cfg.Timeweb.PremiumMtgUpstreamProxy == "" {
+		cfg.Timeweb.PremiumMtgUpstreamProxy = getEnv("TIMEWEB_PREMIUM_MTG_PROXY", "")
 	}
 	cfg.Telegram.AdminIDs = mergeAdminIDs(cfg.Telegram.AdminIDs)
 	cfg.Telegram.ErrorLogChatID = mergeErrorLogChatID(cfg.Telegram.ErrorLogChatID)

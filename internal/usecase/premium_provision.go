@@ -51,6 +51,9 @@ type PremiumProvisioner struct {
 	// sshMinInterval > 0: не начинать новую SSH-операцию к тому же VPS раньше, чем через этот интервал (снижает нагрузку на sshd).
 	sshMinInterval time.Duration
 	sshPaceByHost  sync.Map // IP VPS -> *sshHostPacer
+
+	// premiumMtgUpstreamProxy — опционально: --proxy=… для mtg simple-run на Premium VPS (пусто = без флага).
+	premiumMtgUpstreamProxy string
 }
 
 type sshHostPacer struct {
@@ -66,16 +69,18 @@ func NewPremiumProvisioner(
 	sshKeyID int,
 	zone string,
 	sshMinInterval time.Duration,
+	premiumMtgUpstreamProxy string,
 ) *PremiumProvisioner {
 	return &PremiumProvisioner{
-		twClient:           twClient,
-		serverRepo:         serverRepo,
-		provisionReqRepo:   provisionReqRepo,
-		sshUser:            sshUser,
-		sshKeyPath:         sshKeyPath,
-		sshKeyID:           sshKeyID,
-		zone:               zone,
-		sshMinInterval:     sshMinInterval,
+		twClient:                twClient,
+		serverRepo:              serverRepo,
+		provisionReqRepo:        provisionReqRepo,
+		sshUser:                 sshUser,
+		sshKeyPath:              sshKeyPath,
+		sshKeyID:                sshKeyID,
+		zone:                    zone,
+		sshMinInterval:          sshMinInterval,
+		premiumMtgUpstreamProxy: strings.TrimSpace(premiumMtgUpstreamProxy),
 	}
 }
 
@@ -297,7 +302,7 @@ func (p *PremiumProvisioner) sshStartPremiumContainers(ctx context.Context, sshC
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := sshClient.EnsureHostLocalFloatingIP(ctx, bindIP); err != nil {
 			lastErr = fmt.Errorf("floating ip on host: %w", err)
-		} else if err := sshClient.StartPremiumContainers(ctx, tgID, bindIP, secretEE1, secretEE2); err != nil {
+		} else if err := sshClient.StartPremiumContainers(ctx, tgID, bindIP, secretEE1, secretEE2, p.premiumMtgUpstreamProxy); err != nil {
 			lastErr = err
 		} else {
 			return nil
@@ -835,4 +840,75 @@ func (p *PremiumProvisioner) ensurePublicIPv4ForServer(ctx context.Context, twID
 	}
 }
 
-// parsePendingUserIDs — полезно для handler/worker.
+// PremiumMtgRestartItem — пара пользователь + TimeWeb Premium прокси для пересоздания контейнеров mtg.
+type PremiumMtgRestartItem struct {
+	User  *domain.User
+	Proxy *domain.ProxyNode
+}
+
+// ValidatePremiumMtgRestartProxy проверяет, что запись proxy_nodes годится для пересоздания mtg на TimeWeb VPS.
+func ValidatePremiumMtgRestartProxy(proxy *domain.ProxyNode) error {
+	if proxy == nil {
+		return errors.New("proxy nil")
+	}
+	if proxy.Type != domain.ProxyTypePremium {
+		return fmt.Errorf("тип не premium")
+	}
+	if proxy.PremiumServerID == nil || *proxy.PremiumServerID == 0 {
+		return fmt.Errorf("нет premium_server_id")
+	}
+	if strings.TrimSpace(proxy.FloatingIP) == "" {
+		return fmt.Errorf("пустой floating_ip")
+	}
+	if strings.TrimSpace(proxy.Secret) == "" || strings.TrimSpace(proxy.SecretEE) == "" {
+		return fmt.Errorf("нужны secret и secret_ee")
+	}
+	return nil
+}
+
+func validatePremiumMtgRestartItem(user *domain.User, proxy *domain.ProxyNode) error {
+	if user == nil {
+		return errors.New("user nil")
+	}
+	if err := ValidatePremiumMtgRestartProxy(proxy); err != nil {
+		return fmt.Errorf("proxy id=%d: %w", proxy.ID, err)
+	}
+	return nil
+}
+
+// RestartPremiumMtgBatchOnServer один раз готовит хост (SSH, Docker, образ mtg), затем по очереди пересоздаёт
+// контейнеры mtg-user-{tg_id}-ee1/ee2 для каждой пары. Использует premiumMtgUpstreamProxy из provisioner (флаг --proxy).
+func (p *PremiumProvisioner) RestartPremiumMtgBatchOnServer(ctx context.Context, server *domain.PremiumServer, items []PremiumMtgRestartItem) error {
+	if p == nil {
+		return errors.New("PremiumProvisioner nil")
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	if server == nil {
+		return errors.New("server nil")
+	}
+	for i := range items {
+		if err := validatePremiumMtgRestartItem(items[i].User, items[i].Proxy); err != nil {
+			return fmt.Errorf("элемент %d: %w", i, err)
+		}
+	}
+	if err := p.ensureSSHRootPassword(ctx, server); err != nil {
+		return fmt.Errorf("server id=%d: ssh password: %w", server.ID, err)
+	}
+	p.paceSSHHost(ctx, server.IP)
+	sshClient := p.newSSHClient(server)
+	tag := fmt.Sprintf("RestartMtgBatch server_id=%d ip=%s n=%d", server.ID, server.IP, len(items))
+	if err := p.sshPreparePremiumHost(ctx, sshClient, tag); err != nil {
+		return fmt.Errorf("prepare host %s: %w", server.IP, err)
+	}
+	for i := range items {
+		u, px := items[i].User, items[i].Proxy
+		p.paceSSHHost(ctx, server.IP)
+		if err := p.sshStartPremiumContainers(ctx, sshClient, u.TGID, strings.TrimSpace(px.FloatingIP), strings.TrimSpace(px.Secret), strings.TrimSpace(px.SecretEE)); err != nil {
+			return fmt.Errorf("proxy_id=%d tg_id=%d fip=%s: %w", px.ID, u.TGID, px.FloatingIP, err)
+		}
+		log.Printf("[Premium] RestartMtgBatch %s: %d/%d ok proxy_id=%d tg_id=%d", tag, i+1, len(items), px.ID, u.TGID)
+	}
+	return nil
+}

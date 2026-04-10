@@ -91,3 +91,5 @@ timeweb:
   premium_server_os_id: 0
   # Пауза между SSH-сессиями к одному и тому же VPS (сек). 0 = выключить. Env: TIMEWEB_PREMIUM_SSH_MIN_INTERVAL_SEC
   premium_ssh_min_interval_seconds: 40
+  # Исходящий прокси для mtg на Premium VPS (simple-run --proxy). Пример: socks5://127.0.0.1:1080 при SSH-туннеле. Env: TIMEWEB_PREMIUM_MTG_PROXY
+  premium_mtg_upstream_proxy: ""
