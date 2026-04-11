@@ -817,10 +817,7 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb m
 		btnPro := h.menuFmt("main_buy_pro", "⚡ Купить Pro на %d дн.", proDays)
 		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_buy_pro", btnPro, "buy_pro")})
 	}
-	if !hasPremium {
-		btnPremium := h.menuFmt("main_buy_premium", "💎 Купить Premium на %d дн.", days)
-		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_buy_premium", btnPremium, "buy_premium")})
-	}
+	_ = days // Покупка/продление Premium временно отключены.
 
 	if hasPro {
 		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_get_pro_proxy", h.txt("main_get_pro_proxy", "⚡ Получить Pro proxy"), "get_pro_proxy")})
@@ -832,9 +829,7 @@ func (h *BotHandler) mainMenuContent(user *domain.User) (welcomeMsg string, kb m
 	if hasPro {
 		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_extend_pro", h.txt("main_extend_pro", "⚡ Продлить Pro"), "buy_pro")})
 	}
-	if hasPremium {
-		rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_extend_premium", h.txt("main_extend_premium", "💎 Продлить Premium"), "buy_premium")})
-	}
+	// Продление Premium временно отключено.
 
 	rows = append(rows, []telegramx.InlineKeyboardButton{h.cb("main_my_proxies", h.txt("main_my_proxies", "📋 Мои прокси"), "my_proxies")})
 	rows = append(rows, []telegramx.InlineKeyboardButton{
@@ -1410,39 +1405,7 @@ func (h *BotHandler) HandleGetProxy(ctx context.Context, b *bot.Bot, update *mod
 
 // HandleBuyPremium обрабатывает запрос на покупку премиума (оплата через Telegram Stars и/или TON через xRocket).
 func (h *BotHandler) HandleBuyPremium(ctx context.Context, b *bot.Bot, update *models.Update) {
-	userID := chatID(update)
-
-	_, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
-	if err != nil {
-		h.sendText(ctx, b, update, "❌ Произошла ошибка. Попробуйте позже.")
-		return
-	}
-
-	days := h.getPremiumDays()
-	usdt := h.getPremiumUSDT()
-	starsCount := h.getPremiumStars()
-	premiumPriceRub := h.getPremiumPriceRub()
-	msg := fmt.Sprintf("💎 <b>Premium</b> — два ee-прокси на %d дн.\n\n"+
-		"• Минимальные риски блокировок\n"+
-		"• Индивидуальный сервер\n"+
-		"• 2 прокси: ee / fake-TLS (разные порты)\n"+
-		"• Максимальная скорость и стабильность\n"+
-		"• Можно использовать на нескольких устройствах\n"+
-		"• Без рекламы\n\n"+
-		"💰 Стоимость: <b>%d ₽</b>, <b>%.2f TON</b> или <b>%d ⭐ Stars</b>\n\nВыберите способ оплаты:",
-		days, premiumPriceRub, usdt, starsCount)
-
-	var rows [][]telegramx.InlineKeyboardButton
-	if h.isYooKassaConfigured() {
-		rows = append(rows, []telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("💳 Банковская карта — %d ₽", premiumPriceRub), CallbackData: "buy_premium_rub"}})
-	}
-	rows = append(rows,
-		[]telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("💵 TON — %.2f", usdt), CallbackData: "buy_premium_usdt"}},
-		[]telegramx.InlineKeyboardButton{{Text: fmt.Sprintf("⭐ Telegram Stars — %d ⭐", starsCount), CallbackData: "buy_stars"}},
-		[]telegramx.InlineKeyboardButton{h.cb("payment_back", h.txt("payment_back", "◀️ Назад"), "cancel_payment")},
-	)
-	kb := &telegramx.InlineKeyboardMarkup{InlineKeyboard: rows}
-	h.sendOrEdit(ctx, b, userID, msg, kb)
+	h.sendText(ctx, b, update, "⚠️ Данный тариф временно недоступен")
 }
 
 // HandleAddProxy обрабатывает команду /addproxy (только для админов). Разрешён только тип Free; Premium создаётся автоматически.
@@ -4181,7 +4144,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		h.HandleBuyProRub(ctx, b, update)
 	case "buy_premium_rub":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
-		h.HandleBuyPremiumRub(ctx, b, update)
+		h.sendText(ctx, b, update, "⚠️ Данный тариф временно недоступен")
 	case "buy_pro_usdt":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		userID := update.CallbackQuery.From.ID
@@ -4245,34 +4208,7 @@ func (h *BotHandler) HandleCallback(ctx context.Context, b *bot.Bot, update *mod
 		h.HandleBuyPremium(ctx, b, update)
 	case "buy_premium_usdt":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
-		userID := update.CallbackQuery.From.ID
-		user, err := h.userUC.GetOrCreateUser(userID, h.getUsername(update))
-		if err != nil || user == nil {
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: "❌ Ошибка. Попробуйте позже.", ParseMode: models.ParseModeHTML})
-			return
-		}
-		days := h.getPremiumDays()
-		usdt := h.getPremiumUSDT()
-		desc := fmt.Sprintf("Premium %d дней для пользователя %d", days, userID)
-		payURL, invoiceID, err := h.paymentUC.CreateInvoice(usdt, "TON", desc, userID)
-		if err != nil {
-			log.Printf("[payment] xRocket CreateInvoice error: %v", err)
-			b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: "❌ Не удалось создать счёт TON. Попробуйте позже.", ParseMode: models.ParseModeHTML})
-			return
-		}
-		_ = h.paymentUC.SetInvoiceMeta(invoiceID, "premium", days)
-		log.Printf("[payment] xRocket invoice %d created for user %d", invoiceID, userID)
-		text := fmt.Sprintf("💵 Оплата премиума в TON через xRocket.\n\n"+
-			"Сумма: <b>%.2f TON</b>\n\nНажмите кнопку ниже, чтобы перейти к оплате.", usdt)
-		kb := &models.InlineKeyboardMarkup{
-			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: fmt.Sprintf("💵 Оплатить %.2f TON", usdt), URL: payURL}},
-			},
-		}
-		msg, errSend := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: kb})
-		if errSend == nil && msg != nil && msg.ID != 0 {
-			_ = h.paymentUC.SetInvoiceMessage(invoiceID, userID, int64(msg.ID))
-		}
+		h.sendText(ctx, b, update, "⚠️ Данный тариф временно недоступен")
 	case "get_proxy":
 		b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cqID})
 		h.HandleGetProxy(ctx, b, update)
