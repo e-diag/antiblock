@@ -333,10 +333,28 @@ func (uc *proxyUseCase) GetUnreachablePremiumProxies() ([]*domain.ProxyNode, err
 // CheckPremiumProxy выполняет TCP-проверку премиум-прокси. При неудаче выставляет UnreachableSince (Status не меняет);
 // при успехе сбрасывает UnreachableSince и выставляет Status = active.
 func (uc *proxyUseCase) CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bool, err error) {
-	timeout := 5 * time.Second
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxy.IP, proxy.Port), timeout)
-	if err != nil {
+	const premiumProbeTimeout = 8 * time.Second
+	const retryDelay = 350 * time.Millisecond
+
+	reachable1, rtt1 := probePremiumTCP(proxy, premiumProbeTimeout)
+	if !reachable1 {
+		// Антифлап #1: считаем "down" только после двух подряд неуспешных TCP-проверок.
+		time.Sleep(retryDelay)
+		reachable2, rtt2 := probePremiumTCP(proxy, premiumProbeTimeout)
+		if reachable2 {
+			now := time.Now()
+			proxy.LastCheck = &now
+			proxy.LastRTTMs = &rtt2
+			if proxy.Status != domain.ProxyStatusActive {
+				proxy.Status = domain.ProxyStatusActive
+			}
+			proxy.UnreachableSince = nil
+			if err := uc.proxyRepo.Update(proxy); err != nil {
+				return true, err
+			}
+			return true, nil
+		}
+
 		reconcileCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		reconciled := uc.tryReconcileRemovedLegacyPremium(reconcileCtx, proxy)
 		cancel()
@@ -353,19 +371,43 @@ func (uc *proxyUseCase) CheckPremiumProxy(proxy *domain.ProxyNode) (reachable bo
 		_ = uc.proxyRepo.Update(proxy)
 		return false, nil
 	}
-	conn.Close()
-	rttMs := int(time.Since(start).Milliseconds())
-	proxy.LastRTTMs = &rttMs
+
+	rttMs := rtt1
+	// Антифлап #2: если прокси уже был недоступным, считаем "recovered" только после двух подряд успехов.
+	if proxy.UnreachableSince != nil {
+		time.Sleep(retryDelay)
+		recovered2, rtt2 := probePremiumTCP(proxy, premiumProbeTimeout)
+		if !recovered2 {
+			now := time.Now()
+			proxy.LastCheck = &now
+			proxy.LastRTTMs = nil
+			_ = uc.proxyRepo.Update(proxy)
+			return false, nil
+		}
+		rttMs = rtt2
+	}
+
 	proxy.UnreachableSince = nil
 	if proxy.Status != domain.ProxyStatusActive {
 		proxy.Status = domain.ProxyStatusActive
 	}
+	proxy.LastRTTMs = &rttMs
 	now := time.Now()
 	proxy.LastCheck = &now
 	if err := uc.proxyRepo.Update(proxy); err != nil {
 		return true, err
 	}
 	return true, nil
+}
+
+func probePremiumTCP(proxy *domain.ProxyNode, timeout time.Duration) (bool, int) {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxy.IP, proxy.Port), timeout)
+	if err != nil {
+		return false, 0
+	}
+	_ = conn.Close()
+	return true, int(time.Since(start).Milliseconds())
 }
 
 // tryReconcileRemovedLegacyPremium: TCP не отвечает, legacy Premium, на Pro Docker нет ни одного mtg-user-{tg_id}-*

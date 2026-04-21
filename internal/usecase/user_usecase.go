@@ -185,9 +185,23 @@ func (uc *userUseCase) GetOrCreateUser(tgID int64, username string) (*domain.Use
 			IsPremium: false,
 		}
 		if err := uc.userRepo.Create(user); err != nil {
-			return nil, err
+			// Гонка на первом апдейте/колбэке: два конкурентных запроса могут одновременно
+			// не найти пользователя и попытаться вставить одну и ту же строку по tg_id.
+			// В этом случае берём уже созданную запись и продолжаем.
+			if isDuplicateKeyError(err) {
+				existing, getErr := uc.userRepo.GetByTGID(tgID)
+				if getErr != nil {
+					return nil, getErr
+				}
+				if existing != nil {
+					user = existing
+				} else {
+					return nil, err
+				}
+			} else {
+				return nil, err
+			}
 		}
-		return user, nil
 	}
 
 	// Обновляем username только если пришло НЕ пустое значение и оно изменилось,
