@@ -34,6 +34,7 @@ type legacyRow struct {
 
 type rebuildPlan struct {
 	ProGroups              []*domain.ProGroup
+	ProSubscribersByGroup  map[uint][]*domain.ProSubscription
 	LegacyToRecreate       []legacyTarget
 	LegacyToDeactivate     []legacyTarget
 	OrphanContainersToDrop []string
@@ -41,6 +42,7 @@ type rebuildPlan struct {
 
 type legacyTarget struct {
 	TGID      int64
+	UserID    uint
 	Proxy     *domain.ProxyNode
 	RunSecret string
 }
@@ -79,10 +81,11 @@ func main() {
 	}
 
 	proGroupRepo := repository.NewProGroupRepository(db.DB)
+	proSubRepo := repository.NewProSubscriptionRepository(db.DB)
 	proxyRepo := repository.NewProxyRepository(db.DB)
 	userProxyRepo := repository.NewUserProxyRepository(db.DB)
 
-	plan, err := buildPlan(db.DB, proGroupRepo, proxyRepo, dockerMgr)
+	plan, err := buildPlan(db.DB, proGroupRepo, proSubRepo, proxyRepo, dockerMgr)
 	if err != nil {
 		log.Fatalf("build plan: %v", err)
 	}
@@ -111,7 +114,7 @@ func main() {
 	// 2) Деактивируем legacy, которые уже не должны существовать.
 	now := time.Now().UTC()
 	for _, tgt := range plan.LegacyToDeactivate {
-		tgID, p := tgt.TGID, tgt.Proxy
+		tgID, userID, p := tgt.TGID, tgt.UserID, tgt.Proxy
 		dockerMgr.RemoveUserPremiumEEContainers(ctx, tgID)
 		p.Status = domain.ProxyStatusInactive
 		p.UnreachableSince = nil
@@ -126,20 +129,72 @@ func main() {
 			_ = userProxyRepo.DeleteByIPPortSecret(p.IP, p.Port, p.SecretEE)
 			_ = userProxyRepo.DeleteByIPPortSecret(p.IP, p.Port+10000, p.SecretEE)
 		}
-	}
-
-	// 3) Пересоздаём все активные Pro-группы.
-	for _, g := range plan.ProGroups {
-		if err := dockerMgr.CreateProGroupEEContainers(g); err != nil {
-			failures = append(failures, fmt.Sprintf("pro group %d (%s/%s): %v", g.ID, g.ContainerDD, g.ContainerEE, err))
+		if userID > 0 {
+			_ = userProxyRepo.DeleteByUserIDAndProxyType(userID, domain.ProxyTypePremium)
 		}
 	}
 
-	// 4) Пересоздаём legacy Premium по активным пользователям.
+	// 3) Ротируем ключи всех активных Pro-групп, пересоздаём контейнеры и чистим user_proxies.
+	for _, g := range plan.ProGroups {
+		genCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		newEE1, err1 := dockerMgr.GenerateEESecretViaDocker(genCtx)
+		newEE2, err2 := dockerMgr.GenerateEESecretViaDocker(genCtx)
+		cancel()
+		if err1 != nil || err2 != nil {
+			failures = append(failures, fmt.Sprintf("pro group %d: generate ee secrets: %v; %v", g.ID, err1, err2))
+			continue
+		}
+
+		runGroup := *g
+		runGroup.SecretDD = newEE1
+		runGroup.SecretEE = newEE2
+		if err := dockerMgr.CreateProGroupEEContainers(&runGroup); err != nil {
+			failures = append(failures, fmt.Sprintf("pro group %d (%s/%s): %v", g.ID, g.ContainerDD, g.ContainerEE, err))
+			continue
+		}
+
+		g.SecretDD = newEE1
+		g.SecretEE = newEE2
+		if err := proGroupRepo.Update(g); err != nil {
+			failures = append(failures, fmt.Sprintf("pro group %d update secrets: %v", g.ID, err))
+			continue
+		}
+
+		for _, sub := range plan.ProSubscribersByGroup[g.ID] {
+			if sub == nil {
+				continue
+			}
+			_ = userProxyRepo.DeleteByUserIDAndProxyType(sub.UserID, domain.ProxyTypePro)
+			_ = userProxyRepo.Create(&domain.UserProxy{
+				UserID:    sub.UserID,
+				IP:        g.ServerIP,
+				Port:      g.PortDD,
+				Secret:    g.SecretDD,
+				ProxyType: domain.ProxyTypePro,
+			})
+			_ = userProxyRepo.Create(&domain.UserProxy{
+				UserID:    sub.UserID,
+				IP:        g.ServerIP,
+				Port:      g.PortEE,
+				Secret:    g.SecretEE,
+				ProxyType: domain.ProxyTypePro,
+			})
+		}
+	}
+
+	// 4) Ротируем ключи legacy Premium, пересоздаём контейнеры и оставляем в БД только новые ключи.
 	for _, tgt := range plan.LegacyToRecreate {
-		tgID, p := tgt.TGID, tgt.Proxy
+		tgID, userID, p := tgt.TGID, tgt.UserID, tgt.Proxy
+		genCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		newEE, genErr := dockerMgr.GenerateEESecretViaDocker(genCtx)
+		cancel()
+		if genErr != nil {
+			failures = append(failures, fmt.Sprintf("legacy tg_id=%d proxy_id=%d generate ee: %v", tgID, p.ID, genErr))
+			continue
+		}
+
 		runProxy := *p
-		runProxy.Secret = tgt.RunSecret
+		runProxy.Secret = newEE
 		if err := dockerMgr.CreateUserPremiumEEContainers(ctx, tgID, &runProxy); err != nil {
 			failures = append(failures, fmt.Sprintf("legacy tg_id=%d proxy_id=%d: %v", tgID, p.ID, err))
 			continue
@@ -147,10 +202,23 @@ func main() {
 		p.Status = domain.ProxyStatusActive
 		p.UnreachableSince = nil
 		p.LastCheck = &now
+		// Для legacy оставляем только свежий ee-ключ в обеих колонках.
+		p.Secret = newEE
+		p.SecretEE = newEE
 		name := fmt.Sprintf(docker.UserContainerNameEE1, tgID)
 		p.ContainerName = name
 		if err := proxyRepo.Update(p); err != nil {
 			failures = append(failures, fmt.Sprintf("update legacy proxy_id=%d tg_id=%d: %v", p.ID, tgID, err))
+		}
+		if userID > 0 {
+			_ = userProxyRepo.DeleteByUserIDAndProxyType(userID, domain.ProxyTypePremium)
+			_ = userProxyRepo.Create(&domain.UserProxy{
+				UserID:    userID,
+				IP:        p.IP,
+				Port:      p.Port,
+				Secret:    newEE,
+				ProxyType: domain.ProxyTypePremium,
+			})
 		}
 	}
 
@@ -168,6 +236,7 @@ func main() {
 func buildPlan(
 	gdb *gorm.DB,
 	proGroupRepo repository.ProGroupRepository,
+	proSubRepo repository.ProSubscriptionRepository,
 	proxyRepo repository.ProxyRepository,
 	dockerMgr *docker.Manager,
 ) (*rebuildPlan, error) {
@@ -177,9 +246,14 @@ func buildPlan(
 	}
 
 	desiredProNames := make(map[string]struct{}, len(groups)*2)
+	proSubscribersByGroup := make(map[uint][]*domain.ProSubscription, len(groups))
 	for _, g := range groups {
 		if g == nil {
 			continue
+		}
+		subs, err := proSubRepo.GetActiveByGroupID(g.ID)
+		if err == nil && len(subs) > 0 {
+			proSubscribersByGroup[g.ID] = subs
 		}
 		if strings.TrimSpace(g.ContainerDD) != "" {
 			desiredProNames[g.ContainerDD] = struct{}{}
@@ -222,26 +296,30 @@ func buildPlan(
 		}
 
 		shouldExist := r.IsPremium && r.PremiumUntil != nil && r.PremiumUntil.After(now)
-		runSecret := strings.TrimSpace(p.Secret)
-		if runSecret == "" && strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.SecretEE)), "ee") {
-			runSecret = strings.TrimSpace(p.SecretEE)
+		// Для nineseconds/mtg принимаем только ee-секрет.
+		// Приоритет: secret_ee (исторический второй слот), fallback: secret если он уже ee.
+		runSecret := ""
+		if s2 := strings.TrimSpace(p.SecretEE); strings.HasPrefix(strings.ToLower(s2), "ee") {
+			runSecret = s2
+		} else if s1 := strings.TrimSpace(p.Secret); strings.HasPrefix(strings.ToLower(s1), "ee") {
+			runSecret = s1
 		}
 		if shouldExist {
 			if runSecret == "" {
-				legacyToDeactivate = append(legacyToDeactivate, legacyTarget{TGID: r.TGID, Proxy: p})
+				legacyToDeactivate = append(legacyToDeactivate, legacyTarget{TGID: r.TGID, UserID: r.OwnerID, Proxy: p})
 				continue
 			}
 			if oldID, exists := seenTG[r.TGID]; exists {
-				legacyToDeactivate = append(legacyToDeactivate, legacyTarget{TGID: r.TGID, Proxy: p})
+				legacyToDeactivate = append(legacyToDeactivate, legacyTarget{TGID: r.TGID, UserID: r.OwnerID, Proxy: p})
 				log.Printf("[rebuild] duplicate legacy premium rows for tg_id=%d (keep proxy_id=%d, deactivate proxy_id=%d)", r.TGID, oldID, p.ID)
 				continue
 			}
 			seenTG[r.TGID] = p.ID
-			legacyToRecreate = append(legacyToRecreate, legacyTarget{TGID: r.TGID, Proxy: p, RunSecret: runSecret})
+			legacyToRecreate = append(legacyToRecreate, legacyTarget{TGID: r.TGID, UserID: r.OwnerID, Proxy: p, RunSecret: runSecret})
 			desiredLegacyNames[fmt.Sprintf(docker.UserContainerNameEE1, r.TGID)] = struct{}{}
 			continue
 		}
-		legacyToDeactivate = append(legacyToDeactivate, legacyTarget{TGID: r.TGID, Proxy: p})
+		legacyToDeactivate = append(legacyToDeactivate, legacyTarget{TGID: r.TGID, UserID: r.OwnerID, Proxy: p})
 	}
 
 	listCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -272,6 +350,7 @@ func buildPlan(
 
 	return &rebuildPlan{
 		ProGroups:              groups,
+		ProSubscribersByGroup:  proSubscribersByGroup,
 		LegacyToRecreate:       legacyToRecreate,
 		LegacyToDeactivate:     legacyToDeactivate,
 		OrphanContainersToDrop: dedupeStrings(orphans),
