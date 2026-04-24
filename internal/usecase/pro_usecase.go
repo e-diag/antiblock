@@ -104,6 +104,19 @@ func secretPreview(s string) string {
 	return s[:8]
 }
 
+// proInfraTTL возвращает срок жизни инфраструктуры Pro-группы.
+// По требованию бизнеса: "30 дней" считаем как 29д 23ч 59м (на 1 минуту меньше календарных 30 суток).
+func proInfraTTL(cycleDays int) time.Duration {
+	if cycleDays <= 0 {
+		cycleDays = 30
+	}
+	ttl := time.Duration(cycleDays) * 24 * time.Hour
+	if ttl > time.Minute {
+		ttl -= time.Minute
+	}
+	return ttl
+}
+
 func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, dockerMgr *docker.Manager, cycleDays int) (*domain.ProGroup, error) {
 	if cycleDays <= 0 {
 		cycleDays = 30
@@ -130,7 +143,7 @@ func (uc *proUseCase) createGroupForDay(dayStart time.Time, serverIP string, doc
 	dayStart = utcDayStart(dayStart)
 	portDD := proPortForDay(dayStart, proDDPorts)
 	portEE := proPortForDay(dayStart, proEEPorts)
-	infraUntil := now.AddDate(0, 0, cycleDays)
+	infraUntil := now.Add(proInfraTTL(cycleDays))
 
 	group := &domain.ProGroup{
 		Date:                    dayStart,
@@ -193,7 +206,7 @@ func (uc *proUseCase) rotateGroupInPlace(g *domain.ProGroup, serverIP string, do
 	g.PortDD = portDD
 	g.PortEE = portEE
 	g.ServerIP = serverIP
-	g.InfrastructureExpiresAt = time.Now().UTC().AddDate(0, 0, cycleDays)
+	g.InfrastructureExpiresAt = time.Now().UTC().Add(proInfraTTL(cycleDays))
 	g.Status = domain.ProxyStatusActive
 
 	if err := uc.groupRepo.Update(g); err != nil {
@@ -299,7 +312,16 @@ func (uc *proUseCase) ensureTodayGroup(serverIP string, dockerMgr *docker.Manage
 		newGroup, err := uc.createGroupForDay(now, serverIP, dockerMgr, cycleDays)
 		if err != nil {
 			if isDuplicateKeyError(err) {
-				return uc.groupRepo.GetByDate(now)
+				existingToday, getErr := uc.groupRepo.GetByDate(now)
+				if getErr != nil {
+					return nil, getErr
+				}
+				if existingToday != nil {
+					return existingToday, nil
+				}
+				// В БД есть конфликт уникальности (например порт уже занят исторической записью),
+				// но активной группы за сегодня нет — возвращаем явную ошибку вместо nil.
+				return nil, fmt.Errorf("cannot create pro group for %s: duplicate key and no active group for today", now.Format("2006-01-02"))
 			}
 			return nil, err
 		}
@@ -341,6 +363,9 @@ func (uc *proUseCase) ActivateProSubscription(user *domain.User, days int, serve
 	group, err := uc.ensureTodayGroup(serverIP, dockerMgr, groupCycleDays)
 	if err != nil {
 		return nil, false, err
+	}
+	if group == nil {
+		return nil, false, fmt.Errorf("pro group is nil after ensureTodayGroup")
 	}
 
 	sub := &domain.ProSubscription{

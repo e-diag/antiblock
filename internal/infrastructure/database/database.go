@@ -180,10 +180,13 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
-	// Уникальный порт первого ee-слота Pro-группы (колонка port_dd — историческое имя). Второй слот — port_ee.
+	// Pro-порты должны быть уникальны среди active групп, но не мешать истории (inactive записи).
+	_ = db.Exec(`DROP INDEX IF EXISTS idx_pro_groups_port_dd_unique`).Error
+	_ = db.Exec(`DROP INDEX IF EXISTS idx_pro_groups_port_dd_active_unique`).Error
 	if err := db.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_groups_port_dd_unique
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_groups_port_dd_active_unique
 		ON pro_groups (port_dd)
+		WHERE status = 'active'
 	`).Error; err != nil {
 		return err
 	}
@@ -195,7 +198,7 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 	if err := db.Exec(`
-		UPDATE pro_groups SET infrastructure_expires_at = created_at + interval '30 days'
+		UPDATE pro_groups SET infrastructure_expires_at = created_at + interval '29 days 23 hours 59 minutes'
 		WHERE infrastructure_expires_at IS NULL
 	`).Error; err != nil {
 		return err
