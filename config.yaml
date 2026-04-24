@@ -75,7 +75,7 @@ proxy:
 
 # Pro-сервер — Free прокси + Pro-группы + удаление legacy Premium-контейнеров (Docker TLS).
 pro_docker:
-  host: "90.156.224.20"
+  host: "185.104.113.242"
   port: 2376
   cert_path: "/antiblock/docker-certs"
   server_ip: "90.156.224.20"
