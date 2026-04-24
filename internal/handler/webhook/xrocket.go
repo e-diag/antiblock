@@ -33,6 +33,7 @@ func XRocketWebhook(
 	getPremiumDays func() int,
 	getProDays func() int,
 	telegramBot *bot.Bot,
+	proServerIP string,
 ) http.HandlerFunc {
 	if getPremiumDays == nil {
 		getPremiumDays = func() int { return 30 }
@@ -213,7 +214,7 @@ func XRocketWebhook(
 					tgCancel()
 				} else {
 					tgCtx, tgCancel := context.WithTimeout(r.Context(), 15*time.Second)
-					botmessage.SendProGroupTwoEE(tgCtx, telegramBot, userID, group, botmessage.ProGroupStylePayment)
+					botmessage.SendProGroupTwoEEWithServerIP(tgCtx, telegramBot, userID, group, botmessage.ProGroupStylePayment, strings.TrimSpace(proServerIP))
 					tgCancel()
 				}
 			}

@@ -496,7 +496,7 @@ func main() {
 		port, _ := strconv.Atoi(cfg.XRocket.WebhookPort)
 		if port > 0 {
 			mux := http.NewServeMux()
-			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(activatePremium, activatePro, paymentUC, cfg.XRocket.APIToken, getPremiumDays, getProDays, b))
+			mux.HandleFunc("/webhook/xrocket", webhook.XRocketWebhook(activatePremium, activatePro, paymentUC, cfg.XRocket.APIToken, getPremiumDays, getProDays, b, proServerIP))
 			srv := &http.Server{
 				Addr:              ":" + cfg.XRocket.WebhookPort,
 				Handler:           mux,
@@ -517,7 +517,7 @@ func main() {
 		port, _ := strconv.Atoi(cfg.YooKassa.WebhookPort)
 		if port > 0 {
 			mux := http.NewServeMux()
-			mux.HandleFunc("/webhook/yookassa", webhook.YooKassaWebhook(activatePremium, activatePro, paymentUC, b, cfg.YooKassa.WebhookToken))
+			mux.HandleFunc("/webhook/yookassa", webhook.YooKassaWebhook(activatePremium, activatePro, paymentUC, b, cfg.YooKassa.WebhookToken, proServerIP))
 			srv := &http.Server{
 				Addr:              ":" + cfg.YooKassa.WebhookPort,
 				Handler:           mux,

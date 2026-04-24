@@ -75,10 +75,10 @@ proxy:
 
 # Pro-сервер — Free прокси + Pro-группы + удаление legacy Premium-контейнеров (Docker TLS).
 pro_docker:
-  host: "185.104.113.242"
+  host: "90.156.224.20"
   port: 2376
   cert_path: "/antiblock/docker-certs"
-  server_ip: "185.104.113.242"
+  server_ip: "90.156.224.20"
 
 # TimeWeb — новые Premium (floating IP). Без токена новые покупки ставятся в очередь до настройки.
 timeweb:

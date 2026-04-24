@@ -23,6 +23,12 @@ const (
 
 // SendProGroupTwoEE отправляет два ee-прокси Pro-группы (nineseconds). Поля PortDD/SecretDD — первый ee-слот.
 func SendProGroupTwoEE(ctx context.Context, b *bot.Bot, tgID int64, group *domain.ProGroup, style ProGroupStyle) {
+	SendProGroupTwoEEWithServerIP(ctx, b, tgID, group, style, "")
+}
+
+// SendProGroupTwoEEWithServerIP отправляет два ee-прокси Pro-группы с optional override IP.
+// Если overrideServerIP пустой — используется group.ServerIP.
+func SendProGroupTwoEEWithServerIP(ctx context.Context, b *bot.Bot, tgID int64, group *domain.ProGroup, style ProGroupStyle, overrideServerIP string) {
 	if b == nil || group == nil {
 		return
 	}
@@ -30,11 +36,15 @@ func SendProGroupTwoEE(ctx context.Context, b *bot.Bot, tgID int64, group *domai
 	if style == ProGroupStylePayment {
 		prefix = "✅"
 	}
+	clientIP := group.ServerIP
+	if v := overrideServerIP; v != "" {
+		clientIP = v
+	}
 	sendEE := func(title string, port int, secret string, withHint bool) {
 		if port <= 0 || secret == "" {
 			return
 		}
-		u := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", group.ServerIP, port, secret)
+		u := fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", clientIP, port, secret)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
 				{{Text: "🔗 Подключиться (ee)", URL: u}},
@@ -46,7 +56,7 @@ func SendProGroupTwoEE(ctx context.Context, b *bot.Bot, tgID int64, group *domai
 		}
 		msg := fmt.Sprintf(
 			"%s <b>%s</b>\n\n🔐 <b>ee / fake-TLS</b>\n🌐 IP: <code>%s</code>\n🔌 Порт: <code>%d</code>\n🔑 Секрет: <code>%s</code>%s",
-			prefix, title, group.ServerIP, port, secret, hint,
+			prefix, title, clientIP, port, secret, hint,
 		)
 		_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: tgID, Text: msg, ParseMode: models.ParseModeHTML, ReplyMarkup: kb,

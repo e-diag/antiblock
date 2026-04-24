@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -64,6 +65,10 @@ func main() {
 	if cfg.ProDocker.Host == "" || cfg.ProDocker.CertPath == "" {
 		log.Fatal("pro_docker.host/cert_path required")
 	}
+	targetIP := strings.TrimSpace(cfg.ProDocker.ServerIP)
+	if targetIP == "" || net.ParseIP(targetIP) == nil {
+		log.Fatal("pro_docker.server_ip required and must be valid IP")
+	}
 
 	db, err := database.New(&cfg.Database)
 	if err != nil {
@@ -90,8 +95,8 @@ func main() {
 		log.Fatalf("build plan: %v", err)
 	}
 
-	log.Printf("rebuild_pro_legacy plan: pro_groups=%d legacy_recreate=%d legacy_deactivate=%d orphan_containers=%d",
-		len(plan.ProGroups), len(plan.LegacyToRecreate), len(plan.LegacyToDeactivate), len(plan.OrphanContainersToDrop))
+	log.Printf("rebuild_pro_legacy plan: target_ip=%s pro_groups=%d legacy_recreate=%d legacy_deactivate=%d orphan_containers=%d",
+		targetIP, len(plan.ProGroups), len(plan.LegacyToRecreate), len(plan.LegacyToDeactivate), len(plan.OrphanContainersToDrop))
 	if !*apply {
 		if len(plan.OrphanContainersToDrop) > 0 {
 			log.Printf("dry-run orphan containers to remove (%d): %s", len(plan.OrphanContainersToDrop), strings.Join(plan.OrphanContainersToDrop, ", "))
@@ -134,29 +139,18 @@ func main() {
 		}
 	}
 
-	// 3) Ротируем ключи всех активных Pro-групп, пересоздаём контейнеры и чистим user_proxies.
+	// 3) Перезапускаем все активные Pro-группы и синхронизируем IP (порты/секреты не меняем).
 	for _, g := range plan.ProGroups {
-		genCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		newEE1, err1 := dockerMgr.GenerateEESecretViaDocker(genCtx)
-		newEE2, err2 := dockerMgr.GenerateEESecretViaDocker(genCtx)
-		cancel()
-		if err1 != nil || err2 != nil {
-			failures = append(failures, fmt.Sprintf("pro group %d: generate ee secrets: %v; %v", g.ID, err1, err2))
-			continue
-		}
-
 		runGroup := *g
-		runGroup.SecretDD = newEE1
-		runGroup.SecretEE = newEE2
+		runGroup.ServerIP = targetIP
 		if err := dockerMgr.CreateProGroupEEContainers(&runGroup); err != nil {
 			failures = append(failures, fmt.Sprintf("pro group %d (%s/%s): %v", g.ID, g.ContainerDD, g.ContainerEE, err))
 			continue
 		}
 
-		g.SecretDD = newEE1
-		g.SecretEE = newEE2
+		g.ServerIP = targetIP
 		if err := proGroupRepo.Update(g); err != nil {
-			failures = append(failures, fmt.Sprintf("pro group %d update secrets: %v", g.ID, err))
+			failures = append(failures, fmt.Sprintf("pro group %d update server_ip: %v", g.ID, err))
 			continue
 		}
 
@@ -167,14 +161,14 @@ func main() {
 			_ = userProxyRepo.DeleteByUserIDAndProxyType(sub.UserID, domain.ProxyTypePro)
 			_ = userProxyRepo.Create(&domain.UserProxy{
 				UserID:    sub.UserID,
-				IP:        g.ServerIP,
+				IP:        targetIP,
 				Port:      g.PortDD,
 				Secret:    g.SecretDD,
 				ProxyType: domain.ProxyTypePro,
 			})
 			_ = userProxyRepo.Create(&domain.UserProxy{
 				UserID:    sub.UserID,
-				IP:        g.ServerIP,
+				IP:        targetIP,
 				Port:      g.PortEE,
 				Secret:    g.SecretEE,
 				ProxyType: domain.ProxyTypePro,
@@ -182,19 +176,11 @@ func main() {
 		}
 	}
 
-	// 4) Ротируем ключи legacy Premium, пересоздаём контейнеры и оставляем в БД только новые ключи.
+	// 4) Перезапускаем legacy Premium и синхронизируем IP (порты/секреты не меняем).
 	for _, tgt := range plan.LegacyToRecreate {
 		tgID, userID, p := tgt.TGID, tgt.UserID, tgt.Proxy
-		genCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		newEE, genErr := dockerMgr.GenerateEESecretViaDocker(genCtx)
-		cancel()
-		if genErr != nil {
-			failures = append(failures, fmt.Sprintf("legacy tg_id=%d proxy_id=%d generate ee: %v", tgID, p.ID, genErr))
-			continue
-		}
-
 		runProxy := *p
-		runProxy.Secret = newEE
+		runProxy.Secret = tgt.RunSecret
 		if err := dockerMgr.CreateUserPremiumEEContainers(ctx, tgID, &runProxy); err != nil {
 			failures = append(failures, fmt.Sprintf("legacy tg_id=%d proxy_id=%d: %v", tgID, p.ID, err))
 			continue
@@ -202,9 +188,10 @@ func main() {
 		p.Status = domain.ProxyStatusActive
 		p.UnreachableSince = nil
 		p.LastCheck = &now
-		// Для legacy оставляем только свежий ee-ключ в обеих колонках.
-		p.Secret = newEE
-		p.SecretEE = newEE
+		// Для выдачи из bot_handler в legacy используется proxy.Secret.
+		// Синхронизируем с фактически запущенным ee-секретом без генерации нового ключа.
+		p.Secret = tgt.RunSecret
+		p.IP = targetIP
 		name := fmt.Sprintf(docker.UserContainerNameEE1, tgID)
 		p.ContainerName = name
 		if err := proxyRepo.Update(p); err != nil {
@@ -214,9 +201,9 @@ func main() {
 			_ = userProxyRepo.DeleteByUserIDAndProxyType(userID, domain.ProxyTypePremium)
 			_ = userProxyRepo.Create(&domain.UserProxy{
 				UserID:    userID,
-				IP:        p.IP,
+				IP:        targetIP,
 				Port:      p.Port,
-				Secret:    newEE,
+				Secret:    tgt.RunSecret,
 				ProxyType: domain.ProxyTypePremium,
 			})
 		}

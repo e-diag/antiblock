@@ -546,25 +546,29 @@ func (h *BotHandler) SendProGroupProxiesToUser(ctx context.Context, b *bot.Bot, 
 	if group == nil {
 		return
 	}
-	botmessage.SendProGroupTwoEE(ctx, b, tgID, group, botmessage.ProGroupStyleBot)
+	clientIP := strings.TrimSpace(group.ServerIP)
+	if v := strings.TrimSpace(h.proServerIP); v != "" {
+		clientIP = v
+	}
+	botmessage.SendProGroupTwoEEWithServerIP(ctx, b, tgID, group, botmessage.ProGroupStyleBot, clientIP)
 
 	// Сохраняем Pro-прокси в «Мои прокси».
 	if h.userProxyRepo != nil && h.userRepo != nil {
 		u, errU := h.userRepo.GetByTGID(tgID)
 		if errU == nil && u != nil {
-			if existingDD, _ := h.userProxyRepo.GetByUserIDAndProxy(u.ID, group.ServerIP, group.PortDD, group.SecretDD); existingDD == nil {
+			if existingDD, _ := h.userProxyRepo.GetByUserIDAndProxy(u.ID, clientIP, group.PortDD, group.SecretDD); existingDD == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
 					UserID:    u.ID,
-					IP:        group.ServerIP,
+					IP:        clientIP,
 					Port:      group.PortDD,
 					Secret:    group.SecretDD,
 					ProxyType: domain.ProxyTypePro,
 				})
 			}
-			if existingEE, _ := h.userProxyRepo.GetByUserIDAndProxy(u.ID, group.ServerIP, group.PortEE, group.SecretEE); existingEE == nil {
+			if existingEE, _ := h.userProxyRepo.GetByUserIDAndProxy(u.ID, clientIP, group.PortEE, group.SecretEE); existingEE == nil {
 				_ = h.userProxyRepo.Create(&domain.UserProxy{
 					UserID:    u.ID,
-					IP:        group.ServerIP,
+					IP:        clientIP,
 					Port:      group.PortEE,
 					Secret:    group.SecretEE,
 					ProxyType: domain.ProxyTypePro,
@@ -1138,6 +1142,9 @@ func (h *BotHandler) SendPremiumProxyToUser(ctx context.Context, b *bot.Bot, cha
 			log.Printf("[Premium] SendPremiumProxyToUser: TimeWeb proxy без floating IP, сообщения не отправляем")
 			return
 		}
+	} else if v := strings.TrimSpace(h.proServerIP); v != "" {
+		// legacy Premium всегда выдаём с актуальным IP Pro-сервера из конфигурации.
+		clientIP = v
 	}
 
 	sendEE := func(title string, port int, secret string, withHint bool) {

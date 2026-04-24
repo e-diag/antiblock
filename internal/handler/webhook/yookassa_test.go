@@ -74,7 +74,7 @@ func TestYooKassaWebhook_DuplicateSamePaymentSingleActivation(t *testing.T) {
 		},
 	}
 	activated := 0
-	h := YooKassaWebhook(func(tgID int64, days int) error { activated++; return nil }, nil, f, nil, "")
+	h := YooKassaWebhook(func(tgID int64, days int) error { activated++; return nil }, nil, f, nil, "", "")
 	body := `{"event":"payment.succeeded","object":{"id":"p1","status":"succeeded","paid":true,"amount":{"value":"499.00","currency":"RUB"},"metadata":{"tg_id":"100","days_granted":"30","tariff_type":"premium"}}}`
 
 	req1 := httptest.NewRequest(http.MethodPost, "/webhook/yookassa", strings.NewReader(body))
@@ -105,7 +105,7 @@ func TestYooKassaWebhook_AmountMismatch_NoActivation(t *testing.T) {
 		},
 	}
 	activated := 0
-	h := YooKassaWebhook(func(tgID int64, days int) error { activated++; return nil }, nil, f, nil, "")
+	h := YooKassaWebhook(func(tgID int64, days int) error { activated++; return nil }, nil, f, nil, "", "")
 	body := `{"event":"payment.succeeded","object":{"id":"p2","status":"succeeded","paid":true,"amount":{"value":"1.00","currency":"RUB"},"metadata":{"tg_id":"200","days_granted":"30","tariff_type":"premium"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook/yookassa", strings.NewReader(body))
 	rr := httptest.NewRecorder()
@@ -124,7 +124,7 @@ func TestYooKassaWebhook_InvalidPayload_NoActivation(t *testing.T) {
 		inv:     map[string]*domain.YooKassaInvoice{},
 	}
 	activated := 0
-	h := YooKassaWebhook(func(tgID int64, days int) error { activated++; return nil }, nil, f, nil, "")
+	h := YooKassaWebhook(func(tgID int64, days int) error { activated++; return nil }, nil, f, nil, "", "")
 	req := httptest.NewRequest(http.MethodPost, "/webhook/yookassa", strings.NewReader(`{"event":"payment.waiting_for_capture"}`))
 	rr := httptest.NewRecorder()
 	h(rr, req)

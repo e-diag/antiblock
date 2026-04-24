@@ -38,6 +38,7 @@ func TestXRocketWebhook_DuplicateRetry_NoDoubleActivation(t *testing.T) {
 		func() int { return 30 },
 		func() int { return 30 },
 		nil,
+		"",
 	)
 	body := `{"data":{"id":"123","status":"paid"}}`
 	fakeInvoice := &domain.Invoice{InvoiceID: 123, UserID: 999, Kind: "pro", DaysGranted: 30, Status: "pending"}
@@ -79,6 +80,7 @@ func TestXRocketWebhook_PartialFailureThenRetry_SucceedsOnce(t *testing.T) {
 		func() int { return 30 },
 		func() int { return 30 },
 		nil,
+		"",
 	)
 	body := `{"data":{"id":"124","status":"paid"}}`
 	fakeInvoice := &domain.Invoice{InvoiceID: 124, UserID: 888, Kind: "pro", DaysGranted: 30, Status: "pending"}

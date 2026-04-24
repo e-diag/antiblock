@@ -25,6 +25,7 @@ func YooKassaWebhook(
 	paymentUC usecase.PaymentUseCase,
 	telegramBot *bot.Bot,
 	webhookToken string,
+	proServerIP string,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -152,7 +153,7 @@ func YooKassaWebhook(
 					})
 				} else if proGroup != nil {
 					tgCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-					botmessage.SendProGroupTwoEE(tgCtx, telegramBot, tgID, proGroup, botmessage.ProGroupStylePayment)
+					botmessage.SendProGroupTwoEEWithServerIP(tgCtx, telegramBot, tgID, proGroup, botmessage.ProGroupStylePayment, strings.TrimSpace(proServerIP))
 					cancel()
 				}
 			}
