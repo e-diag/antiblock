@@ -1,6 +1,37 @@
 package handler
 
-import "testing"
+import (
+	"testing"
+)
+
+func TestBroadcastAudienceMatchesUser(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name          string
+		aud           BroadcastAudience
+		prem, pro     bool
+		want          bool
+	}{
+		{"all free only", BroadcastAudienceAll, false, false, true},
+		{"all skip premium", BroadcastAudienceAll, true, false, false},
+		{"all skip pro", BroadcastAudienceAll, false, true, false},
+		{"free same as all for prem+pro", BroadcastAudienceFree, true, true, false},
+		{"pro only", BroadcastAudiencePro, false, true, true},
+		{"pro not if premium", BroadcastAudiencePro, true, true, false},
+		{"pro not if no pro", BroadcastAudiencePro, false, false, false},
+		{"premium", BroadcastAudiencePremium, true, false, true},
+		{"premium not free", BroadcastAudiencePremium, false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := BroadcastAudienceMatchesUser(tc.aud, tc.prem, tc.pro)
+			if got != tc.want {
+				t.Fatalf("aud=%s prem=%v pro=%v: got %v want %v", tc.aud, tc.prem, tc.pro, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestBroadcastStatePhases(t *testing.T) {
 	t.Parallel()

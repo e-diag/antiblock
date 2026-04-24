@@ -6,9 +6,27 @@ import "sync"
 type BroadcastAudience string
 
 const (
-	BroadcastAudienceAll  BroadcastAudience = "all"
-	BroadcastAudienceFree BroadcastAudience = "free"
+	BroadcastAudienceAll     BroadcastAudience = "all"
+	BroadcastAudienceFree    BroadcastAudience = "free"
+	BroadcastAudiencePro     BroadcastAudience = "pro"
+	BroadcastAudiencePremium BroadcastAudience = "premium"
 )
+
+// BroadcastAudienceMatchesUser — попадает ли пользователь в сегмент по флаге активных подписок
+// (premium и pro — независимые булевы флаги из доменной модели).
+// Для Pro-сегмента: только pro без одновременного Premium, чтобы не дублировать Premium-рассылку.
+func BroadcastAudienceMatchesUser(aud BroadcastAudience, premiumActive, proActive bool) bool {
+	switch aud {
+	case BroadcastAudienceAll, BroadcastAudienceFree:
+		return !premiumActive && !proActive
+	case BroadcastAudiencePro:
+		return proActive && !premiumActive
+	case BroadcastAudiencePremium:
+		return premiumActive
+	default:
+		return !premiumActive && !proActive
+	}
+}
 
 // BroadcastPhase — этап сценария рассылки.
 type BroadcastPhase int

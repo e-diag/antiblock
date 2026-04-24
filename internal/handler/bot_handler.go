@@ -451,6 +451,8 @@ func (h *BotHandler) sendBroadcastAudiencePrompt(ctx context.Context, b *bot.Bot
 			InlineKeyboard: [][]models.InlineKeyboardButton{
 				{{Text: "👥 Всем", CallbackData: "broadcast_audience_all"}},
 				{{Text: "🆓 Только бесплатным", CallbackData: "broadcast_audience_free"}},
+				{{Text: "⭐ Pro", CallbackData: "broadcast_audience_pro"}},
+				{{Text: "💎 Premium", CallbackData: "broadcast_audience_premium"}},
 				{{Text: "◀️ Назад", CallbackData: "mgr_back"}},
 			},
 		},
@@ -1351,6 +1353,14 @@ func (h *BotHandler) isPaidActive(user *domain.User) bool {
 	return h.isProActiveUser(user.ID)
 }
 
+// shouldIncludeInBroadcast — попадает ли пользователь в выбранную аудиторию рассылки.
+func (h *BotHandler) shouldIncludeInBroadcast(aud BroadcastAudience, u *domain.User) bool {
+	if u == nil {
+		return false
+	}
+	return BroadcastAudienceMatchesUser(aud, u.IsPremiumActive(), h.isProActiveUser(u.ID))
+}
+
 // sendActiveAdIfExists отправляет активное объявление пользователю (для бесплатных) один раз — если для этого объявления ещё нет записи в ad_pins. Закрепляет и сохраняет в ad_pins.
 func (h *BotHandler) sendActiveAdIfExists(ctx context.Context, b *bot.Bot, chatID int64) {
 	ad, err := h.adRepo.GetActiveOne()
@@ -1744,6 +1754,14 @@ func (h *BotHandler) HandleManagerCallback(ctx context.Context, b *bot.Bot, upda
 	case "broadcast_audience_free":
 		h.broadcastState.SetAwaitingMessage(chatID, BroadcastAudienceFree)
 		send("📢 Рассылка <b>только бесплатным</b>. Отправьте сообщение: текст, фото, видео или документ.\n\nДалее будет <b>предпросмотр</b> — подтвердите отправку. Отмена: /cancel")
+
+	case "broadcast_audience_pro":
+		h.broadcastState.SetAwaitingMessage(chatID, BroadcastAudiencePro)
+		send("📢 Рассылка <b>только Pro</b> (активная Pro, без Premium). Отправьте сообщение: текст, фото, видео или документ.\n\nДалее будет <b>предпросмотр</b> — подтвердите отправку. Отмена: /cancel")
+
+	case "broadcast_audience_premium":
+		h.broadcastState.SetAwaitingMessage(chatID, BroadcastAudiencePremium)
+		send("📢 Рассылка <b>только Premium</b>. Отправьте сообщение: текст, фото, видео или документ.\n\nДалее будет <b>предпросмотр</b> — подтвердите отправку. Отмена: /cancel")
 
 	case "broadcast_confirm":
 		h.handleBroadcastConfirm(ctx, b, chatID)
@@ -2735,9 +2753,16 @@ func (h *BotHandler) transitionBroadcastToPreview(ctx context.Context, b *bot.Bo
 		return
 	}
 	h.broadcastState.SetPreview(adminID, p)
-	aud := "всем пользователям (без Pro/Premium в выдаче — как раньше)"
-	if p.Audience == BroadcastAudienceFree {
+	var aud string
+	switch p.Audience {
+	case BroadcastAudienceFree:
 		aud = "только бесплатным (как раньше: без активных Pro/Premium)"
+	case BroadcastAudiencePro:
+		aud = "только Pro (активная подписка, без Premium)"
+	case BroadcastAudiencePremium:
+		aud = "только Premium (активная подписка)"
+	default:
+		aud = "всем пользователям (без Pro/Premium в выдаче — как раньше)"
 	}
 	text := fmt.Sprintf("👁 <b>Предпросмотр рассылки</b>\nАудитория: <b>%s</b>\n\nСообщение ниже будет разослано после подтверждения.", aud)
 	kb := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -2797,7 +2822,7 @@ func (h *BotHandler) executeBroadcastFromPending(adminID int64, p *BroadcastPend
 	var lastErr error
 	single := len(p.MessageIDs) == 1
 	for _, u := range users {
-		if h.isPaidActive(u) {
+		if !h.shouldIncludeInBroadcast(p.Audience, u) {
 			continue
 		}
 		var errCopy error
