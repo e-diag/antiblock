@@ -319,9 +319,31 @@ func (uc *proUseCase) ensureTodayGroup(serverIP string, dockerMgr *docker.Manage
 				if existingToday != nil {
 					return existingToday, nil
 				}
-				// В БД есть конфликт уникальности (например порт уже занят исторической записью),
-				// но активной группы за сегодня нет — возвращаем явную ошибку вместо nil.
-				return nil, fmt.Errorf("cannot create pro group for %s: duplicate key and no active group for today", now.Format("2006-01-02"))
+
+				// Самовосстановление: если уникальный порт дня уже занят другой active-группой,
+				// переводим её на "сегодня" и выполняем обычную ротацию in-place.
+				dayStart := utcDayStart(now)
+				dayPortDD := proPortForDay(dayStart, proDDPorts)
+				conflict, conflictErr := uc.groupRepo.GetActiveByPortDD(dayPortDD)
+				if conflictErr != nil {
+					return nil, conflictErr
+				}
+				if conflict != nil {
+					if sameUTCDay(conflict.Date, dayStart) {
+						return conflict, nil
+					}
+					log.Printf("[Pro] ensureTodayGroup: healing port_dd conflict day=%s port=%d with group_id=%d old_date=%s",
+						dayStart.Format("2006-01-02"), dayPortDD, conflict.ID, conflict.Date.UTC().Format("2006-01-02"))
+					conflict.Date = dayStart
+					healed, healErr := uc.rotateGroupInPlace(conflict, serverIP, dockerMgr, cycleDays)
+					if healErr != nil {
+						return nil, fmt.Errorf("heal conflicted pro group id=%d on port=%d: %w", conflict.ID, dayPortDD, healErr)
+					}
+					return healed, nil
+				}
+
+				// В БД уже есть конфликт уникальности, но активная группа ни за сегодня, ни по порту дня не найдена.
+				return nil, fmt.Errorf("cannot create pro group for %s: duplicate key and no recoverable active group", now.Format("2006-01-02"))
 			}
 			return nil, err
 		}

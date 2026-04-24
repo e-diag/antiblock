@@ -11,6 +11,8 @@ type ProGroupRepository interface {
 	Create(g *domain.ProGroup) error
 	// GetByDate — активная группа за календарный день UTC (date в [day, day+24h)).
 	GetByDate(date time.Time) (*domain.ProGroup, error)
+	// GetActiveByPortDD — активная Pro-группа, занимающая port_dd.
+	GetActiveByPortDD(port int) (*domain.ProGroup, error)
 	// ListGroupsNeedingRotation — active и infrastructure_expires_at <= now.
 	ListGroupsNeedingRotation(now time.Time) ([]*domain.ProGroup, error)
 	GetActiveGroups() ([]*domain.ProGroup, error)
@@ -54,6 +56,15 @@ func (r *proGroupRepository) GetByDate(date time.Time) (*domain.ProGroup, error)
 	dayStart := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
 	dayEnd := dayStart.Add(24 * time.Hour)
 	err := r.db.Where("date >= ? AND date < ? AND status = ?", dayStart, dayEnd, domain.ProxyStatusActive).First(&g).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	return &g, err
+}
+
+func (r *proGroupRepository) GetActiveByPortDD(port int) (*domain.ProGroup, error) {
+	var g domain.ProGroup
+	err := r.db.Where("port_dd = ? AND status = ?", port, domain.ProxyStatusActive).First(&g).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
