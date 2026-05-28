@@ -262,6 +262,26 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	// Pro-сервер: перенос с 185.104.113.242 на 77.232.131.68 (идемпотентно).
+	const proServerIPOld = "185.104.113.242"
+	const proServerIPNew = "77.232.131.68"
+	if res := db.Exec(`
+		UPDATE pro_groups SET server_ip = ?, updated_at = NOW()
+		WHERE server_ip = ? AND status = 'active'
+	`, proServerIPNew, proServerIPOld); res.Error != nil {
+		return res.Error
+	} else if res.RowsAffected > 0 {
+		log.Printf("[database] pro_groups server_ip migrated %s -> %s (%d rows)", proServerIPOld, proServerIPNew, res.RowsAffected)
+	}
+	if res := db.Exec(`
+		UPDATE user_proxies SET ip = ?
+		WHERE proxy_type = 'pro' AND ip = ?
+	`, proServerIPNew, proServerIPOld); res.Error != nil {
+		return res.Error
+	} else if res.RowsAffected > 0 {
+		log.Printf("[database] user_proxies pro ip migrated %s -> %s (%d rows)", proServerIPOld, proServerIPNew, res.RowsAffected)
+	}
+
 	return nil
 }
 
