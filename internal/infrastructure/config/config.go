@@ -27,10 +27,10 @@ type Config struct {
 
 // ProDockerConfig — Pro-сервер (Free + Pro-группы + legacy Premium cleanup) по Docker TLS.
 type ProDockerConfig struct {
-	Host     string `yaml:"host"`      // хост премиум-сервера (Docker daemon)
+	Host     string `yaml:"host"`      // хост Docker daemon (TLS SAN; может отличаться от server_ip)
 	Port     int    `yaml:"port"`      // порт TLS, обычно 2376
 	CertPath string `yaml:"cert_path"` // путь к сертификатам, например /antiblock/docker-certs/
-	ServerIP string `yaml:"server_ip"` // IP сервера для записи в proxy_nodes (выдача пользователю)
+	ServerIP string `yaml:"server_ip"` // публичный IP для выдачи прокси (pro_groups, tg://proxy)
 }
 
 // TimewebConfig — настройки TimeWeb Cloud API для Premium provisioning.

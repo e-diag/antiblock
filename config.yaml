@@ -74,8 +74,10 @@ proxy:
   free_trial_days: 0  # 0 = нет бесплатного пробного периода
 
 # Pro-сервер — Free прокси + Pro-группы + удаление legacy Premium-контейнеров (Docker TLS).
+# host — адрес Docker API (должен совпадать с SAN TLS-сертификата daemon).
+# server_ip — публичный IP в tg://proxy и pro_groups (контейнеры в network_mode: host на том же VPS).
 pro_docker:
-  host: "77.232.131.68"
+  host: "185.104.113.242"
   port: 2376
   cert_path: "/antiblock/docker-certs"
   server_ip: "77.232.131.68"
