@@ -262,26 +262,36 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
-	// Pro-сервер: перенос с 185.104.113.242 на 77.232.131.68 (идемпотентно).
-	const proServerIPOld = "185.104.113.242"
-	const proServerIPNew = "77.232.131.68"
-	if res := db.Exec(`
-		UPDATE pro_groups SET server_ip = ?, updated_at = NOW()
-		WHERE server_ip = ? AND status = 'active'
-	`, proServerIPNew, proServerIPOld); res.Error != nil {
-		return res.Error
-	} else if res.RowsAffected > 0 {
-		log.Printf("[database] pro_groups server_ip migrated %s -> %s (%d rows)", proServerIPOld, proServerIPNew, res.RowsAffected)
-	}
-	if res := db.Exec(`
-		UPDATE user_proxies SET ip = ?
-		WHERE proxy_type = 'pro' AND ip = ?
-	`, proServerIPNew, proServerIPOld); res.Error != nil {
-		return res.Error
-	} else if res.RowsAffected > 0 {
-		log.Printf("[database] user_proxies pro ip migrated %s -> %s (%d rows)", proServerIPOld, proServerIPNew, res.RowsAffected)
+	if err := migrateProServerIP(db, "37.77.105.223", "185.104.113.242", "77.232.131.68", "90.156.224.20"); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// migrateProServerIP обновляет server_ip активных pro_groups и ip в user_proxies (pro) с любого из oldIPs.
+func migrateProServerIP(db *gorm.DB, newIP string, oldIPs ...string) error {
+	for _, oldIP := range oldIPs {
+		if oldIP == "" || oldIP == newIP {
+			continue
+		}
+		if res := db.Exec(`
+			UPDATE pro_groups SET server_ip = ?, updated_at = NOW()
+			WHERE server_ip = ? AND status = 'active'
+		`, newIP, oldIP); res.Error != nil {
+			return res.Error
+		} else if res.RowsAffected > 0 {
+			log.Printf("[database] pro_groups server_ip migrated %s -> %s (%d rows)", oldIP, newIP, res.RowsAffected)
+		}
+		if res := db.Exec(`
+			UPDATE user_proxies SET ip = ?
+			WHERE proxy_type = 'pro' AND ip = ?
+		`, newIP, oldIP); res.Error != nil {
+			return res.Error
+		} else if res.RowsAffected > 0 {
+			log.Printf("[database] user_proxies pro ip migrated %s -> %s (%d rows)", oldIP, newIP, res.RowsAffected)
+		}
+	}
 	return nil
 }
 

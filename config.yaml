@@ -80,7 +80,7 @@ pro_docker:
   host: "185.104.113.242"
   port: 2376
   cert_path: "/antiblock/docker-certs"
-  server_ip: "77.232.131.68"
+  server_ip: "37.77.105.223"
 
 # TimeWeb — новые Premium (floating IP). Без токена новые покупки ставятся в очередь до настройки.
 timeweb:
