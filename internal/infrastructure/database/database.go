@@ -283,6 +283,24 @@ func migrateProServerIP(db *gorm.DB, newIP string, oldIPs ...string) error {
 		} else if res.RowsAffected > 0 {
 			log.Printf("[database] pro_groups server_ip migrated %s -> %s (%d rows)", oldIP, newIP, res.RowsAffected)
 		}
+		// Сначала удаляем старые записи, для которых уже есть эквивалент с новым IP
+		// (иначе UPDATE нарушит idx_user_proxies_unique по user_id+ip+port+secret).
+		if res := db.Exec(`
+			DELETE FROM user_proxies old
+			WHERE old.proxy_type = 'pro' AND old.ip = ?
+			AND EXISTS (
+				SELECT 1 FROM user_proxies newer
+				WHERE newer.proxy_type = 'pro'
+				  AND newer.ip = ?
+				  AND newer.user_id = old.user_id
+				  AND newer.port = old.port
+				  AND newer.secret = old.secret
+			)
+		`, oldIP, newIP); res.Error != nil {
+			return res.Error
+		} else if res.RowsAffected > 0 {
+			log.Printf("[database] user_proxies pro ip deduped %s (removed %d rows already on %s)", oldIP, res.RowsAffected, newIP)
+		}
 		if res := db.Exec(`
 			UPDATE user_proxies SET ip = ?
 			WHERE proxy_type = 'pro' AND ip = ?
